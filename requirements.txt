@@ -1,0 +1,10 @@
+# Только официальные стабильные библиотеки, версии строго зафиксированы (supply-chain safety).
+aiogram==3.15.0
+fastapi==0.115.6
+uvicorn==0.34.0
+aiosqlite==0.20.0
+Jinja2==3.1.5
+python-dotenv==1.0.1
+pydantic==2.9.2
+# База часовых поясов IANA для zoneinfo (в alpine-образе системного tzdata нет).
+tzdata==2024.2

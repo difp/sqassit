@@ -1,0 +1,796 @@
+{% extends "base.html" %}
+{% block header %}Тренер{% endblock %}
+
+{% block content %}
+<!-- ===== Заявка в тренеры (для обычных пользователей) ===== -->
+<section id="apply-section" hidden>
+  <div class="section-title">Стать тренером</div>
+  <div class="card">
+    <div id="apply-status" class="hint" style="margin-bottom:12px"></div>
+    <label class="field"><span class="label">Расскажите о себе</span>
+      <textarea class="input" id="apply-text" rows="3" maxlength="1000"
+                placeholder="Опыт, где играли/тренировали, зачем вам роль тренера"></textarea></label>
+    <button class="btn btn--primary btn--block" id="apply-send">Отправить заявку</button>
+    <div class="hint" style="margin-top:8px">Заявку рассматривает владелец клуба или доверенный тренер.</div>
+  </div>
+</section>
+
+<!-- ===== Панель тренера ===== -->
+<div id="coach-content" hidden>
+  <div class="segmented" id="segmented">
+    <button type="button" data-view="active" class="is-active">Активные</button>
+    <button type="button" data-view="history">История</button>
+    <button type="button" data-view="deleted">Корзина</button>
+    <button type="button" data-view="club">Клуб</button>
+  </div>
+
+  <div id="list">
+    <div class="skeleton"></div>
+    <div class="skeleton"></div>
+  </div>
+
+  <!-- CRM -->
+  <section style="margin-top:24px">
+    <div class="section-title">Игроки</div>
+    <div id="players"></div>
+  </section>
+
+  <!-- Заявки (владелец/менеджер) -->
+  <section id="applications-section" hidden style="margin-top:24px">
+    <div class="section-title">Заявки в тренеры</div>
+    <div class="card" id="applications-list"></div>
+  </section>
+
+  <!-- Профиль тренера -->
+  <section style="margin-top:24px">
+    <div class="section-title">Профиль тренера</div>
+    <div class="card" id="profile-card">
+      <div class="coach-row" id="profile-head"></div>
+      <button class="btn btn--sm" id="profile-edit" style="margin-top:12px">Редактировать профиль</button>
+    </div>
+  </section>
+
+  <!-- Тренеры (владелец/менеджер) -->
+  <section id="coaches-section" hidden style="margin-top:24px">
+    <div class="section-title">Тренеры</div>
+    <div class="card">
+      <div id="coaches-list"></div>
+      <label class="field" style="margin-top:12px">
+        <span class="label">Добавить тренера</span>
+        <input class="input" id="coach-input" placeholder="telegram_id или @username" autocomplete="off">
+      </label>
+      <button class="btn btn--primary btn--block" id="coach-add">Добавить тренера</button>
+      <div class="hint" style="margin-top:8px">Добавить можно только того, кто уже запускал бота (/start). Владельца снять нельзя. Каждый тренер редактирует только свои занятия, а чужие видит в режиме «Клуб».</div>
+    </div>
+  </section>
+
+  <div style="height:84px"></div>
+</div>
+
+<!-- FAB: создать тренировку (только тренер) -->
+<button class="fab" id="fab-add" aria-label="Создать тренировку" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+    <path d="M12 5v14M5 12h14"/>
+  </svg>
+</button>
+
+<!-- Bottom sheet: создание -->
+<div class="sheet" id="create-sheet">
+  <div class="sheet__backdrop" data-close></div>
+  <div class="sheet__panel" role="dialog" aria-modal="true">
+    <div class="sheet__handle"></div>
+    <h2 class="sheet__title">Новая тренировка</h2>
+    <form id="create-form">
+      <div class="row2">
+        <label class="field"><span class="label">Дата</span>
+          <input class="input" name="date" type="date" required></label>
+        <label class="field"><span class="label">Время</span>
+          <input class="input" name="time" type="time" value="19:00" required></label>
+      </div>
+      <label class="field"><span class="label">Тип тренировки</span>
+        <input class="input" name="training_type" type="text" value="Тренировка" maxlength="100" required></label>
+      <label class="field"><span class="label">Уровень игры</span>
+        <select class="input" name="level" id="level-select">
+          <option value="">Не указан</option>
+        </select></label>
+      <div class="row2">
+        <label class="field"><span class="label">Лимит мест</span>
+          <input class="input" name="capacity" type="number" min="1" max="100" value="4" required></label>
+        <label class="field"><span class="label">Длительность, мин</span>
+          <input class="input" name="duration_min" type="number" min="15" max="600" value="60"></label>
+      </div>
+      <div class="card" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <span style="font-size:15px">Напоминание игрокам</span>
+        <label class="switch"><input name="reminder_enabled" type="checkbox" checked><span></span></label>
+      </div>
+      <div class="field">
+        <span class="label">За сколько до старта</span>
+        <div class="hm" style="justify-content:flex-start;gap:14px">
+          <span><input class="input" name="rem_hours" type="number" min="0" max="48" value="4" style="width:74px;min-height:44px;text-align:center;display:inline-block"> ч</span>
+          <span><input class="input" name="rem_minutes" type="number" min="0" max="59" value="30" style="width:74px;min-height:44px;text-align:center;display:inline-block"> мин</span>
+        </div>
+        <div class="chips" id="rem-presets">
+          <button type="button" class="chip" data-preset="60">1 ч</button>
+          <button type="button" class="chip" data-preset="120">2 ч</button>
+          <button type="button" class="chip" data-preset="270">4.5 ч</button>
+          <button type="button" class="chip" data-preset="720">12 ч</button>
+          <button type="button" class="chip" data-preset="1440">24 ч</button>
+        </div>
+      </div>
+      <button type="submit" class="btn btn--primary btn--block" style="margin-top:6px">Создать тренировку</button>
+    </form>
+  </div>
+</div>
+
+<!-- Bottom sheet: профиль -->
+<div class="sheet" id="profile-sheet">
+  <div class="sheet__backdrop" data-pclose></div>
+  <div class="sheet__panel" role="dialog" aria-modal="true">
+    <div class="sheet__handle"></div>
+    <h2 class="sheet__title">Профиль тренера</h2>
+    <label class="field"><span class="label">Кратко о себе</span>
+      <textarea class="input" id="profile-bio" maxlength="300" rows="3"
+                placeholder="Например: тренер с 10-летним опытом, работаю над техникой и подачей"></textarea></label>
+    <div class="hint" style="margin:-4px 0 12px">Игроки увидят это в карточке тренировки и смогут написать вам личное сообщение через бота.</div>
+    <button class="btn btn--primary btn--block" id="save-profile" style="margin-top:6px">Сохранить</button>
+  </div>
+</div>
+
+<!-- Bottom sheet: передача занятия -->
+<div class="sheet" id="transfer-sheet">
+  <div class="sheet__backdrop" data-xclose></div>
+  <div class="sheet__panel" role="dialog" aria-modal="true">
+    <div class="sheet__handle"></div>
+    <h2 class="sheet__title">Передать занятие</h2>
+    <div class="hint" style="margin:-6px 0 12px">Выберите тренера, которому передать это занятие.</div>
+    <div id="transfer-list"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let VIEW = 'active';
+let TRAININGS = [];
+let IS_OWNER = false;
+let IS_MANAGER = false;
+let XFER_TID = null;
+
+// ===== Bottom sheets =====
+const sheet = document.getElementById('create-sheet');
+const profileSheet = document.getElementById('profile-sheet');
+const transferSheet = document.getElementById('transfer-sheet');
+
+function openSheet() {
+  const d = new Date();
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const dateInput = sheet.querySelector('[name="date"]');
+  if (!dateInput.value) dateInput.value = local;
+  sheet.classList.add('is-open');
+  haptic('light');
+  try { tg && tg.BackButton && tg.BackButton.show(); } catch (e) {}
+}
+function closeSheet() {
+  sheet.classList.remove('is-open');
+  try { tg && tg.BackButton && tg.BackButton.hide(); } catch (e) {}
+}
+document.getElementById('fab-add').addEventListener('click', openSheet);
+sheet.querySelector('[data-close]').addEventListener('click', closeSheet);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSheet(); });
+if (tg && tg.BackButton) tg.BackButton.onClick(closeSheet);
+
+document.getElementById('rem-presets').addEventListener('click', ev => {
+  const preset = ev.target.closest('[data-preset]');
+  if (!preset) return;
+  const min = parseInt(preset.dataset.preset, 10);
+  sheet.querySelector('[name="rem_hours"]').value = Math.floor(min / 60);
+  sheet.querySelector('[name="rem_minutes"]').value = min % 60;
+});
+
+// ===== Создание тренировки =====
+async function submitCreate(payload, btn) {
+  try {
+    await api('/api/coach/trainings', 'POST', payload);
+    hapticNotify('success');
+    toast('Тренировка создана');
+    closeSheet();
+    setView('active');
+    return;
+  } catch (e) {
+    if (e.status === 409 && !payload.force) {
+      if (confirm('Такая тренировка уже есть в расписании. Создать всё равно?')) {
+        payload.force = true;
+        return submitCreate(payload, btn);
+      }
+      return;
+    }
+    hapticNotify('error');
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+document.getElementById('create-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const f = ev.target;
+  let offset = (parseInt(f.rem_hours.value, 10) || 0) * 60 + (parseInt(f.rem_minutes.value, 10) || 0);
+  offset = Math.max(0, Math.min(2880, offset));
+  const payload = {
+    date: f.date.value, time: f.time.value, training_type: f.training_type.value,
+    level: f.level.value, capacity: parseInt(f.capacity.value, 10),
+    duration_min: parseInt(f.duration_min.value, 10),
+    reminder_enabled: f.reminder_enabled.checked, reminder_offset_min: offset,
+  };
+  const btn = f.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  await submitCreate(payload, btn);
+});
+
+// ===== Сегменты =====
+document.getElementById('segmented').addEventListener('click', ev => {
+  const btn = ev.target.closest('[data-view]');
+  if (btn) setView(btn.dataset.view);
+});
+function setView(view) {
+  VIEW = view;
+  document.querySelectorAll('#segmented [data-view]').forEach(b =>
+    b.classList.toggle('is-active', b.dataset.view === view));
+  loadView();
+}
+async function loadView() {
+  const list = document.getElementById('list');
+  list.innerHTML = '<div class="skeleton"></div><div class="skeleton"></div>';
+  const url = VIEW === 'active' ? '/api/coach/trainings'
+    : VIEW === 'history' ? '/api/coach/history'
+      : VIEW === 'deleted' ? '/api/coach/deleted'
+        : '/api/coach/club/trainings';
+  try {
+    const data = await api(url);
+    TRAININGS = data.trainings;
+    renderList();
+  } catch (e) {
+    hapticNotify('error');
+    toast(e.message);
+    list.innerHTML = '';
+  }
+}
+function emptyState(text) { return `<div class="empty"><div>${esc(text)}</div></div>`; }
+function renderList() {
+  const list = document.getElementById('list');
+  if (!TRAININGS.length) {
+    list.innerHTML = emptyState(
+      VIEW === 'active' ? 'Предстоящих тренировок нет. Создайте кнопкой «＋».'
+        : VIEW === 'history' ? 'История пуста.'
+          : VIEW === 'deleted' ? 'Корзина пуста.'
+            : 'У других тренеров занятий нет.');
+    return;
+  }
+  const render = VIEW === 'active' ? activeRow
+    : VIEW === 'history' ? historyRow
+      : VIEW === 'deleted' ? deletedRow : clubRow;
+  list.innerHTML = TRAININGS.map(render).join('');
+}
+
+// ---------- Своё занятие ----------
+function reminderEditor(t) {
+  const h = Math.floor(t.reminder_offset_min / 60);
+  const m = t.reminder_offset_min % 60;
+  return `
+  <div class="inline-row" style="margin-top:12px">
+    <span style="font-size:15px">Напоминание</span>
+    <label class="switch"><input type="checkbox" data-remind="${t.id}" ${t.reminder_enabled ? 'checked' : ''}><span></span></label>
+  </div>
+  <div class="inline-row" style="margin-top:10px">
+    <span class="hint">За сколько до старта</span>
+    <div class="hm">
+      <input class="input" style="width:62px;min-height:42px;padding:8px;text-align:center" type="number" min="0" max="48" data-oh="${t.id}" value="${h}"> ч
+      <input class="input" style="width:62px;min-height:42px;padding:8px;text-align:center" type="number" min="0" max="59" data-om="${t.id}" value="${m}"> мин
+    </div>
+  </div>
+  <div class="hint" style="margin-top:6px">Итого: <b data-ototal="${t.id}">${esc(fmtOffset(t.reminder_offset_min))}</b> до старта</div>`;
+}
+
+function iconBtn(attr, label, path, color) {
+  return `<button class="icon-btn" ${attr} aria-label="${label}" ${color ? `style="color:${color}"` : ''}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${path}</svg>
+  </button>`;
+}
+const ICON_CAL = '<rect x="3" y="4.5" width="18" height="16" rx="3.5"/><path d="M8 2.8v3.4M16 2.8v3.4M3.2 9.5h17.6"/>';
+const ICON_XFER = '<path d="M4 12h13M12 7l5 5-5 5"/>';
+const ICON_DEL = '<path d="M4 7h16M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7M6.5 7l.8 11.2A2 2 0 0 0 9.3 20h5.4a2 2 0 0 0 2-1.8L17.5 7"/>';
+
+function activeRow(t) {
+  const pct = t.capacity ? Math.min(100, Math.round((t.booked_count / t.capacity) * 100)) : 0;
+  const wait = t.waitlist_count || 0;
+  return `
+  <div class="card">
+    <div class="t-top">
+      <div class="t-time">${esc(t.time)}</div>
+      <div class="t-info">
+        <div class="t-title">${esc(t.type)}</div>
+        <div class="t-meta">${esc(fmtDay(t.date))} · ${t.duration_min} мин${t.level ? ' · ' + esc(t.level) : ''}</div>
+      </div>
+      <div style="display:flex;gap:2px">
+        ${iconBtn(`data-cal="${t.id}"`, 'В календарь', ICON_CAL, 'var(--link)')}
+        ${iconBtn(`data-del="${t.id}"`, 'Удалить', ICON_DEL)}
+        ${iconBtn(`data-xfer="${t.id}"`, 'Передать', ICON_XFER, 'var(--link)')}
+      </div>
+    </div>
+    <div class="bar"><div class="bar__fill" style="width:${pct}%"></div></div>
+    <div class="inline-row" style="margin-top:6px;font-size:12px;color:var(--hint)">
+      <span>Записано ${t.booked_count} из ${t.capacity}</span>
+      <span>${wait ? 'Очередь: ' + wait : 'Очередь пуста'}</span>
+    </div>
+    ${reminderEditor(t)}
+    <details style="margin-top:12px" data-pid="${t.id}">
+      <summary style="font-size:13px;font-weight:600;color:var(--link);cursor:pointer">Участники</summary>
+      <div data-plist="${t.id}"><div class="hint" style="padding:10px 0">Загрузка…</div></div>
+    </details>
+  </div>`;
+}
+
+function historyRow(t) {
+  return `
+  <div class="card">
+    <div class="t-top">
+      <div class="t-time" style="opacity:.7">${esc(t.time)}</div>
+      <div class="t-info">
+        <div class="t-title">${esc(t.type)}</div>
+        <div class="t-meta">${esc(fmtDay(t.date))} · ${t.duration_min} мин${t.level ? ' · ' + esc(t.level) : ''}</div>
+      </div>
+      <div style="display:flex;gap:2px">
+        ${iconBtn(`data-cal="${t.id}"`, 'В календарь', ICON_CAL, 'var(--link)')}
+        ${iconBtn(`data-del="${t.id}"`, 'В корзину', ICON_DEL)}
+      </div>
+    </div>
+    <div class="inline-row" style="margin-top:8px;font-size:13px;color:var(--hint)">
+      <span>Посещаемость: <b style="color:var(--text)">${t.booked_count}</b> из ${t.capacity}</span>
+      <span class="badge badge--muted">Завершена</span>
+    </div>
+  </div>`;
+}
+
+function deletedRow(t) {
+  return `
+  <div class="card deleted-card">
+    <div class="t-top">
+      <div class="t-time" style="opacity:.6">${esc(t.time)}</div>
+      <div class="t-info">
+        <div class="t-title">${esc(t.type)}</div>
+        <div class="t-meta">${esc(fmtDay(t.date))} · ${t.duration_min} мин</div>
+      </div>
+    </div>
+    <div class="hint" style="margin-top:8px">Было записано: ${t.booked_count}${t.waitlist_count ? ', в очереди: ' + t.waitlist_count : ''}</div>
+    <div class="t-actions" style="margin-top:12px">
+      <button class="btn btn--primary btn--sm" style="flex:1" data-restore="${t.id}">Восстановить</button>
+      <button class="btn btn--danger btn--sm" style="flex:1" data-purge="${t.id}">Удалить навсегда</button>
+    </div>
+  </div>`;
+}
+
+// ---------- Клуб (чужое, только чтение) ----------
+function clubRow(t) {
+  const coach = t.coach ? esc(t.coach.first_name) : 'Тренер';
+  const avatar = t.coach ? avatarHtml(t.coach.first_name, t.coach.avatar_url, true) : '';
+  return `
+  <div class="card">
+    <div class="t-top">
+      <div class="t-time">${esc(t.time)}</div>
+      <div class="t-info">
+        <div class="t-title">${esc(t.type)}</div>
+        <div class="t-meta">${esc(fmtDay(t.date))} · ${t.duration_min} мин${t.level ? ' · ' + esc(t.level) : ''}</div>
+      </div>
+      <div class="t-occ"><b>${t.booked_count}</b><span style="color:var(--hint)">/${t.capacity}</span><span class="lbl">записано</span></div>
+    </div>
+    <div class="t-coach" style="cursor:default">
+      ${avatar}
+      <div class="t-coach__text"><div class="t-coach__name">Тренер · ${coach}</div></div>
+      <span class="badge badge--muted">Только чтение</span>
+    </div>
+    <details style="margin-top:12px" data-pid="${t.id}">
+      <summary style="font-size:13px;font-weight:600;color:var(--link);cursor:pointer">Участники</summary>
+      <div data-plist="${t.id}"><div class="hint" style="padding:10px 0">Загрузка…</div></div>
+    </details>
+  </div>`;
+}
+
+// ===== Участники =====
+async function refreshParticipants(id) {
+  const box = document.querySelector(`[data-plist="${id}"]`);
+  if (!box) return;
+  try {
+    const data = await api(`/api/coach/trainings/${id}/participants`);
+    const own = VIEW === 'active';
+    box.innerHTML = data.participants.length
+      ? data.participants.map(p => participantRow(id, p, own)).join('')
+      : '<div class="hint" style="padding:10px 0">Пока никто не записан</div>';
+  } catch (e) {
+    box.innerHTML = `<div class="hint" style="padding:10px 0">${esc(e.message)}</div>`;
+  }
+}
+function participantRow(tid, p, own) {
+  const badge = p.status === 'booked' ? '<span class="badge badge--success">Записан</span>'
+    : p.status === 'waitlist' ? '<span class="badge badge--warn">Очередь</span>'
+      : '<span class="badge badge--muted">Снят</span>';
+  const action = !own ? ''
+    : p.status === 'cancelled'
+      ? `<button class="btn btn--sm" data-prestore="${p.telegram_id}">Вернуть</button>`
+      : `<button class="btn btn--danger btn--sm" data-premove="${p.telegram_id}">Снять</button>`;
+  return `
+  <div class="p-row" data-ptid="${tid}" data-uid="${p.telegram_id}">
+    ${avatarHtml(p.first_name, p.avatar_url, true)}
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:600;font-size:14px">${esc(p.first_name)}</div>
+      ${badge}
+    </div>
+    ${action}
+  </div>`;
+}
+
+document.getElementById('list').addEventListener('toggle', ev => {
+  if (ev.target.tagName === 'DETAILS' && ev.target.dataset.pid && ev.target.open) {
+    refreshParticipants(ev.target.dataset.pid);
+  }
+}, true);
+
+// ===== Действия по карточкам =====
+document.getElementById('list').addEventListener('click', async (ev) => {
+  const del = ev.target.closest('[data-del]')?.getAttribute('data-del');
+  const restore = ev.target.closest('[data-restore]')?.getAttribute('data-restore');
+  const purge = ev.target.closest('[data-purge]')?.getAttribute('data-purge');
+  const premove = ev.target.closest('[data-premove]')?.getAttribute('data-premove');
+  const prestore = ev.target.closest('[data-prestore]')?.getAttribute('data-prestore');
+  const cal = ev.target.closest('[data-cal]')?.getAttribute('data-cal');
+  const xfer = ev.target.closest('[data-xfer]')?.getAttribute('data-xfer');
+  const row = ev.target.closest('.p-row');
+
+  if (cal) {
+    const t = TRAININGS.find(x => x.id == cal);
+    if (t) openCalendar(t.id, t.type, t.start_at, t.duration_min);
+    return;
+  }
+  if (xfer) { openTransfer(xfer); return; }
+
+  try {
+    if (del) {
+      const t = TRAININGS.find(x => x.id == del);
+      const booked = t ? t.booked_count : 0;
+      if (booked > 0 && !confirm(`Снять тренировку? ${booked} записанных это увидят. Её можно вернуть из корзины.`)) return;
+      haptic('medium');
+      await api(`/api/coach/trainings/${del}`, 'DELETE');
+      hapticNotify('success');
+      toast('Тренировка в корзине', { label: 'Вернуть', onClick: () => restoreTraining(del) });
+      loadView();
+    } else if (restore) {
+      await restoreTraining(restore);
+    } else if (purge) {
+      if (!confirm('Удалить навсегда? Восстановить будет нельзя.')) return;
+      await api(`/api/coach/trainings/${purge}/purge`, 'DELETE');
+      hapticNotify('success');
+      toast('Удалено навсегда');
+      loadView();
+    } else if (premove && row) {
+      const uid = premove, tid = row.dataset.ptid;
+      haptic('medium');
+      await api(`/api/coach/trainings/${tid}/participants/${uid}/cancel`, 'POST');
+      hapticNotify('success');
+      toast('Игрок снят', { label: 'Вернуть', onClick: () => restoreParticipant(tid, uid) });
+      refreshParticipants(tid);
+      loadView();
+    } else if (prestore && row) {
+      await restoreParticipant(row.dataset.ptid, prestore);
+    }
+  } catch (e) {
+    hapticNotify('error');
+    toast(e.message);
+  }
+});
+
+async function restoreTraining(id) {
+  try {
+    await api(`/api/coach/trainings/${id}/restore`, 'POST');
+    hapticNotify('success');
+    toast('Тренировка восстановлена');
+    setView('active');
+  } catch (e) { hapticNotify('error'); toast(e.message); }
+}
+async function restoreParticipant(tid, uid) {
+  try {
+    const r = await api(`/api/coach/trainings/${tid}/participants/${uid}/restore`, 'POST');
+    hapticNotify('success');
+    toast(r.status === 'waitlist' ? 'Мест нет — игрок в очереди' : 'Игрок возвращён');
+    refreshParticipants(tid);
+    loadView();
+  } catch (e) { hapticNotify('error'); toast(e.message); }
+}
+
+// ===== Напоминание =====
+function readReminder(id) {
+  const enabled = document.querySelector(`[data-remind="${id}"]`).checked;
+  const h = parseInt(document.querySelector(`[data-oh="${id}"]`).value || '0', 10);
+  const m = parseInt(document.querySelector(`[data-om="${id}"]`).value || '0', 10);
+  return { enabled, min: Math.max(0, Math.min(2880, h * 60 + m)) };
+}
+function updateTotal(id) {
+  const { min } = readReminder(id);
+  const el = document.querySelector(`[data-ototal="${id}"]`);
+  if (el) el.textContent = fmtOffset(min);
+}
+document.getElementById('list').addEventListener('input', ev => {
+  const id = ev.target.dataset.oh || ev.target.dataset.om;
+  if (id) updateTotal(id);
+});
+document.getElementById('list').addEventListener('change', async ev => {
+  const id = ev.target.dataset.remind || ev.target.dataset.oh || ev.target.dataset.om;
+  if (!id) return;
+  try {
+    const { enabled, min } = readReminder(id);
+    await api(`/api/coach/trainings/${id}/reminder`, 'PATCH', { enabled, offset_min: min });
+    haptic('light');
+    updateTotal(id);
+    toast('Напоминание: ' + fmtOffset(min));
+  } catch (e) { hapticNotify('error'); toast(e.message); loadView(); }
+});
+
+// ===== Передача занятия =====
+async function openTransfer(id) {
+  XFER_TID = id;
+  const box = document.getElementById('transfer-list');
+  box.innerHTML = '<div class="hint" style="padding:8px 0">Загрузка…</div>';
+  transferSheet.classList.add('is-open');
+  try {
+    const data = await api('/api/coach/coaches');
+    const me = APP.me ? APP.me.telegram_id : null;
+    const list = data.coaches.filter(c => c.telegram_id !== me);
+    box.innerHTML = list.length ? list.map(c => `
+      <div class="p-row" data-xrow="${c.telegram_id}">
+        ${avatarHtml(c.first_name, c.avatar_url, true)}
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:14px">${esc(c.first_name)}${c.is_owner ? ' <span class="badge badge--muted">владелец</span>' : ''}</div>
+          <div class="hint">id: ${c.telegram_id}</div>
+        </div>
+        <button class="btn btn--primary btn--sm" data-xto="${c.telegram_id}">Передать</button>
+      </div>`).join('') : '<div class="hint">Других тренеров нет.</div>';
+  } catch (e) { box.innerHTML = `<div class="hint">${esc(e.message)}</div>`; }
+}
+document.querySelector('[data-xclose]').addEventListener('click', () => transferSheet.classList.remove('is-open'));
+document.getElementById('transfer-list').addEventListener('click', async (ev) => {
+  const to = ev.target.closest('[data-xto]')?.getAttribute('data-xto');
+  if (!to || !XFER_TID) return;
+  try {
+    await api(`/api/coach/trainings/${XFER_TID}/transfer`, 'POST', { telegram_id: parseInt(to, 10) });
+    hapticNotify('success');
+    toast('Занятие передано');
+    transferSheet.classList.remove('is-open');
+    loadView();
+  } catch (e) { hapticNotify('error'); toast(e.message); }
+});
+
+// ===== Заявка в тренеры =====
+async function loadApplyStatus() {
+  try {
+    const data = await api('/api/coach/apply');
+    const box = document.getElementById('apply-status');
+    const app = data.application;
+    if (!app) box.textContent = 'Заполните заявку — её рассмотрит владелец клуба.';
+    else if (app.status === 'pending') box.innerHTML = '⏳ Заявка отправлена и ожидает подтверждения.';
+    else if (app.status === 'rejected') box.innerHTML = '❌ Прошлая заявка отклонена. Можно отправить снова.';
+    else box.innerHTML = '✅ Одобрено.';
+  } catch (e) { /* ignore */ }
+}
+document.getElementById('apply-send').addEventListener('click', async () => {
+  const text = document.getElementById('apply-text').value.trim();
+  if (!text) { toast('Опишите себя в заявке'); return; }
+  try {
+    await api('/api/coach/apply', 'POST', { message: text });
+    hapticNotify('success');
+    toast('Заявка отправлена');
+    loadApplyStatus();
+  } catch (e) { hapticNotify('error'); toast(e.message); }
+});
+
+// ===== Уровни игры =====
+async function loadLevels() {
+  try {
+    const data = await api('/api/levels');
+    const sel = document.getElementById('level-select');
+    sel.innerHTML = '<option value="">Не указан</option>' +
+      data.levels.map(l => `<option value="${esc(l)}">${esc(l)}</option>`).join('');
+  } catch (e) { /* не критично */ }
+}
+
+// ===== Профиль тренера =====
+let PROFILE = { bio: '' };
+function renderProfileCard(p) {
+  document.getElementById('profile-head').innerHTML = `
+    ${avatarHtml(p.first_name, p.avatar_url, true)}
+    <div style="flex:1;min-width:0">
+      <div class="coach-name">${esc(p.first_name)}</div>
+      <div class="coach-bio">${esc(p.bio || 'Описание пока не заполнено')}</div>
+    </div>`;
+}
+async function loadProfile() {
+  try {
+    const data = await api('/api/coach/profile');
+    PROFILE = data.profile || { bio: '' };
+    renderProfileCard(PROFILE);
+  } catch (e) { toast(e.message); }
+}
+document.getElementById('profile-edit').addEventListener('click', () => {
+  document.getElementById('profile-bio').value = PROFILE.bio || '';
+  profileSheet.classList.add('is-open');
+  haptic('light');
+});
+document.querySelector('[data-pclose]').addEventListener('click', () => profileSheet.classList.remove('is-open'));
+document.getElementById('save-profile').addEventListener('click', async () => {
+  try {
+    const data = await api('/api/coach/profile', 'PUT', { bio: document.getElementById('profile-bio').value.trim() });
+    PROFILE = data.profile;
+    renderProfileCard(PROFILE);
+    hapticNotify('success');
+    toast('Профиль сохранён');
+    profileSheet.classList.remove('is-open');
+  } catch (e) { hapticNotify('error'); toast(e.message); }
+});
+
+// ===== CRM =====
+function playerRow(p) {
+  const notif = p.notifications_enabled ? 'вкл' : 'выкл';
+  return `
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:12px">
+      ${avatarHtml(p.first_name, p.avatar_url)}
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600">${esc(p.first_name || 'Игрок')}</div>
+        <div style="font-size:12px;color:var(--hint)">${p.username ? '@' + esc(p.username) : 'без username'} · уведомления: ${notif}</div>
+      </div>
+    </div>
+    <details style="margin-top:12px">
+      <summary style="font-size:13px;font-weight:600;color:var(--link);cursor:pointer">Заметки тренера</summary>
+      <textarea class="input" data-notes="${p.telegram_id}" rows="2" style="margin-top:8px">${esc(p.notes)}</textarea>
+      <button class="btn btn--primary btn--sm" data-save="${p.telegram_id}" style="margin-top:8px">Сохранить</button>
+    </details>
+  </div>`;
+}
+async function loadPlayers() {
+  try {
+    const data = await api('/api/coach/players');
+    document.getElementById('players').innerHTML = data.players.length
+      ? data.players.map(playerRow).join('')
+      : '<div class="empty"><div>Игроков пока нет.</div></div>';
+  } catch (e) { toast(e.message); }
+}
+document.getElementById('players').addEventListener('click', async (ev) => {
+  const id = ev.target.closest('[data-save]')?.getAttribute('data-save');
+  if (!id) return;
+  const notes = document.querySelector(`[data-notes="${id}"]`).value;
+  try {
+    await api(`/api/coach/players/${id}/notes`, 'PUT', { notes });
+    hapticNotify('success');
+    toast('Заметка сохранена');
+  } catch (e) { hapticNotify('error'); toast(e.message); }
+});
+
+// ===== Заявки (владелец/менеджер) =====
+async function loadApplications() {
+  if (!IS_MANAGER) return;
+  try {
+    const data = await api('/api/coach/applications');
+    const box = document.getElementById('applications-list');
+    box.innerHTML = data.applications.length ? data.applications.map(a => `
+      <div class="p-row" data-atid="${a.telegram_id}">
+        ${avatarHtml(a.first_name, a.avatar_url, true)}
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:14px">${esc(a.first_name)}</div>
+          <div class="hint">${a.username ? '@' + esc(a.username) + ' · ' : ''}id: ${a.telegram_id}</div>
+          ${a.message ? `<div class="hint" style="margin-top:4px">${esc(a.message)}</div>` : ''}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <button class="btn btn--primary btn--sm" data-approve="${a.telegram_id}">Одобрить</button>
+          <button class="btn btn--danger btn--sm" data-reject="${a.telegram_id}">Отклонить</button>
+        </div>
+      </div>`).join('') : '<div class="hint" style="padding:6px 0">Новых заявок нет.</div>';
+  } catch (e) { toast(e.message); }
+}
+document.getElementById('applications-list').addEventListener('click', async (ev) => {
+  const ok = ev.target.closest('[data-approve]')?.getAttribute('data-approve');
+  const no = ev.target.closest('[data-reject]')?.getAttribute('data-reject');
+  if (!ok && !no) return;
+  const id = ok || no;
+  try {
+    await api(`/api/coach/applications/${id}/${ok ? 'approve' : 'reject'}`, 'POST');
+    hapticNotify('success');
+    toast(ok ? 'Тренер одобрен' : 'Заявка отклонена');
+    loadApplications();
+    if (ok) loadCoaches();
+  } catch (e) { hapticNotify('error'); toast(e.message); }
+});
+
+// ===== Реестр тренеров (владелец/менеджер) =====
+function coachRow(c) {
+  const owner = c.is_owner ? ' <span class="badge badge--muted">владелец</span>' : '';
+  const mgr = c.is_manager && !c.is_owner ? ' <span class="badge badge--level">менеджер</span>' : '';
+  const mgrToggle = (IS_OWNER && !c.is_owner)
+    ? `<label class="switch" style="transform:scale(.8);transform-origin:right center">
+         <input type="checkbox" data-mgr="${c.telegram_id}" ${c.is_manager ? 'checked' : ''}><span></span></label>`
+    : '';
+  const remove = c.is_owner ? ''
+    : `<button class="btn btn--danger btn--sm" data-cremove="${c.telegram_id}">Снять</button>`;
+  return `
+  <div class="p-row">
+    ${avatarHtml(c.first_name, c.avatar_url, true)}
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:600;font-size:14px">${esc(c.first_name)}${owner}${mgr}</div>
+      <div class="hint">${c.username ? '@' + esc(c.username) + ' · ' : ''}id: ${c.telegram_id}</div>
+    </div>
+    ${mgrToggle}${remove}
+  </div>`;
+}
+async function loadCoaches() {
+  if (!IS_MANAGER) return;
+  try {
+    const data = await api('/api/coach/coaches');
+    document.getElementById('coaches-list').innerHTML = data.coaches.map(coachRow).join('');
+  } catch (e) { toast(e.message); }
+}
+document.getElementById('coach-add').addEventListener('click', async () => {
+  const raw = document.getElementById('coach-input').value.trim();
+  if (!raw) { toast('Укажите telegram_id или @username'); return; }
+  const payload = /^\d+$/.test(raw) ? { telegram_id: parseInt(raw, 10) } : { username: raw.replace(/^@/, '') };
+  try {
+    const r = await api('/api/coach/coaches', 'POST', payload);
+    hapticNotify('success');
+    toast(r.created ? 'Тренер добавлен' : 'Уже является тренером');
+    document.getElementById('coach-input').value = '';
+    loadCoaches();
+  } catch (e) { hapticNotify('error'); toast(e.message); }
+});
+document.getElementById('coaches-list').addEventListener('click', async (ev) => {
+  const id = ev.target.closest('[data-cremove]')?.getAttribute('data-cremove');
+  if (!id) return;
+  if (!confirm('Снять роль тренера у этого пользователя?')) return;
+  try {
+    await api(`/api/coach/coaches/${id}`, 'DELETE');
+    hapticNotify('success');
+    toast('Роль снята');
+    loadCoaches();
+  } catch (e) { hapticNotify('error'); toast(e.message); }
+});
+document.getElementById('coaches-list').addEventListener('change', async (ev) => {
+  const id = ev.target.getAttribute('data-mgr');
+  if (!id) return;
+  try {
+    await api(`/api/coach/coaches/${id}/manager`, 'PATCH', { enabled: ev.target.checked });
+    haptic('light');
+    toast(ev.target.checked ? 'Права менеджера выданы' : 'Права менеджера сняты');
+  } catch (e) { hapticNotify('error'); toast(e.message); loadCoaches(); }
+});
+
+// ===== Инициализация по роли =====
+(async () => {
+  await APP.ready;
+  const me = APP.me;
+  if (!me) return;
+  IS_OWNER = !!me.is_owner;
+  IS_MANAGER = !!me.is_manager;
+
+  if (me.is_coach) {
+    document.getElementById('coach-content').hidden = false;
+    document.getElementById('fab-add').hidden = false;
+    if (IS_MANAGER) {
+      document.getElementById('applications-section').hidden = false;
+      document.getElementById('coaches-section').hidden = false;
+      loadApplications();
+      loadCoaches();
+    }
+    loadLevels();
+    loadProfile();
+    loadView();
+    loadPlayers();
+  } else {
+    document.getElementById('apply-section').hidden = false;
+    loadApplyStatus();
+  }
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+{% block header %}Расписание{% endblock %}
+
+{% block content %}
+<!-- Профиль игрока + тумблер уведомлений -->
+<section class="card" id="profile" style="display:flex;align-items:center;gap:12px;margin-bottom:18px">
+  <span class="avatar" id="me-avatar">…</span>
+  <div style="flex:1;min-width:0">
+    <div style="font-weight:600" id="me-name">Игрок</div>
+    <div style="font-size:13px;color:var(--hint)">Push-уведомления о тренировках</div>
+  </div>
+  <label class="switch">
+    <input id="notif-toggle" type="checkbox" disabled>
+    <span></span>
+  </label>
+</section>
+
+<div id="loading">
+  <div class="skeleton"></div>
+  <div class="skeleton"></div>
+  <div class="skeleton"></div>
+</div>
+
+<div id="empty" class="empty" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="4.5" width="18" height="16" rx="3.5"/><path d="M8 2.8v3.4M16 2.8v3.4M3.2 9.5h17.6"/>
+  </svg>
+  <div>На ближайшие 7 дней тренировок нет</div>
+</div>
+
+<div id="schedule"></div>
+
+<!-- Bottom sheet: личное сообщение тренеру -->
+<div class="sheet" id="msg-sheet">
+  <div class="sheet__backdrop" data-msg-close></div>
+  <div class="sheet__panel" role="dialog" aria-modal="true">
+    <div class="sheet__handle"></div>
+    <h2 class="sheet__title">Сообщение тренеру</h2>
+    <div class="hint" style="margin:-6px 0 12px">Уйдёт тренеру в чат с ботом — ответ придёт вам сюда же.</div>
+    <textarea class="input" id="msg-text" rows="4" maxlength="1000"
+              placeholder="Например: не смогу прийти в субботу, можно перенести?"></textarea>
+    <button class="btn btn--primary btn--block" id="msg-send" style="margin-top:12px">Отправить</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const ITEMS = {};
+
+function participantsLine(list) {
+  if (!list.length) return '<span class="t-names">Пока никто не записан</span>';
+  const stack = '<div class="avatar-stack">' +
+    list.slice(0, 5).map(p => avatarHtml(p.first_name, p.avatar_url, true)).join('') + '</div>';
+  const names = list.map(p => esc(p.first_name)).join(', ');
+  return stack + `<span class="t-names">${names}</span>`;
+}
+
+function coachHtml(c, trainingId) {
+  if (!c) return '';
+  const bio = c.bio
+    ? `<div class="t-coach__bio">${esc(c.bio)}</div>`
+    : '<div class="t-coach__bio">Нажмите, чтобы написать тренеру</div>';
+  return `
+  <div class="t-coach" data-coach-msg="${trainingId}" role="button" tabindex="0" aria-label="Написать тренеру">
+    ${avatarHtml(c.first_name, c.avatar_url, true)}
+    <div class="t-coach__text">
+      <div class="t-coach__name">Тренер · ${esc(c.first_name)}</div>
+      ${bio}
+    </div>
+    <span class="t-coach__action">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4L3 21l1.1-3.3A8.4 8.4 0 1 1 21 11.5Z"/>
+      </svg>
+      Написать
+    </span>
+  </div>`;
+}
+
+function trainingCard(t) {
+  const free = Math.max(0, t.capacity - t.booked_count);
+
+  let badges = '';
+  if (t.is_booked) badges += '<span class="badge badge--success">Вы записаны</span>';
+  if (t.is_waitlisted) badges += '<span class="badge badge--warn">Лист ожидания</span>';
+  if (t.waitlist_count) badges += `<span class="badge badge--muted">В очереди: ${t.waitlist_count}</span>`;
+  if (t.is_past) badges += '<span class="badge badge--muted">Завершена</span>';
+  if (!t.is_past && !t.can_self_cancel && (t.is_booked || t.is_waitlisted)) {
+    badges += `<span class="badge badge--warn">Отмена недоступна — до старта ${esc(fmtDuration(t.seconds_left))}</span>`;
+  }
+
+  // Действия: основная кнопка + «Добавить в календарь» — обе на всю ширину,
+  // одна под другой, поэтому иконка календаря не «плавает» отдельно.
+  let buttons = '';
+  if (!t.is_past && !t.is_booked && !t.is_waitlisted) {
+    const label = free > 0 ? 'Записаться' : 'В лист ожидания';
+    buttons += `<button class="btn btn--primary btn--block" data-book="${t.id}">${label}</button>`;
+  } else if (!t.is_past && t.can_self_cancel && (t.is_booked || t.is_waitlisted)) {
+    buttons += `<button class="btn btn--danger btn--block" data-cancel="${t.id}">Отменить запись</button>`;
+  }
+  if (!t.is_past) {
+    buttons += `<button class="btn btn--block" data-cal="${t.id}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="4.5" width="18" height="16" rx="3.5"/>
+        <path d="M8 2.8v3.4M16 2.8v3.4M3.2 9.5h17.6M12 12.7v5M9.5 15.2h5"/>
+      </svg>
+      Добавить в календарь
+    </button>`;
+  }
+  const action = buttons ? `<div class="t-actions-col">${buttons}</div>` : '';
+
+  return `
+  <div class="card">
+    <div class="t-top">
+      <div class="t-time">${esc(t.time)}</div>
+      <div class="t-info">
+        <div class="t-title">${esc(t.type)}</div>
+        <div class="t-meta">${t.duration_min} мин${t.level ? ' · ' + esc(t.level) : ''}</div>
+      </div>
+      <div class="t-occ">
+        <b>${free}</b><span style="color:var(--hint)">/${t.capacity}</span>
+        <span class="lbl">свободно</span>
+      </div>
+    </div>
+    ${badges ? `<div class="t-badges">${badges}</div>` : ''}
+    <div class="t-people">${participantsLine(t.participants)}</div>
+    ${coachHtml(t.coach, t.id)}
+    ${action}
+  </div>`;
+}
+
+function renderSchedule(trainings) {
+  const loading = document.getElementById('loading');
+  loading.hidden = true;
+
+  if (!trainings.length) {
+    document.getElementById('empty').hidden = false;
+    return;
+  }
+  const groups = {};
+  trainings.forEach(t => { ITEMS[t.id] = t; (groups[t.date] = groups[t.date] || []).push(t); });
+
+  document.getElementById('schedule').innerHTML = Object.keys(groups).sort().map(date => `
+    <section class="day">
+      <div class="day-label"><span>${esc(fmtDay(date))}</span></div>
+      ${groups[date].map(trainingCard).join('')}
+    </section>`).join('');
+}
+
+async function loadSchedule() {
+  try {
+    const data = await api('/api/trainings?days=7');
+    renderSchedule(data.trainings);
+  } catch (e) {
+    document.getElementById('loading').hidden = true;
+    toast(e.message);
+  }
+}
+
+async function loadProfile() {
+  await APP.ready;
+  if (!APP.me) return;
+  document.getElementById('me-name').textContent = APP.me.first_name || 'Игрок';
+  document.getElementById('me-avatar').outerHTML = avatarHtml(APP.me.first_name, APP.me.avatar_url);
+  const toggle = document.getElementById('notif-toggle');
+  toggle.checked = !!APP.me.notifications_enabled;
+  toggle.disabled = false;
+}
+
+document.getElementById('notif-toggle').addEventListener('change', async (ev) => {
+  const target = ev.target;
+  try {
+    await api('/api/me/notifications', 'PUT', { enabled: target.checked });
+    hapticNotify('success');
+    toast('Настройки сохранены');
+  } catch (e) {
+    target.checked = !target.checked;
+    hapticNotify('error');
+    toast(e.message);
+  }
+});
+
+document.getElementById('schedule').addEventListener('click', async (ev) => {
+  const bookId = ev.target.closest('[data-book]')?.getAttribute('data-book');
+  const cancelId = ev.target.closest('[data-cancel]')?.getAttribute('data-cancel');
+  const calId = ev.target.closest('[data-cal]')?.getAttribute('data-cal');
+  const linkUrl = ev.target.closest('[data-link-url]')?.getAttribute('data-link-url');
+  if (linkUrl) { openExternal(linkUrl); return; }
+  const coachMsg = ev.target.closest('[data-coach-msg]');
+  if (coachMsg) { openMsg(parseInt(coachMsg.getAttribute('data-coach-msg'), 10)); return; }
+  if (calId) {
+    const t = ITEMS[calId];
+    if (t) openCalendar(t.id, t.type, t.start_at, t.duration_min);
+    return;
+  }
+  if (!bookId && !cancelId) return;
+  haptic('medium');
+  try {
+    if (bookId) {
+      const r = await api(`/api/trainings/${bookId}/book`, 'POST');
+      hapticNotify('success');
+      toast(r.message || 'Готово');
+    } else {
+      const r = await api(`/api/trainings/${cancelId}/cancel`, 'POST');
+      hapticNotify('success');
+      toast(r.promoted ? 'Отменено. Следующий из очереди повышен.' : 'Запись отменена');
+    }
+    await loadSchedule();
+  } catch (e) {
+    hapticNotify('error');
+    toast(e.message);
+  }
+});
+
+// ===== Личное сообщение тренеру =====
+const msgSheet = document.getElementById('msg-sheet');
+let MSG_TRAINING = null;
+function openMsg(trainingId) {
+  MSG_TRAINING = trainingId || null;
+  msgSheet.classList.add('is-open');
+  haptic('light');
+  setTimeout(() => document.getElementById('msg-text').focus(), 150);
+}
+function closeMsg() { msgSheet.classList.remove('is-open'); }
+document.querySelector('[data-msg-close]').addEventListener('click', closeMsg);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMsg(); });
+document.getElementById('msg-send').addEventListener('click', async () => {
+  const ta = document.getElementById('msg-text');
+  const text = ta.value.trim();
+  if (!text) { toast('Введите сообщение'); return; }
+  const btn = document.getElementById('msg-send');
+  btn.disabled = true;
+  try {
+    await api('/api/messages/coach', 'POST', { text, training_id: MSG_TRAINING });
+    hapticNotify('success');
+    toast('Сообщение отправлено тренеру');
+    ta.value = '';
+    closeMsg();
+  } catch (e) {
+    hapticNotify('error');
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+loadProfile();
+loadSchedule();
+</script>
+{% endblock %}
