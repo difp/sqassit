@@ -30,17 +30,25 @@ from .config import settings
 
 logger = logging.getLogger(__name__)
 
-router = Router()
-
-# Тренер, ожидающий ответа игроку: {coach_id: player_id}
-_pending_reply: dict[int, int] = {}
+# Тренер, ожидающий ответа игроку: {coach_id: (player_id, expires_at)}
+_pending_reply: dict[int, tuple[int, float]] = {}
+_PENDING_REPLY_TTL_SECONDS = 10 * 60
 
 
 class PendingReplyFilter(BaseFilter):
     """Пропускает только сообщения тренера, который сейчас пишет ответ игроку."""
 
     async def __call__(self, message: Message) -> bool:
-        return message.from_user is not None and message.from_user.id in _pending_reply
+        if message.from_user is None:
+            return False
+        entry = _pending_reply.get(message.from_user.id)
+        if entry is None:
+            return False
+        _, expires_at = entry
+        if expires_at < time.time():
+            _pending_reply.pop(message.from_user.id, None)
+            return False
+        return True
 
 
 def _web_app_url() -> str:
@@ -61,7 +69,6 @@ async def _cache_avatar(bot: Bot, user_id: int) -> None:
         logger.warning("Не удалось получить аватарку для %s", user_id, exc_info=True)
 
 
-@router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     """CRM: при первом старте создаём карточку игрока и открываем Web App."""
     try:
@@ -83,7 +90,7 @@ async def cmd_start(message: Message) -> None:
             ]
         )
         await message.answer(
-            f"Привет, {user.first_name}!\n\n"
+            f"Привет, {html.escape(user.first_name or 'друг')}!\n\n"
             "Здесь можно записаться на сквош-тренировки: смотри расписание на 7 дней, "
             "записывайся в один тап и следи за свободными местами.\n\n"
             "Нажми кнопку ниже, чтобы открыть приложение.",
@@ -94,7 +101,6 @@ async def cmd_start(message: Message) -> None:
         logger.exception("Ошибка в обработчике /start")
 
 
-@router.message(Command("reply"))
 async def cmd_reply(message: Message) -> None:
     """Ответ тренера игроку: /reply <telegram_id> <текст> (только для тренера)."""
     try:
@@ -117,7 +123,6 @@ async def cmd_reply(message: Message) -> None:
             await message.answer("Не удалось отправить: игрок ещё не начинал чат с ботом.")
 
 
-@router.callback_query(F.data.startswith("reply:"))
 async def cb_reply(callback: CallbackQuery) -> None:
     """Кнопка «Ответить» под сообщением игрока: тренер пишет ответ следующим сообщением."""
     try:
@@ -129,7 +134,10 @@ async def cb_reply(callback: CallbackQuery) -> None:
             await callback.answer("Недоступно", show_alert=True)
             return
         target = int(callback.data.split(":", 1)[1])
-        _pending_reply[callback.from_user.id] = target
+        _pending_reply[callback.from_user.id] = (
+            target,
+            time.time() + _PENDING_REPLY_TTL_SECONDS,
+        )
         await callback.answer()
         await callback.message.answer(
             "✍️ Напишите ответ игроку и отправьте одним сообщением.\nОтмена: /cancel"
@@ -138,13 +146,16 @@ async def cb_reply(callback: CallbackQuery) -> None:
         logger.exception("Ошибка обработки кнопки ответа")
 
 
-@router.message(F.text, PendingReplyFilter())
 async def coach_reply_text(message: Message) -> None:
     """Текст тренера в режиме ответа — доставляем игроку."""
     try:
         user = message.from_user
-        target = _pending_reply.pop(user.id, None) if user else None
-        if target is None:
+        entry = _pending_reply.pop(user.id, None) if user else None
+        if entry is None:
+            return
+        target, expires_at = entry
+        if expires_at < time.time():
+            await message.answer("Время ответа истекло. Нажмите «Ответить» ещё раз.")
             return
         text = (message.text or "").strip()
         if text == "/cancel":
@@ -160,7 +171,6 @@ async def coach_reply_text(message: Message) -> None:
             await message.answer("Не удалось отправить: игрок ещё не начинал чат с ботом.")
 
 
-@router.message(Command("inbox"))
 async def cmd_inbox(message: Message) -> None:
     """Тренер: последние личные сообщения от игроков."""
     try:
@@ -181,12 +191,14 @@ async def cmd_inbox(message: Message) -> None:
                 f"{html.escape(r['text'])}\n"
                 f"↩ <code>/reply {r['from_user']} текст</code>"
             )
-        await message.answer("📥 <b>Последние сообщения</b>\n\n" + "\n\n".join(blocks))
+        for chunk in _chunk_telegram_messages(
+            blocks, header="📥 <b>Последние сообщения</b>"
+        ):
+            await message.answer(chunk)
     except Exception:
         logger.exception("Ошибка чтения входящих")
 
 
-@router.callback_query(F.data.startswith("apply:"))
 async def cb_apply(callback: CallbackQuery) -> None:
     """Одобрение/отклонение заявки в тренеры (владелец или менеджер)."""
     try:
@@ -200,6 +212,11 @@ async def cb_apply(callback: CallbackQuery) -> None:
             return
         _, action, applicant_raw = parts
         applicant = int(applicant_raw)
+
+        application = await db.get_application(applicant)
+        if application is None or application["status"] != "pending":
+            await callback.answer("Заявка уже рассмотрена", show_alert=True)
+            return
 
         if action == "ok":
             await db.add_coach(applicant, uid)
@@ -222,7 +239,6 @@ async def cb_apply(callback: CallbackQuery) -> None:
         logger.exception("Ошибка обработки заявки")
 
 
-@router.message(F.text)
 async def fallback(message: Message) -> None:
     """Любой текст — мягко направляем в Web App."""
     try:
@@ -243,26 +259,81 @@ def create_bot() -> Bot:
 
 
 def create_dispatcher() -> Dispatcher:
+    """
+    Собирает роутер заново для каждого жизненного цикла приложения.
+
+    aiogram запрещает подключать один и тот же Router к нескольким Dispatcher,
+    а тесты (и потенциальный перезапуск) создают приложение несколько раз.
+    """
     dp = Dispatcher()
+    router = Router()
+
+    # Порядок важен: команды/кнопки должны проверяться раньше fallback.
+    router.message.register(cmd_start, CommandStart())
+    router.message.register(cmd_reply, Command("reply"))
+    router.callback_query.register(cb_reply, F.data.startswith("reply:"))
+    router.message.register(coach_reply_text, F.text, PendingReplyFilter())
+    router.message.register(cmd_inbox, Command("inbox"))
+    router.callback_query.register(cb_apply, F.data.startswith("apply:"))
+    router.message.register(fallback, F.text)
+
     dp.include_router(router)
     return dp
 
 
-async def send_training_reminder(bot: Bot, training) -> None:
-    """Рассылает напоминание игрокам и тренеру по конкретной тренировке."""
+def format_training_reminder(training) -> str:
+    """Формирует текст напоминания; все пользовательские строки экранируются."""
     start_local = datetime.fromtimestamp(training["start_at"], tz=settings.timezone)
-    text = (
+    summary = html.escape(training["training_type"] or "Сквош-тренировка")
+    return (
         "⏰ <b>Напоминание о тренировке</b>\n\n"
-        f"🏸 {training['training_type']}\n"
+        f"🏸 {summary}\n"
         f"📅 {start_local.strftime('%d.%m.%Y в %H:%M')}\n"
         f"Всего мест: {training['capacity']}"
     )
+
+
+_TELEGRAM_TEXT_LIMIT = 4000
+
+
+def _chunk_telegram_messages(
+    blocks: list[str],
+    *,
+    header: str = "",
+    limit: int = _TELEGRAM_TEXT_LIMIT,
+) -> list[str]:
+    """Склеивает блоки в сообщения, не превышающие лимит Telegram."""
+    chunks: list[str] = []
+    current = header
+    for block in blocks:
+        candidate = f"{current}\n\n{block}" if current else block
+        if current and len(candidate) > limit:
+            chunks.append(current)
+            current = block
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+async def send_training_reminder(bot: Bot, training) -> tuple[int, int]:
+    """
+    Рассылает напоминание записавшимся игрокам.
+
+    Возвращает (доставлено, всего получателей), чтобы планировщик не помечал
+    напоминание отправленным, если Telegram полностью недоступен.
+    """
+    text = format_training_reminder(training)
     recipients = await db.notification_targets(training["id"])
+    delivered = 0
     for row in recipients:
         try:
             await bot.send_message(row["telegram_id"], text)
+            delivered += 1
         except Exception:
             logger.warning("Не доставлено напоминание %s", row["telegram_id"], exc_info=True)
+    return delivered, len(recipients)
 
 
 async def reminder_loop(bot: Bot, interval_seconds: int = 60) -> None:
@@ -275,8 +346,11 @@ async def reminder_loop(bot: Bot, interval_seconds: int = 60) -> None:
             now = int(time.time())
             due = await db.trainings_due_for_reminder(now)
             for training in due:
-                await send_training_reminder(bot, training)
-                await db.mark_reminder_sent(training["id"])
+                delivered, total = await send_training_reminder(bot, training)
+                # Если получателей нет — помечаем, чтобы не проверять вечно.
+                # Если не доставлено ни одного — повторим на следующем тике.
+                if total == 0 or delivered > 0:
+                    await db.mark_reminder_sent(training["id"])
         except asyncio.CancelledError:
             logger.info("Планировщик напоминаний остановлен.")
             raise

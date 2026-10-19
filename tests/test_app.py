@@ -9,6 +9,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from pathlib import Path
 from urllib.parse import urlencode
 
 import pytest
@@ -55,8 +56,16 @@ PLAYER2 = {"X-Init-Data": _init({"id": 556, "first_name": "Мария"})}
 APPLICANT = {"X-Init-Data": _init({"id": 888, "first_name": "Заявитель"})}
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture()
 def client():
+    # Каждый тест получает чистую БД и чистые in-memory-состояния.
+    for suffix in ("", "-wal", "-shm"):
+        Path(f"{settings.db_path}{suffix}").unlink(missing_ok=True)
+    mainmod._bot_check_cache = (0.0, False)
+    mainmod._message_limiter.clear()
+    mainmod._apply_limiter.clear()
+    mainmod._booking_limiter.clear()
+
     with TestClient(mainmod.app) as c:
         # Заглушка отправки в Telegram: тесты не ходят в сеть.
         async def _noop_send(*args, **kwargs):
@@ -126,6 +135,9 @@ def test_multi_coach_isolation(client):
 
 
 def test_message_routes_to_training_coach(client):
+    assert client.post(
+        "/api/coach/coaches", headers=COACH, json={"telegram_id": 777}
+    ).json()["ok"]
     tid = client.post("/api/coach/trainings", headers=COACH2, json={
         **_future(7, "11:00"), "training_type": "Сообщение", "capacity": 2}).json()["id"]
     captured = {}
@@ -241,6 +253,11 @@ def test_apply_and_approve_flow(client):
 
 
 def test_manager_rights_owner_only(client):
+    # оба тренера должны существовать в чистой БД
+    for tg_id in (777, 888):
+        assert client.post(
+            "/api/coach/coaches", headers=COACH, json={"telegram_id": tg_id}
+        ).json()["ok"]
     # выдать права менеджера может только владелец
     assert client.patch("/api/coach/coaches/777/manager", headers=COACH,
                         json={"enabled": True}).json()["ok"]
@@ -252,6 +269,9 @@ def test_manager_rights_owner_only(client):
 
 
 def test_club_readonly_and_transfer(client):
+    assert client.post(
+        "/api/coach/coaches", headers=COACH, json={"telegram_id": 777}
+    ).json()["ok"]
     # занятие владельца
     t = client.post("/api/coach/trainings", headers=COACH, json={
         **_future(10, "18:00"), "training_type": "Владельца", "capacity": 2}).json()["id"]
@@ -409,3 +429,229 @@ def test_calendar_dev_query_disabled_when_flag_false(client, monkeypatch):
     assert client.get(
         f"/calendar/{tid}.ics", params={"token": card["ics_token"]}
     ).status_code == 200
+
+
+def _create_training(client, *, day: int, time_str: str, **extra) -> int:
+    body = {
+        **_future(day, time_str),
+        "training_type": f"Тест-{day}-{time_str}",
+        "capacity": 2,
+        **extra,
+    }
+    response = client.post("/api/coach/trainings", headers=COACH, json=body)
+    assert response.status_code == 200, response.text
+    return response.json()["id"]
+
+
+def test_coach_api_includes_waitlist_count(client):
+    tid = _create_training(client, day=15, time_str="10:00", capacity=1)
+    client.post(f"/api/trainings/{tid}/book", headers=PLAYER)
+    client.post(f"/api/trainings/{tid}/book", headers=PLAYER2)
+
+    row = next(
+        t for t in client.get("/api/coach/trainings", headers=COACH).json()["trainings"]
+        if t["id"] == tid
+    )
+    assert row["waitlist_count"] == 1
+
+
+def test_deleted_training_rejects_mutations(client):
+    tid = _create_training(client, day=16, time_str="11:00", capacity=2)
+    client.post(f"/api/trainings/{tid}/book", headers=PLAYER)
+    assert client.delete(f"/api/coach/trainings/{tid}", headers=COACH).status_code == 200
+
+    assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER2).status_code == 404
+    assert client.post(f"/api/trainings/{tid}/cancel", headers=PLAYER).status_code == 404
+    assert client.patch(
+        f"/api/coach/trainings/{tid}/reminder",
+        headers=COACH,
+        json={"enabled": True, "offset_min": 270},
+    ).status_code == 404
+    assert client.post(
+        f"/api/coach/trainings/{tid}/transfer",
+        headers=COACH,
+        json={"telegram_id": 123},
+    ).status_code == 404
+    assert client.post(
+        f"/api/coach/trainings/{tid}/participants/555/cancel", headers=COACH
+    ).status_code == 404
+    assert client.post(
+        f"/api/coach/trainings/{tid}/participants/555/restore", headers=COACH
+    ).status_code == 404
+
+
+def test_cancel_requires_existing_booking(client):
+    tid = _create_training(client, day=16, time_str="12:00")
+    assert client.post(f"/api/trainings/{tid}/cancel", headers=PLAYER).status_code == 400
+
+
+def test_restore_does_not_jump_waitlist(client):
+    tid = _create_training(client, day=16, time_str="13:00", capacity=1)
+    assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER).json()["status"] == "booked"
+    assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER2).json()["status"] == "waitlist"
+
+    # PLAYER снят -> PLAYER2 повышен; возврат PLAYER не должен обгонять очередь.
+    assert client.post(
+        f"/api/coach/trainings/{tid}/participants/555/cancel", headers=COACH
+    ).json()["promoted"] == "556"
+    assert client.post(
+        f"/api/coach/trainings/{tid}/participants/555/restore", headers=COACH
+    ).json()["status"] == "waitlist"
+
+    participants = client.get(
+        f"/api/coach/trainings/{tid}/participants", headers=COACH
+    ).json()["participants"]
+    assert [(p["telegram_id"], p["status"]) for p in participants] == [
+        (556, "booked"),
+        (555, "waitlist"),
+    ]
+
+
+def test_demoted_coach_returns_to_crm(client):
+    assert client.post(
+        "/api/coach/coaches", headers=COACH, json={"telegram_id": 777}
+    ).json()["ok"]
+    # Тренер должен хотя бы раз открыть приложение, чтобы появилась карточка users.
+    assert client.get("/api/me", headers=COACH2).json()["user"]["is_coach"] is True
+    players = client.get("/api/coach/players", headers=COACH).json()["players"]
+    assert all(p["telegram_id"] != 777 for p in players)
+
+    assert client.delete("/api/coach/coaches/777", headers=COACH).status_code == 200
+    players = client.get("/api/coach/players", headers=COACH).json()["players"]
+    assert any(p["telegram_id"] == 777 for p in players)
+    assert client.get("/api/me", headers=COACH2).json()["user"]["is_coach"] is False
+
+
+def test_invalid_date_and_time_return_422(client):
+    body = {
+        **_future(16, "14:00"),
+        "training_type": "Некорректная дата",
+        "date": "2026-02-31",
+    }
+    assert client.post("/api/coach/trainings", headers=COACH, json=body).status_code == 422
+
+    body = {**_future(16, "14:00"), "training_type": "Некорректное время", "time": "25:00"}
+    assert client.post("/api/coach/trainings", headers=COACH, json=body).status_code == 422
+
+
+def test_readyz_docs_and_security_headers(client, monkeypatch):
+    async def fake_get_me():
+        return object()
+
+    monkeypatch.setattr(mainmod.app.state.bot, "get_me", fake_get_me)
+    mainmod._bot_check_cache = (0.0, False)
+
+    assert client.get("/healthz").status_code == 200
+    assert client.get("/readyz").status_code == 200
+    assert client.get("/docs").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
+
+    page = client.get("/")
+    assert page.headers["x-content-type-options"] == "nosniff"
+    assert "frame-ancestors" in page.headers["content-security-policy"]
+    assert "cdn.tailwindcss.com" not in page.text
+
+
+def test_notifications_on_promotion_and_deletion(client):
+    captured: list[tuple[int, str]] = []
+
+    async def fake_send(chat_id, text, **kwargs):
+        captured.append((chat_id, text))
+
+    mainmod.app.state.bot.send_message = fake_send
+
+    tid = _create_training(client, day=17, time_str="15:00", capacity=1)
+    client.post(f"/api/trainings/{tid}/book", headers=PLAYER)
+    client.post(f"/api/trainings/{tid}/book", headers=PLAYER2)
+    client.post(f"/api/trainings/{tid}/cancel", headers=PLAYER)
+
+    for _ in range(30):
+        if any(chat_id == 556 and "Освободилось место" in text for chat_id, text in captured):
+            break
+        time.sleep(0.05)
+    assert any(chat_id == 556 and "Освободилось место" in text for chat_id, text in captured)
+
+    tid2 = _create_training(client, day=17, time_str="16:00", capacity=2)
+    client.post(f"/api/trainings/{tid2}/book", headers=PLAYER)
+    client.delete(f"/api/coach/trainings/{tid2}", headers=COACH)
+
+    for _ in range(30):
+        if any(chat_id == 555 and "отменена" in text for chat_id, text in captured):
+            break
+        time.sleep(0.05)
+    assert any(chat_id == 555 and "отменена" in text for chat_id, text in captured)
+
+
+def test_rate_limit_on_apply(client):
+    applicant = {"X-Init-Data": _init({"id": 559, "first_name": "Спамер"})}
+    for _ in range(5):
+        assert client.post(
+            "/api/coach/apply", headers=applicant, json={"message": "хочу"}
+        ).status_code == 200
+    r = client.post("/api/coach/apply", headers=applicant, json={"message": "ещё"})
+    assert r.status_code == 429
+    assert "Retry-After" in r.headers
+
+
+def test_export_and_delete_account(client):
+    tid = _create_training(client, day=19, time_str="18:00", capacity=2)
+    client.post(f"/api/trainings/{tid}/book", headers=PLAYER)
+    client.post(
+        "/api/messages/coach", headers=PLAYER, json={"text": "Моё сообщение"}
+    )
+
+    exported = client.get("/api/me/export", headers=PLAYER).json()
+    assert exported["user"]["telegram_id"] == 555
+    assert any(b["training_id"] == tid for b in exported["bookings"])
+    assert any(m["text"] == "Моё сообщение" for m in exported["messages"])
+
+    assert client.delete("/api/me", headers=PLAYER).status_code == 400
+    assert client.delete("/api/me?confirm=true", headers=PLAYER).status_code == 200
+
+    players = client.get("/api/coach/players", headers=COACH).json()["players"]
+    assert all(p["telegram_id"] != 555 for p in players)
+
+    # Повторный вход создаёт новую карточку, но старые данные уже удалены.
+    fresh = client.get("/api/me/export", headers=PLAYER).json()
+    assert fresh["messages"] == []
+    assert fresh["bookings"] == []
+
+
+def test_coach_cannot_delete_account(client):
+    assert client.delete("/api/me?confirm=true", headers=COACH).status_code == 403
+
+
+def test_delete_account_promotes_waitlist(client):
+    tid = _create_training(client, day=20, time_str="12:00", capacity=1)
+    client.post(f"/api/trainings/{tid}/book", headers=PLAYER)
+    client.post(f"/api/trainings/{tid}/book", headers=PLAYER2)
+
+    assert client.delete("/api/me?confirm=true", headers=PLAYER).status_code == 200
+    participants = client.get(
+        f"/api/coach/trainings/{tid}/participants", headers=COACH
+    ).json()["participants"]
+    assert [(p["telegram_id"], p["status"]) for p in participants] == [
+        (556, "booked")
+    ]
+
+
+def test_ics_has_real_booked_count_and_valid_folding(client):
+    long_type = "Очень длинное название тренировки " * 4
+    tid = _create_training(
+        client, day=18, time_str="17:00", training_type=long_type[:100]
+    )
+    client.post(f"/api/trainings/{tid}/book", headers=PLAYER)
+    card = next(
+        t for t in client.get("/api/trainings?days=31", headers=PLAYER).json()["trainings"]
+        if t["id"] == tid
+    )
+    response = client.get(
+        f"/calendar/{tid}.ics", params={"token": card["ics_token"]}
+    )
+    assert response.status_code == 200
+    text = response.text
+    unfolded = text.replace("\r\n ", "")
+    assert "записано 1 из 2" in unfolded
+    for line in text.split("\r\n"):
+        if line:
+            assert len(line.encode("utf-8")) <= 75

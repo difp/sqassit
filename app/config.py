@@ -46,6 +46,7 @@ class Settings:
     webhook_base_url: str
     webhook_secret: str
     allow_dev_init_data: bool
+    enable_api_docs: bool
 
 
 def load_settings() -> Settings:
@@ -79,6 +80,8 @@ def load_settings() -> Settings:
         webhook_base_url=webhook_base_url,
         webhook_secret=webhook_secret,
         allow_dev_init_data=_optional("ALLOW_DEV_INIT_DATA", "false").lower()
+        in ("1", "true", "yes", "on"),
+        enable_api_docs=_optional("ENABLE_API_DOCS", "false").lower()
         in ("1", "true", "yes", "on"),
     )
 

@@ -1,7 +1,7 @@
 # 🏸 Squash-Bot — Telegram Web App для сквош-тренировок
 
 Монолитный бэкенд на **FastAPI + aiogram 3** с легковесным Web App
-(**Jinja2 + TailwindCSS**, без Node.js). База — **SQLite** в изолированном
+(**Jinja2 + собственный CSS**, без Node.js). База — **SQLite** в изолированном
 volume. Контейнер собран по принципу наименьших привилегий.
 
 ```
@@ -10,18 +10,21 @@ squash-bot/
 │   ├── main.py          # FastAPI + подключение aiogram (Web App API, страницы)
 │   ├── bot.py           # aiogram-хендлеры и планировщик напоминаний
 │   ├── database.py      # SQLite (aiosqlite), только параметризованные запросы
-│   ├── secure_auth.py   # HMAC-SHA256 валидация Telegram initData
+│   ├── secure_auth.py   # HMAC-SHA256 валидация initData + scoped-токены
+│   ├── rate_limit.py    # in-memory лимитер для чувствительных API
 │   ├── config.py        # настройки строго из переменных окружения
 │   └── templates/        # base.html, index.html (игрок), coach.html (тренер)
 ├── data/                # том для squash.db (переживает пересборку образа)
 ├── docs/
 │   ├── COACHES.md       # роли, заявки, тренеры
+│   ├── PRIVACY.md       # какие данные хранятся, экспорт и удаление
 │   └── DEPLOY.md        # пошаговый деплой (в т.ч. без сервера, туннель)
 ├── requirements.txt     # версии строго зафиксированы
 ├── Dockerfile
 ├── docker-compose.yml
 ├── Makefile             # операционные команды (up/logs/backup/release)
 ├── VERSION / CHANGELOG.md
+├── SECURITY.md
 ├── .env.example
 └── .dockerignore / .gitignore
 ```
@@ -66,7 +69,8 @@ docker compose logs -f          # логи в stdout
 ### Режимы доставки апдейтов
 
 * `BOT_MODE=polling` (по умолчанию) — не требует публичного адреса, удобно локально.
-* `BOT_MODE=webhook` — укажите `WEBHOOK_BASE_URL` и случайный `WEBHOOK_SECRET`.
+* `BOT_MODE=webhook` — укажите `WEBHOOK_BASE_URL` и случайный `WEBHOOK_SECRET`
+  (≥32 символов; без него приложение не стартует).
   Вебхук принимается на `POST /telegram/webhook` и проверяет заголовок
   `X-Telegram-Bot-Api-Secret-Token`.
 
@@ -85,7 +89,7 @@ docker compose logs -f          # логи в stdout
   прокси-эндпоинтом `/api/avatar/{id}` с коротким in-memory кэшем).
 * **Напоминание** задаётся в часах и минутах (в UI) и хранится как смещение в
   минутах; по умолчанию 4 ч 30 мин (270 мин). Есть быстрые пресеты.
-* **История и корзина** — у тренера три раздела: «Активные» (предстоящие),
+* **История и корзина** — у тренера четыре раздела: «Активные» (предстоящие),
   «История» (прошедшие, с посещаемостью) и «Корзина» (удалённые с возможностью
   восстановления).
 * **Уровень игры.** У каждой тренировки есть уровень (тренер выбирает в форме из
@@ -128,7 +132,7 @@ docker compose logs -f          # логи в stdout
 UI спроектирован в первую очередь под смартфон:
 
 * полноэкранный app-shell с **нижней таб-навигацией** (thumb-зона), вкладка
-  «Тренер» скрывается для игроков;
+  вкладка «Тренер» видна всем (игрок может оставить заявку);
 * **нативные темы Telegram** (`--tg-theme-*`) — автоматически светлая/тёмная;
 * тап-таргеты ≥ 44px, учёт `safe-area-inset` (вырезы/жесты iPhone);
 * **стек аватарок** с инициалами-фолбэком, вертикальная лента по дням со
@@ -150,19 +154,26 @@ docker compose up -d --build    # пересборка образа
 
 | Требование | Реализация |
 |---|---|
-| Наименьшие привилегии | `USER appuser` (UID 1000), `read_only: true`, `no-new-privileges`, `tmpfs /tmp`, нет `docker.sock` и корневых монтирований |
+| Наименьшие привилегии | `USER appuser` (UID 1000), `read_only: true`, `no-new-privileges`, `cap_drop: ALL`, `tmpfs /tmp`, нет `docker.sock` и корневых монтирований |
 | Защита от SQL-инъекций | SQLite + `aiosqlite`, **все** запросы параметризованы (`?`); склейки строк нет |
 | Безопасность Web App | `app/secure_auth.py`: HMAC-SHA256 (`secret = HMAC("WebAppData", bot_token)`) + `hmac.compare_digest` + проверка `auth_date` (анти-replay) |
 | Webhook | маршрут активен только при `BOT_MODE=webhook`; `WEBHOOK_SECRET` обязателен (≥32 символов, без placeholder), сравнение в постоянном времени |
 | Ссылки-скачивания | аватарки и `.ics` используют узкие HMAC-токены с TTL, а не полный `initData` в URL |
+| Веб-защита | CSP (только свой origin + telegram.org), `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`; OpenAPI `/docs` выключен по умолчанию |
+| Rate limiting | in-memory лимиты на сообщения тренеру, заявки и book/cancel; 429 + `Retry-After` |
 | Supply chain | только официальные библиотеки, версии зафиксированы в `requirements.txt`; нет `os.system`/`subprocess`/внешних shell-скриптов |
-| Секреты | только из env (`.env`), исключены из образа (`.dockerignore`) и из git (`.gitignore`) |
+| Секреты | только из env (`.env`), исключены из образа (`.dockerignore`) и из git (`.gitignore`, включая `.env.*`) |
 
 Дополнительно: API требует валидный `X-Init-Data`; исключения — `/api/avatar`
 и `/calendar/{id}.ics`, для которых выдаются узкие токены (браузерный `<img>` и
 обычная ссылка-скачивание не могут передать заголовок). Панель тренера
 дополнительно проверяет роль (`require_coach`); Telegram-токен не утекает в
 браузер — аватарки отдаются через бэкенд-прокси.
+
+**Приватность:** `GET /api/me/export` — экспорт своих данных,
+`DELETE /api/me?confirm=true` — удаление профиля и связанных данных
+(подробно: [`docs/PRIVACY.md`](docs/PRIVACY.md)). Тренер/владелец должен
+сначала снять роль и передать занятия.
 
 ## 5. Переменные окружения
 
@@ -176,17 +187,18 @@ docker compose up -d --build    # пересборка образа
 | `WEBHOOK_BASE_URL` | для webhook и кнопки Web App | публичный HTTPS-адрес (без слэша) |
 | `WEBHOOK_SECRET` | для webhook | случайный секрет ≥32 символов (`openssl rand -hex 32`); без него приложение не стартует |
 | `ALLOW_DEV_INIT_DATA` | нет | `false` в проде. `true` — dev-превью: разрешает `initData` в query для `.ics` |
+| `ENABLE_API_DOCS` | нет | `false` в проде. `true` — включает `/docs` и `/openapi.json` |
 
 ## 6. Релиз и эксплуатация
 
 **Чек-лист перед запуском** (`make release`):
 
 1. Заполнить `.env` (`BOT_TOKEN`, `COACH_TELEGRAM_ID`), убедиться, что
-   `ALLOW_DEV_INIT_DATA=false`.
+   `ALLOW_DEV_INIT_DATA=false` и `ENABLE_API_DOCS=false`.
 2. Настроить HTTPS reverse-proxy (nginx/caddy). При `BOT_MODE=webhook` задать
-   `WEBHOOK_BASE_URL` и случайный `WEBHOOK_SECRET`.
+   `WEBHOOK_BASE_URL` и случайный `WEBHOOK_SECRET` (≥32 символов).
 3. `mkdir -p ./data && sudo chown -R 1000:1000 ./data`.
-4. `make up` → `make ps` (контейнер `healthy`).
+4. `make up` → `make ps` (контейнер `healthy`; `HEALTHCHECK` ходит в `/readyz`).
 5. Открыть бота, `/start`, проверить расписание, запись и «Добавить в календарь».
 6. Поставить регулярный бэкап (`make backup` по cron).
 
@@ -197,10 +209,14 @@ make up        # собрать и запустить
 make logs      # логи (stdout Docker)
 make ps        # статус и health
 make backup    # hot-бэкап SQLite в ./data/backup-<дата>.db
+make test      # pytest
+make lint      # ruff
+make audit     # pip-audit по requirements.txt
 make down      # остановить (данные в ./data сохраняются)
 ```
 
-**Мониторинг:** `GET /healthz` (используется `HEALTHCHECK`). Логи — в stdout
+**Мониторинг:** `GET /healthz` — liveness; `GET /readyz` — readiness (проверяет
+БД и доступность Telegram Bot API; используется `HEALTHCHECK`). Логи — в stdout
 Docker с ротацией (10 МБ × 3). Один воркер: внутри процесса живут long-polling и
 in-memory-состояние.
 
@@ -212,12 +228,17 @@ in-memory-состояние.
 
 ```bash
 python3.11 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 mkdir -p ./data
-DB_PATH=./data/squash.db ALLOW_DEV_INIT_DATA=true uvicorn app.main:app --reload
+DB_PATH=./data/squash.db ALLOW_DEV_INIT_DATA=true ENABLE_API_DOCS=true \
+  uvicorn app.main:app --reload
+make test   # pytest
+make lint   # ruff
+make audit  # pip-audit
 ```
 
 > Локально Web App откроется только внутри клиента Telegram: `initData`
 > подписывается Telegram, поэтому API без него вернёт `401`. Для превью в обычном
 > браузере включите `ALLOW_DEV_INIT_DATA=true` и передайте подписанный `initData`
-> в `?initData=...` (подпись всё равно проверяется на сервере).
+> в `?initData=...` (подпись всё равно проверяется на сервере). OpenAPI —
+> `http://127.0.0.1:8000/docs` при `ENABLE_API_DOCS=true`.

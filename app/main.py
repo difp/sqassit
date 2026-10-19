@@ -4,7 +4,7 @@
 Один монолитный процесс обслуживает:
   * Telegram-бота (polling или webhook);
   * REST API Web App;
-  * HTML-страницы (Jinja2 + TailwindCSS).
+  * HTML-страницы (Jinja2 + собственный CSS).
 """
 
 from __future__ import annotations
@@ -15,9 +15,9 @@ import html
 import logging
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any
 from urllib.parse import urlencode
 
 import aiosqlite
@@ -36,6 +36,7 @@ from .config import (
     TRAINING_LEVELS,
     settings,
 )
+from .rate_limit import RateLimiter
 from .secure_auth import (
     InitDataError,
     issue_scoped_token,
@@ -55,6 +56,45 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 # Простой in-memory кэш аватарок (TTL), на диск ничего не пишем.
 _avatar_cache: dict[int, tuple[float, bytes, str]] = {}
 _AVATAR_TTL_SECONDS = 60 * 60
+_AVATAR_CACHE_MAX_ENTRIES = 256
+
+
+_bot_check_cache: tuple[float, bool] = (0.0, False)
+_BOT_CHECK_TTL_SECONDS = 60
+
+# Защита от спама/перебора. Лимиты подобраны для небольшого клуба.
+_message_limiter = RateLimiter(20, 60)      # личные сообщения тренеру
+_apply_limiter = RateLimiter(5, 300)        # заявки в тренеры
+_booking_limiter = RateLimiter(60, 60)      # book/cancel
+
+
+async def _bot_is_ready() -> bool:
+    """Проверяет доступность Telegram Bot API с кэшем, чтобы не дёргать его зря."""
+    global _bot_check_cache
+    now = time.monotonic()
+    cached_at, cached_ok = _bot_check_cache
+    if now - cached_at < _BOT_CHECK_TTL_SECONDS:
+        return cached_ok
+    try:
+        me = await app.state.bot.get_me()
+        ok = me is not None
+    except Exception:
+        logger.warning("Проверка Telegram Bot API не прошла", exc_info=True)
+        ok = False
+    _bot_check_cache = (now, ok)
+    return ok
+
+
+def _store_avatar(telegram_id: int, content: bytes, media_type: str) -> None:
+    """Кладёт аватарку в память, вытесняя просроченные/самые старые записи."""
+    now = time.time()
+    for key, (created_at, _, _) in list(_avatar_cache.items()):
+        if now - created_at >= _AVATAR_TTL_SECONDS:
+            _avatar_cache.pop(key, None)
+    if len(_avatar_cache) >= _AVATAR_CACHE_MAX_ENTRIES:
+        oldest = min(_avatar_cache, key=lambda key: _avatar_cache[key][0])
+        _avatar_cache.pop(oldest, None)
+    _avatar_cache[telegram_id] = (now, content, media_type)
 
 
 # --------------------------------------------------------------------------- #
@@ -84,13 +124,25 @@ async def _authenticate(init_data: str) -> dict[str, Any]:
 
     is_owner = tg_id == settings.coach_telegram_id
     is_coach = is_owner or await db.is_coach_id(tg_id)
-    await db.upsert_user(
-        telegram_id=tg_id,
-        username=tg_user.get("username"),
-        first_name=tg_user.get("first_name"),
-        is_coach=is_coach,
-    )
+    username = tg_user.get("username")
+    first_name = tg_user.get("first_name")
+
+    # Пишем в БД только при реальном изменении профиля: иначе каждый GET
+    # становится write-транзакцией (SQLite сериализует запись).
     row = await db.get_user(tg_id)
+    if (
+        row is None
+        or row["username"] != username
+        or row["first_name"] != first_name
+        or bool(row["is_coach"]) != is_coach
+    ):
+        await db.upsert_user(
+            telegram_id=tg_id,
+            username=username,
+            first_name=first_name,
+            is_coach=is_coach,
+        )
+        row = await db.get_user(tg_id)
     if row is None:  # теоретически недостижимо
         raise HTTPException(status_code=500, detail="Профиль не найден.")
     user = dict(row)
@@ -156,6 +208,7 @@ def serialize_training(
     row: aiosqlite.Row, *, viewer_id: int | None = None
 ) -> dict[str, Any]:
     start = _local_time(row["start_at"])
+    keys = set(row.keys())
     data: dict[str, Any] = {
         "id": row["id"],
         "title": row["title"],
@@ -166,11 +219,12 @@ def serialize_training(
         "datetime_local": start.strftime("%d.%m.%Y %H:%M"),
         "duration_min": row["duration_min"],
         "capacity": row["capacity"],
-        "level": row["level"] if "level" in row.keys() else "",
-        "booked_count": row["booked_count"] if "booked_count" in row.keys() else 0,
+        "level": row["level"] if "level" in keys else "",
+        "booked_count": row["booked_count"] if "booked_count" in keys else 0,
+        "waitlist_count": row["waitlist_count"] if "waitlist_count" in keys else 0,
         "reminder_enabled": bool(row["reminder_enabled"]),
         "reminder_offset_min": row["reminder_offset_min"],
-        "deleted": bool(row["deleted_at"]) if "deleted_at" in row.keys() else False,
+        "deleted": bool(row["deleted_at"]) if "deleted_at" in keys else False,
         "can_self_cancel": True,
         "is_booked": False,
         "is_waitlisted": False,
@@ -199,7 +253,7 @@ def serialize_participant(row: aiosqlite.Row) -> dict[str, Any]:
     }
 
 
-def serialize_coach(row: Optional[aiosqlite.Row]) -> Optional[dict[str, Any]]:
+def serialize_coach(row: aiosqlite.Row | None) -> dict[str, Any] | None:
     """Публичный профиль тренера для карточки тренировки (без username)."""
     if row is None:
         return None
@@ -228,17 +282,41 @@ def _escape_ics(value: str) -> str:
     )
 
 
+def _fold_ics_line(line: str, limit: int = 75) -> str:
+    """Складывает длинную строку iCalendar по RFC 5545 (75 октетов)."""
+    if len(line.encode("utf-8")) <= limit:
+        return line
+    parts: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for char in line:
+        char_len = len(char.encode("utf-8"))
+        max_len = limit if not parts else limit - 1  # continuation starts with space
+        if current and current_len + char_len > max_len:
+            parts.append("".join(current))
+            current = [char]
+            current_len = char_len
+        else:
+            current.append(char)
+            current_len += char_len
+    if current:
+        parts.append("".join(current))
+    return "\r\n ".join(parts)
+
+
 def build_ics(training: aiosqlite.Row) -> str:
     """Формирует iCalendar-файл (RFC 5545) для добавления в календарь."""
-    start = datetime.fromtimestamp(training["start_at"], tz=timezone.utc)
+    start = datetime.fromtimestamp(training["start_at"], tz=UTC)
     end = start + timedelta(minutes=training["duration_min"])
-    stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    fmt = lambda d: d.strftime("%Y%m%dT%H%M%SZ")  # noqa: E731
+    stamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
+    fmt = lambda d: d.strftime("%Y%m%dT%H%M%SZ")
 
     summary = _escape_ics(training["training_type"] or "Сквош-тренировка")
+    keys = set(training.keys())
+    booked_count = training["booked_count"] if "booked_count" in keys else 0
     description = _escape_ics(
         f"Сквош-тренировка · {training['duration_min']} мин · записано "
-        f"{training['booked_count'] if 'booked_count' in training.keys() else 0} из {training['capacity']}"
+        f"{booked_count} из {training['capacity']}"
     )
 
     lines = [
@@ -263,7 +341,7 @@ def build_ics(training: aiosqlite.Row) -> str:
         "END:VEVENT",
         "END:VCALENDAR",
     ]
-    return "\r\n".join(lines) + "\r\n"
+    return "".join(f"{_fold_ics_line(line)}\r\n" for line in lines)
 
 
 # --------------------------------------------------------------------------- #
@@ -273,7 +351,7 @@ def build_ics(training: aiosqlite.Row) -> str:
 class TrainingIn(BaseModel):
     date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     time: str = Field(pattern=r"^\d{2}:\d{2}$")
-    training_type: str = Field(default="Тренировка", max_length=100)
+    training_type: str = Field(default="Тренировка", min_length=1, max_length=100)
     capacity: int = Field(default=4, ge=1, le=100)
     duration_min: int = Field(default=DEFAULT_TRAINING_DURATION_MINUTES, ge=15, le=600)
     level: str = Field(default="", max_length=60)
@@ -300,8 +378,8 @@ class TrainerProfileIn(BaseModel):
 
 
 class CoachIn(BaseModel):
-    telegram_id: Optional[int] = None
-    username: Optional[str] = Field(default=None, max_length=64)
+    telegram_id: int | None = None
+    username: str | None = Field(default=None, max_length=64)
 
 
 class ManagerIn(BaseModel):
@@ -314,7 +392,7 @@ class ApplyIn(BaseModel):
 
 class MessageIn(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
-    training_id: Optional[int] = None
+    training_id: int | None = None
 
 
 def _parse_local_epoch(date_str: str, time_str: str) -> int:
@@ -382,7 +460,38 @@ async def lifespan(app: FastAPI):
         await db.close()
 
 
-app = FastAPI(title="Squash Training Web App", lifespan=lifespan)
+app = FastAPI(
+    title="Squash Training Web App",
+    lifespan=lifespan,
+    docs_url="/docs" if settings.enable_api_docs else None,
+    redoc_url=None,
+    openapi_url="/openapi.json" if settings.enable_api_docs else None,
+)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Базовые security-заголовки; CSP разрешает только Telegram и свой origin."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault(
+        "Permissions-Policy", "geolocation=(), microphone=(), camera=()"
+    )
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' https://telegram.org 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'none'; "
+        "form-action 'self'; "
+        "frame-ancestors https://telegram.org https://web.telegram.org "
+        "https://*.telegram.org https://*.t.me",
+    )
+    return response
 
 
 # --------------------------------------------------------------------------- #
@@ -405,6 +514,17 @@ async def page_coach(request: Request):
 
 @app.get("/healthz")
 async def healthz():
+    """Liveness: процесс жив и отвечает на HTTP."""
+    return {"ok": True}
+
+
+@app.get("/readyz")
+async def readyz():
+    """Readiness: живы БД и Telegram Bot API (валидный BOT_TOKEN)."""
+    if not await db.ping():
+        raise HTTPException(status_code=503, detail="База данных недоступна.")
+    if not await _bot_is_ready():
+        raise HTTPException(status_code=503, detail="Telegram Bot API недоступен.")
     return {"ok": True}
 
 
@@ -437,6 +557,61 @@ async def api_set_notifications(
     return {"ok": True, "notifications_enabled": payload.enabled}
 
 
+@app.get("/api/me/export")
+async def api_export_me(user: Annotated[dict, Depends(current_user)]):
+    """Экспорт собственных данных пользователя (profile/bookings/messages)."""
+    application = await db.get_application(user["telegram_id"])
+    return {
+        "ok": True,
+        "user": {
+            "telegram_id": user["telegram_id"],
+            "username": user["username"],
+            "first_name": user["first_name"],
+            "notifications_enabled": bool(user["notifications_enabled"]),
+            "notes": user["notes"],
+        },
+        "bookings": [dict(row) for row in await db.list_user_bookings(user["telegram_id"])],
+        "messages": [dict(row) for row in await db.list_user_messages(user["telegram_id"])],
+        "application": dict(application) if application is not None else None,
+    }
+
+
+@app.delete("/api/me")
+async def api_delete_me(
+    user: Annotated[dict, Depends(current_user)],
+    confirm: bool = False,
+):
+    """
+    Удаляет профиль игрока и его персональные данные.
+
+    Требует `?confirm=true`. Тренер/владелец должен сначала снять роль:
+    иначе удаление сломает владение занятиями.
+    """
+    if user.get("is_coach") or user.get("is_owner"):
+        return error_json(
+            "Сначала снимите роль тренера (занятия нужно передать другому).", 403
+        )
+    if not confirm:
+        return error_json("Подтвердите удаление: ?confirm=true", 400)
+
+    # Сначала отменяем активные записи, чтобы освободить места и продвинуть очередь.
+    for booking in await db.list_user_bookings(user["telegram_id"]):
+        if booking["status"] not in {"booked", "waitlist"}:
+            continue
+        if booking["deleted_at"]:
+            continue
+        training = await db.get_training(booking["training_id"])
+        promoted = await db.cancel_booking(
+            booking["training_id"], user["telegram_id"]
+        )
+        if training is not None and promoted:
+            asyncio.create_task(_notify_promoted(int(promoted), training))
+
+    await db.delete_user_data(user["telegram_id"])
+    _avatar_cache.pop(user["telegram_id"], None)
+    return {"ok": True, "deleted": True}
+
+
 # --------------------------------------------------------------------------- #
 # API: тренировки (игрок)
 # --------------------------------------------------------------------------- #
@@ -448,8 +623,12 @@ async def api_trainings(user: Annotated[dict, Depends(current_user)], days: int 
     until = int((datetime.now(tz=settings.timezone) + timedelta(days=days)).timestamp())
     rows = await db.list_upcoming_trainings(now, until)
 
+    training_ids = [row["id"] for row in rows]
+    participants_by_training = await db.get_participants_for_trainings(training_ids)
+    my_bookings = await db.get_bookings_for_user(user["telegram_id"], training_ids)
+
     # У каждого занятия свой тренер — берём по создателю (created_by).
-    coach_cache: dict[Any, Optional[dict[str, Any]]] = {}
+    coach_cache: dict[Any, dict[str, Any] | None] = {}
     result = []
     for row in rows:
         creator = row["created_by"]
@@ -459,14 +638,18 @@ async def api_trainings(user: Annotated[dict, Depends(current_user)], days: int 
             )
         item = serialize_training(row, viewer_id=user["telegram_id"])
         item["coach"] = coach_cache[creator]
-        participants = await db.get_participants(row["id"])
-        item["participants"] = [serialize_participant(p) for p in participants if p["status"] == "booked"]
-        item["waitlist_count"] = sum(1 for p in participants if p["status"] == "waitlist")
+        participants = participants_by_training.get(row["id"], [])
+        item["participants"] = [
+            serialize_participant(p) for p in participants if p["status"] == "booked"
+        ]
+        item["waitlist_count"] = sum(
+            1 for p in participants if p["status"] == "waitlist"
+        )
         # Статус текущего пользователя.
-        my = await db.get_booking(row["id"], user["telegram_id"])
-        if my is not None and my["status"] == "booked":
+        my_status = my_bookings.get(row["id"])
+        if my_status == "booked":
             item["is_booked"] = True
-        elif my is not None and my["status"] == "waitlist":
+        elif my_status == "waitlist":
             item["is_waitlisted"] = True
         result.append(item)
     return {"ok": True, "trainings": result}
@@ -474,9 +657,10 @@ async def api_trainings(user: Annotated[dict, Depends(current_user)], days: int 
 
 @app.post("/api/trainings/{training_id}/book")
 async def api_book(training_id: int, user: Annotated[dict, Depends(current_user)]):
+    _booking_limiter.check(str(user["telegram_id"]))
     try:
         training = await db.get_training(training_id)
-        if training is None:
+        if training is None or training["deleted_at"]:
             return error_json("Тренировка не найдена", 404)
         if training["start_at"] <= int(time.time()):
             return error_json("Тренировка уже началась", 400)
@@ -491,10 +675,15 @@ async def api_book(training_id: int, user: Annotated[dict, Depends(current_user)
 
 @app.post("/api/trainings/{training_id}/cancel")
 async def api_cancel(training_id: int, user: Annotated[dict, Depends(current_user)]):
+    _booking_limiter.check(str(user["telegram_id"]))
     try:
         training = await db.get_training(training_id)
-        if training is None:
+        if training is None or training["deleted_at"]:
             return error_json("Тренировка не найдена", 404)
+
+        booking = await db.get_booking(training_id, user["telegram_id"])
+        if booking is None or booking["status"] not in {"booked", "waitlist"}:
+            return error_json("Вы не записаны на эту тренировку", 400)
 
         seconds_left = training["start_at"] - int(time.time())
         # Правило: игрок не может выйти из тренировки, если до старта меньше 4.5 ч.
@@ -506,6 +695,8 @@ async def api_cancel(training_id: int, user: Annotated[dict, Depends(current_use
             )
 
         promoted = await db.cancel_booking(training_id, user["telegram_id"])
+        if promoted:
+            asyncio.create_task(_notify_promoted(int(promoted), training))
         return {"ok": True, "promoted": promoted or None}
     except Exception:
         logger.exception("Ошибка отмены записи")
@@ -549,7 +740,7 @@ async def api_calendar(
     if not allowed:
         raise HTTPException(status_code=401, detail="Требуется авторизация.")
 
-    training = await db.get_training(training_id)
+    training = await db.get_training_with_count(training_id)
     if training is None or training["deleted_at"]:
         raise HTTPException(status_code=404, detail="Тренировка не найдена.")
     ics = build_ics(training)
@@ -577,9 +768,14 @@ async def api_coach_trainings(coach: Annotated[dict, Depends(require_coach)]):
 
 
 @app.get("/api/coach/history")
-async def api_coach_history(coach: Annotated[dict, Depends(require_coach)]):
+async def api_coach_history(
+    coach: Annotated[dict, Depends(require_coach)], limit: int = 100
+):
     """История: прошедшие занятия текущего тренера."""
-    rows = await db.list_history_trainings(int(time.time()), coach["telegram_id"])
+    limit = max(1, min(limit, 500))
+    rows = await db.list_history_trainings(
+        int(time.time()), coach["telegram_id"], limit
+    )
     return {
         "ok": True,
         "trainings": [
@@ -589,9 +785,12 @@ async def api_coach_history(coach: Annotated[dict, Depends(require_coach)]):
 
 
 @app.get("/api/coach/deleted")
-async def api_coach_deleted(coach: Annotated[dict, Depends(require_coach)]):
+async def api_coach_deleted(
+    coach: Annotated[dict, Depends(require_coach)], limit: int = 100
+):
     """Корзина текущего тренера."""
-    rows = await db.list_deleted_trainings(coach["telegram_id"])
+    limit = max(1, min(limit, 500))
+    rows = await db.list_deleted_trainings(coach["telegram_id"], limit)
     return {
         "ok": True,
         "trainings": [
@@ -639,6 +838,9 @@ async def api_create_training(payload: TrainingIn, coach: Annotated[dict, Depend
             level=level,
         )
         return {"ok": True, "id": training_id}
+    except HTTPException:
+        # Ошибки валидации даты/времени должны оставаться 422, а не 500.
+        raise
     except Exception:
         logger.exception("Ошибка создания тренировки")
         return error_json("Внутренняя ошибка сервера", 500)
@@ -652,9 +854,14 @@ async def api_delete_training(training_id: int, coach: Annotated[dict, Depends(r
     """
     try:
         training = await db.get_training(training_id)
-        if training is None or training["created_by"] != coach["telegram_id"]:
+        if (
+            training is None
+            or training["deleted_at"]
+            or training["created_by"] != coach["telegram_id"]
+        ):
             return error_json("Тренировка не найдена", 404)
         await db.soft_delete_training(training_id, coach["telegram_id"])
+        asyncio.create_task(_notify_training_deleted(training))
         return {"ok": True, "restorable": True}
     except Exception:
         logger.exception("Ошибка удаления тренировки")
@@ -666,8 +873,12 @@ async def api_restore_training(training_id: int, coach: Annotated[dict, Depends(
     """Восстановление тренировки из корзины."""
     try:
         training = await db.get_training(training_id)
-        if training is None or training["created_by"] != coach["telegram_id"]:
-            return error_json("Тренировка не найдена", 404)
+        if (
+            training is None
+            or not training["deleted_at"]
+            or training["created_by"] != coach["telegram_id"]
+        ):
+            return error_json("Тренировка не найдена в корзине", 404)
         await db.restore_training(training_id)
         return {"ok": True}
     except Exception:
@@ -723,11 +934,19 @@ async def api_coach_cancel_participant(
     """Человеческий фактор №3: тренер убирает игрока (с возможностью вернуть)."""
     try:
         training = await db.get_training(training_id)
-        if training is None or training["created_by"] != coach["telegram_id"]:
+        if (
+            training is None
+            or training["deleted_at"]
+            or training["created_by"] != coach["telegram_id"]
+        ):
             return error_json("Тренировка не найдена", 404)
-        if await db.get_booking(training_id, user_id) is None:
+        booking = await db.get_booking(training_id, user_id)
+        if booking is None or booking["status"] not in {"booked", "waitlist"}:
             return error_json("Записи не существует", 404)
         promoted = await db.cancel_booking(training_id, user_id)
+        asyncio.create_task(_notify_participant_removed(user_id, training))
+        if promoted:
+            asyncio.create_task(_notify_promoted(int(promoted), training))
         return {"ok": True, "promoted": promoted or None}
     except Exception:
         logger.exception("Ошибка снятия игрока")
@@ -741,11 +960,19 @@ async def api_coach_restore_participant(
     """Возврат случайно снятого игрока (в место или в очередь по FIFO)."""
     try:
         training = await db.get_training(training_id)
-        if training is None or training["created_by"] != coach["telegram_id"]:
+        if (
+            training is None
+            or training["deleted_at"]
+            or training["created_by"] != coach["telegram_id"]
+        ):
             return error_json("Тренировка не найдена", 404)
         if await db.get_user(user_id) is None:
             return error_json("Игрок не найден", 404)
-        status = await db.book_training(training_id, user_id, training["capacity"])
+        booking = await db.get_booking(training_id, user_id)
+        if booking is None or booking["status"] != "cancelled":
+            return error_json("Можно вернуть только снятого игрока", 400)
+        status = await db.restore_booking(training_id, user_id, training["capacity"])
+        asyncio.create_task(_notify_participant_restored(user_id, training, status))
         return {"ok": True, "status": status}
     except Exception:
         logger.exception("Ошибка возврата игрока")
@@ -760,7 +987,11 @@ async def api_update_reminder(
 ):
     try:
         training = await db.get_training(training_id)
-        if training is None or training["created_by"] != coach["telegram_id"]:
+        if (
+            training is None
+            or training["deleted_at"]
+            or training["created_by"] != coach["telegram_id"]
+        ):
             return error_json("Тренировка не найдена", 404)
         await db.update_reminder_settings(
             training_id, enabled=payload.enabled, offset_min=payload.offset_min
@@ -828,7 +1059,7 @@ async def api_set_coach_profile(
 ):
     """Сохраняет публичный профиль тренера (кратко о себе)."""
     try:
-        await db.set_trainer_profile(coach["telegram_id"], sanitize_bio(payload.bio), "[]")
+        await db.set_trainer_profile(coach["telegram_id"], sanitize_bio(payload.bio))
         return {"ok": True, "profile": serialize_coach(await db.get_user(coach["telegram_id"]))}
     except Exception:
         logger.exception("Ошибка сохранения профиля тренера")
@@ -842,6 +1073,7 @@ async def api_message_coach(payload: MessageIn, user: Annotated[dict, Depends(cu
     (чтобы недоступность Telegram не блокировала ответ игроку).
     Тренер может прочитать всё командой /inbox и ответить /reply.
     """
+    _message_limiter.check(str(user["telegram_id"]))
     text = (payload.text or "").strip()
     if not text:
         return error_json("Пустое сообщение.", 422)
@@ -879,6 +1111,64 @@ async def _deliver_to_coach(coach_id: int, sender_id: int, sender_name: str, tex
         )
     except Exception:
         logger.warning("Не удалось доставить сообщение тренеру", exc_info=True)
+
+
+def _training_brief(training: aiosqlite.Row) -> str:
+    """Короткое описание занятия для уведомлений (HTML-экранированное)."""
+    start = _local_time(training["start_at"])
+    training_type = html.escape(training["training_type"] or "Тренировка")
+    return f"{training_type} · {start.strftime('%d.%m.%Y в %H:%M')}"
+
+
+async def _send_user_message(telegram_id: int, text: str) -> None:
+    """Best-effort уведомление пользователя; недоступность Telegram не ломает API."""
+    try:
+        await app.state.bot.send_message(telegram_id, text)
+    except Exception:
+        logger.info("Не удалось отправить уведомление %s", telegram_id, exc_info=True)
+
+
+async def _notify_promoted(user_id: int, training: aiosqlite.Row) -> None:
+    await _send_user_message(
+        user_id,
+        "🎉 Освободилось место — вы записаны!\n\n"
+        f"🏸 {_training_brief(training)}",
+    )
+
+
+async def _notify_participant_removed(user_id: int, training: aiosqlite.Row) -> None:
+    await _send_user_message(
+        user_id,
+        "Тренер снял вас с тренировки.\n\n"
+        f"🏸 {_training_brief(training)}",
+    )
+
+
+async def _notify_participant_restored(
+    user_id: int, training: aiosqlite.Row, status: str
+) -> None:
+    if status == "booked":
+        text = "Тренер вернул вас на тренировку.\n\n"
+    else:
+        text = "Тренер вернул вас в лист ожидания.\n\n"
+    await _send_user_message(user_id, text + f"🏸 {_training_brief(training)}")
+
+
+async def _notify_training_deleted(training: aiosqlite.Row) -> None:
+    text = (
+        "Тренировка отменена тренером.\n\n"
+        f"🏸 {_training_brief(training)}"
+    )
+    for row in await db.notification_targets(training["id"]):
+        await _send_user_message(row["telegram_id"], text)
+
+
+async def _notify_training_transferred(new_coach_id: int, training: aiosqlite.Row) -> None:
+    await _send_user_message(
+        new_coach_id,
+        "Вам передали занятие.\n\n"
+        f"🏸 {_training_brief(training)}",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -985,6 +1275,7 @@ async def api_set_manager(
 @app.post("/api/coach/apply")
 async def api_apply(payload: ApplyIn, user: Annotated[dict, Depends(current_user)]):
     """Заявка пользователя на роль тренера (идемпотентна)."""
+    _apply_limiter.check(str(user["telegram_id"]))
     if user.get("is_coach"):
         return error_json("Вы уже тренер.", 400)
     await db.apply_for_coach(user["telegram_id"], (payload.message or "").strip()[:1000])
@@ -1031,8 +1322,11 @@ async def api_applications(manager: Annotated[dict, Depends(require_manager)]):
 async def api_approve_application(
     telegram_id: int, manager: Annotated[dict, Depends(require_manager)]
 ):
-    if await db.get_application(telegram_id) is None:
+    application = await db.get_application(telegram_id)
+    if application is None:
         return error_json("Заявка не найдена", 404)
+    if application["status"] != "pending":
+        return error_json("Заявка уже рассмотрена", 409)
     await db.add_coach(telegram_id, manager["telegram_id"])
     await db.decide_application(telegram_id, "approved", manager["telegram_id"])
     asyncio.create_task(_notify_new_coach(telegram_id))
@@ -1043,10 +1337,29 @@ async def api_approve_application(
 async def api_reject_application(
     telegram_id: int, manager: Annotated[dict, Depends(require_manager)]
 ):
-    if await db.get_application(telegram_id) is None:
+    application = await db.get_application(telegram_id)
+    if application is None:
         return error_json("Заявка не найдена", 404)
+    if application["status"] != "pending":
+        return error_json("Заявка уже рассмотрена", 409)
     await db.decide_application(telegram_id, "rejected", manager["telegram_id"])
+    asyncio.create_task(_notify_application_decision(telegram_id, approved=False))
     return {"ok": True}
+
+
+async def _notify_application_decision(telegram_id: int, *, approved: bool) -> None:
+    """Фоновое уведомление заявителю о решении по заявке (Web App)."""
+    text = (
+        "🎉 Ваша заявка одобрена! Откройте приложение — появится вкладка «Тренер»."
+        if approved
+        else "Ваша заявка на тренера отклонена."
+    )
+    try:
+        await app.state.bot.send_message(telegram_id, text)
+    except Exception:
+        logger.info(
+            "Не удалось уведомить заявителя %s", telegram_id, exc_info=True
+        )
 
 
 async def _notify_managers_about_application(applicant_id: int, name: str) -> None:
@@ -1079,7 +1392,7 @@ async def _notify_managers_about_application(applicant_id: int, name: str) -> No
 async def api_club_trainings(coach: Annotated[dict, Depends(require_coach)]):
     """Предстоящие занятия других тренеров (только просмотр)."""
     rows = await db.list_other_active_trainings(int(time.time()), coach["telegram_id"])
-    cache: dict[Any, Optional[dict[str, Any]]] = {}
+    cache: dict[Any, dict[str, Any] | None] = {}
     result = []
     for row in rows:
         creator = row["created_by"]
@@ -1100,7 +1413,7 @@ async def api_transfer_training(
     """Передаёт занятие другому тренеру (автор занятия или владелец бота)."""
     try:
         training = await db.get_training(training_id)
-        if training is None or (
+        if training is None or training["deleted_at"] or (
             training["created_by"] != coach["telegram_id"] and not coach.get("is_owner")
         ):
             return error_json("Тренировка не найдена", 404)
@@ -1117,6 +1430,7 @@ async def api_transfer_training(
             return error_json("Занятие уже принадлежит этому тренеру.", 400)
 
         await db.set_training_owner(training_id, target)
+        asyncio.create_task(_notify_training_transferred(target, training))
         return {"ok": True, "telegram_id": target}
     except Exception:
         logger.exception("Ошибка передачи занятия")
@@ -1166,7 +1480,7 @@ async def api_avatar(telegram_id: int, token: str = ""):
     media_type = "image/png"
     if file.file_path.lower().endswith((".jpg", ".jpeg")):
         media_type = "image/jpeg"
-    _avatar_cache[telegram_id] = (time.time(), content, media_type)
+    _store_avatar(telegram_id, content, media_type)
     return StreamingResponse(
         iter([content]),
         media_type=media_type,

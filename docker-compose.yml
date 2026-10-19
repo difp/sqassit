@@ -28,7 +28,7 @@ services:
 
     # Проверка живости контейнера.
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/readyz"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -47,6 +47,9 @@ services:
     # --- Дополнительное усиление (DevSecOps) ---
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL                   # приложению не нужны Linux capabilities
+    pids_limit: 256
     read_only: true           # корневая ФС только для чтения
     tmpfs:
       - /tmp                  # временная память без записи на диск

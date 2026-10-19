@@ -12,13 +12,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
-from typing import Any, Optional
+from typing import Any
 
 import aiosqlite
 
 # Одно общее соединение на процесс + лок для сериализации доступа.
-_conn: Optional[aiosqlite.Connection] = None
+_conn: aiosqlite.Connection | None = None
 _lock = asyncio.Lock()
 
 
@@ -150,18 +151,30 @@ def _db() -> aiosqlite.Connection:
     return _conn
 
 
+async def ping() -> bool:
+    """Проверка живости БД для readiness-эндпоинта."""
+    row = await _fetchone("SELECT 1")
+    return row is not None
+
+
 async def _fetchall(sql: str, params: tuple[Any, ...] = ()) -> list[aiosqlite.Row]:
     db = _db()
     async with _lock:
-        async with db.execute(sql, params) as cursor:
+        cursor = await db.execute(sql, params)
+        try:
             return await cursor.fetchall()
+        finally:
+            await cursor.close()
 
 
-async def _fetchone(sql: str, params: tuple[Any, ...] = ()) -> Optional[aiosqlite.Row]:
+async def _fetchone(sql: str, params: tuple[Any, ...] = ()) -> aiosqlite.Row | None:
     db = _db()
     async with _lock:
-        async with db.execute(sql, params) as cursor:
+        cursor = await db.execute(sql, params)
+        try:
             return await cursor.fetchone()
+        finally:
+            await cursor.close()
 
 
 async def _execute(sql: str, params: tuple[Any, ...] = ()) -> int:
@@ -173,16 +186,25 @@ async def _execute(sql: str, params: tuple[Any, ...] = ()) -> int:
         return cursor.lastrowid
 
 
+async def _execute_rowcount(sql: str, params: tuple[Any, ...] = ()) -> int:
+    """Выполняет INSERT/UPDATE/DELETE и возвращает число затронутых строк."""
+    db = _db()
+    async with _lock:
+        cursor = await db.execute(sql, params)
+        await db.commit()
+        return cursor.rowcount
+
+
 # --------------------------------------------------------------------------- #
 # Пользователи (CRM)
 # --------------------------------------------------------------------------- #
 
 async def upsert_user(
     telegram_id: int,
-    username: Optional[str],
-    first_name: Optional[str],
+    username: str | None,
+    first_name: str | None,
     *,
-    avatar_file_id: Optional[str] = None,
+    avatar_file_id: str | None = None,
     is_coach: bool = False,
 ) -> None:
     """Создаёт/обновляет карточку игрока (CRM-автозаполнение)."""
@@ -195,13 +217,13 @@ async def upsert_user(
             username       = excluded.username,
             first_name     = excluded.first_name,
             avatar_file_id = COALESCE(excluded.avatar_file_id, users.avatar_file_id),
-            is_coach       = MAX(users.is_coach, excluded.is_coach)
+            is_coach       = excluded.is_coach
         """,
         (telegram_id, username, first_name, avatar_file_id, int(is_coach), int(time.time())),
     )
 
 
-async def get_user(telegram_id: int) -> Optional[aiosqlite.Row]:
+async def get_user(telegram_id: int) -> aiosqlite.Row | None:
     return await _fetchone("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
 
 
@@ -218,15 +240,14 @@ async def set_user_notes(telegram_id: int, notes: str) -> None:
     await _execute("UPDATE users SET notes = ? WHERE telegram_id = ?", (notes, telegram_id))
 
 
-async def set_trainer_profile(telegram_id: int, bio: str, links_json: str) -> None:
-    """Сохраняет публичный профиль тренера: краткое описание и ссылки (JSON)."""
+async def set_trainer_profile(telegram_id: int, bio: str) -> None:
+    """Сохраняет публичный профиль тренера: краткое описание."""
     await _execute(
-        "UPDATE users SET bio = ?, links = ? WHERE telegram_id = ?",
-        (bio, links_json, telegram_id),
+        "UPDATE users SET bio = ? WHERE telegram_id = ?", (bio, telegram_id)
     )
 
 
-async def find_user_by_username(username: str) -> Optional[aiosqlite.Row]:
+async def find_user_by_username(username: str) -> aiosqlite.Row | None:
     """Ищет пользователя по @username (без учёта регистра)."""
     return await _fetchone(
         "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username.lstrip("@"),)
@@ -237,7 +258,7 @@ async def find_user_by_username(username: str) -> Optional[aiosqlite.Row]:
 # Тренеры (роли)
 # --------------------------------------------------------------------------- #
 
-async def ensure_coach(telegram_id: int, added_by: Optional[int] = None) -> None:
+async def ensure_coach(telegram_id: int, added_by: int | None = None) -> None:
     """Гарантирует наличие тренера в реестре (идемпотентно)."""
     await _execute(
         "INSERT OR IGNORE INTO coaches (telegram_id, added_by, created_at) VALUES (?, ?, ?)",
@@ -246,19 +267,26 @@ async def ensure_coach(telegram_id: int, added_by: Optional[int] = None) -> None
 
 
 async def add_coach(telegram_id: int, added_by: int) -> bool:
-    """Добавляет тренера. False, если он уже есть."""
-    if await is_coach_id(telegram_id):
-        return False
-    await _execute(
-        "INSERT INTO coaches (telegram_id, added_by, created_at) VALUES (?, ?, ?)",
+    """Добавляет тренера. False, если он уже есть (идемпотентно)."""
+    inserted = await _execute_rowcount(
+        "INSERT OR IGNORE INTO coaches (telegram_id, added_by, created_at) VALUES (?, ?, ?)",
         (telegram_id, added_by, int(time.time())),
     )
-    return True
+    if inserted:
+        # Держим денормализованный флаг в users в актуальном состоянии:
+        # по нему строится CRM и некоторые проверки отображения.
+        await _execute(
+            "UPDATE users SET is_coach = 1 WHERE telegram_id = ?", (telegram_id,)
+        )
+    return bool(inserted)
 
 
 async def remove_coach(telegram_id: int) -> None:
-    """Снимает роль тренера."""
+    """Снимает роль тренера и синхронизирует users.is_coach."""
     await _execute("DELETE FROM coaches WHERE telegram_id = ?", (telegram_id,))
+    await _execute(
+        "UPDATE users SET is_coach = 0 WHERE telegram_id = ?", (telegram_id,)
+    )
 
 
 async def is_coach_id(telegram_id: int) -> bool:
@@ -316,7 +344,7 @@ async def apply_for_coach(telegram_id: int, message: str) -> None:
     )
 
 
-async def get_application(telegram_id: int) -> Optional[aiosqlite.Row]:
+async def get_application(telegram_id: int) -> aiosqlite.Row | None:
     return await _fetchone(
         "SELECT * FROM coach_applications WHERE telegram_id = ?", (telegram_id,)
     )
@@ -358,10 +386,67 @@ async def set_notifications_enabled(telegram_id: int, enabled: bool) -> None:
     )
 
 
-async def list_players() -> list[aiosqlite.Row]:
-    """Список игроков для CRM тренера."""
+async def list_user_bookings(telegram_id: int) -> list[aiosqlite.Row]:
+    """Записи пользователя на тренировки (для экспорта персональных данных)."""
     return await _fetchall(
-        "SELECT * FROM users WHERE is_coach = 0 ORDER BY first_name COLLATE NOCASE"
+        """
+        SELECT b.training_id, b.status, b.position, b.created_at,
+               t.training_type, t.start_at, t.deleted_at
+          FROM bookings b
+          JOIN trainings t ON t.id = b.training_id
+         WHERE b.user_id = ?
+         ORDER BY t.start_at DESC
+        """,
+        (telegram_id,),
+    )
+
+
+async def list_user_messages(telegram_id: int) -> list[aiosqlite.Row]:
+    """Отправленные пользователем сообщения (для экспорта)."""
+    return await _fetchall(
+        """
+        SELECT id, to_user, text, created_at FROM messages
+         WHERE from_user = ? ORDER BY created_at ASC
+        """,
+        (telegram_id,),
+    )
+
+
+async def delete_user_data(telegram_id: int) -> None:
+    """
+    Удаляет профиль и связанные персональные данные.
+
+    Записи на тренировки должны быть предварительно отменены вызывающим кодом:
+    так сохраняются корректные счётчики и продвигается лист ожидания.
+    """
+    await _execute(
+        "DELETE FROM messages WHERE from_user = ? OR to_user = ?",
+        (telegram_id, telegram_id),
+    )
+    await _execute(
+        "DELETE FROM coach_applications WHERE telegram_id = ?", (telegram_id,)
+    )
+    # Активные записи уже отменены вызывающим кодом; удаляем и историю, чтобы
+    # в БД не оставался telegram_id удалённого пользователя.
+    await _execute("DELETE FROM bookings WHERE user_id = ?", (telegram_id,))
+    await _execute("DELETE FROM users WHERE telegram_id = ?", (telegram_id,))
+
+
+async def list_players() -> list[aiosqlite.Row]:
+    """
+    Список игроков для CRM тренера.
+
+    Источник истины — реестр coaches, а не денормализованный users.is_coach:
+    после снятия роли игрок не должен навсегда исчезать из CRM.
+    """
+    return await _fetchall(
+        """
+        SELECT u.* FROM users u
+         WHERE NOT EXISTS (
+               SELECT 1 FROM coaches c WHERE c.telegram_id = u.telegram_id
+         )
+         ORDER BY u.first_name COLLATE NOCASE
+        """
     )
 
 
@@ -405,8 +490,22 @@ async def update_reminder_settings(
     )
 
 
-async def get_training(training_id: int) -> Optional[aiosqlite.Row]:
+async def get_training(training_id: int) -> aiosqlite.Row | None:
     return await _fetchone("SELECT * FROM trainings WHERE id = ?", (training_id,))
+
+
+async def get_training_with_count(training_id: int) -> aiosqlite.Row | None:
+    """Тренировка вместе с числом записавшихся (для .ics и карточек)."""
+    return await _fetchone(
+        """
+        SELECT t.*,
+               (SELECT COUNT(*) FROM bookings b
+                 WHERE b.training_id = t.id AND b.status = 'booked') AS booked_count
+          FROM trainings t
+         WHERE t.id = ?
+        """,
+        (training_id,),
+    )
 
 
 async def list_upcoming_trainings(now: int, until: int) -> list[aiosqlite.Row]:
@@ -441,7 +540,9 @@ async def list_active_trainings(now: int, owner_id: int) -> list[aiosqlite.Row]:
     )
 
 
-async def list_history_trainings(now: int, owner_id: int) -> list[aiosqlite.Row]:
+async def list_history_trainings(
+    now: int, owner_id: int, limit: int = 100
+) -> list[aiosqlite.Row]:
     """История конкретного тренера: прошедшие тренировки (без удалённых)."""
     return await _fetchall(
         """
@@ -453,12 +554,15 @@ async def list_history_trainings(now: int, owner_id: int) -> list[aiosqlite.Row]
           FROM trainings t
          WHERE t.start_at < ? AND t.deleted_at IS NULL AND t.created_by = ?
          ORDER BY t.start_at DESC
+         LIMIT ?
         """,
-        (now, owner_id),
+        (now, owner_id, limit),
     )
 
 
-async def list_deleted_trainings(owner_id: int) -> list[aiosqlite.Row]:
+async def list_deleted_trainings(
+    owner_id: int, limit: int = 100
+) -> list[aiosqlite.Row]:
     """Корзина конкретного тренера: удалённые (для восстановления)."""
     return await _fetchall(
         """
@@ -470,14 +574,15 @@ async def list_deleted_trainings(owner_id: int) -> list[aiosqlite.Row]:
           FROM trainings t
          WHERE t.deleted_at IS NOT NULL AND t.created_by = ?
          ORDER BY t.deleted_at DESC
+         LIMIT ?
         """,
-        (owner_id,),
+        (owner_id, limit),
     )
 
 
 async def find_duplicate_training(
     start_at: int, training_type: str, owner_id: int
-) -> Optional[aiosqlite.Row]:
+) -> aiosqlite.Row | None:
     """Ищет активную тренировку того же тренера с тем же началом и типом (защита от дублей)."""
     return await _fetchone(
         """
@@ -533,16 +638,19 @@ async def restore_training(training_id: int) -> None:
 
 
 async def purge_training(training_id: int) -> None:
-    """Полное удаление (только из корзины, необратимо)."""
-    await _execute("DELETE FROM bookings WHERE training_id = ?", (training_id,))
-    await _execute("DELETE FROM trainings WHERE id = ?", (training_id,))
+    """Полное удаление (только из корзины, необратимо) одной транзакцией."""
+    db = _db()
+    async with _lock:
+        await db.execute("DELETE FROM bookings WHERE training_id = ?", (training_id,))
+        await db.execute("DELETE FROM trainings WHERE id = ?", (training_id,))
+        await db.commit()
 
 
 # --------------------------------------------------------------------------- #
 # Записи и лист ожидания
 # --------------------------------------------------------------------------- #
 
-async def get_booking(training_id: int, user_id: int) -> Optional[aiosqlite.Row]:
+async def get_booking(training_id: int, user_id: int) -> aiosqlite.Row | None:
     return await _fetchone(
         "SELECT * FROM bookings WHERE training_id = ? AND user_id = ?",
         (training_id, user_id),
@@ -561,6 +669,50 @@ async def get_participants(training_id: int) -> list[aiosqlite.Row]:
         """,
         (training_id,),
     )
+
+
+async def get_participants_for_trainings(
+    training_ids: list[int],
+) -> dict[int, list[aiosqlite.Row]]:
+    """Участники сразу для набора тренировок (убирает N+1 в расписании)."""
+    if not training_ids:
+        return {}
+    # JSON-массив передаётся bind-параметром; SQL остаётся статическим.
+    rows = await _fetchall(
+        """
+        SELECT b.training_id, b.status, b.position, b.created_at,
+               u.telegram_id, u.first_name, u.avatar_file_id
+          FROM bookings b
+          JOIN users u ON u.telegram_id = b.user_id
+         WHERE b.training_id IN (SELECT value FROM json_each(?))
+           AND b.status IN ('booked', 'waitlist')
+         ORDER BY b.training_id,
+                  CASE b.status WHEN 'booked' THEN 0 ELSE 1 END,
+                  b.position ASC
+        """,
+        (json.dumps(training_ids),),
+    )
+    grouped: dict[int, list[aiosqlite.Row]] = {tid: [] for tid in training_ids}
+    for row in rows:
+        grouped.setdefault(row["training_id"], []).append(row)
+    return grouped
+
+
+async def get_bookings_for_user(
+    user_id: int, training_ids: list[int]
+) -> dict[int, str]:
+    """Статусы записей пользователя сразу по набору тренировок."""
+    if not training_ids:
+        return {}
+    rows = await _fetchall(
+        """
+        SELECT training_id, status FROM bookings
+         WHERE user_id = ?
+           AND training_id IN (SELECT value FROM json_each(?))
+        """,
+        (user_id, json.dumps(training_ids)),
+    )
+    return {row["training_id"]: row["status"] for row in rows}
 
 
 async def get_participants_full(training_id: int) -> list[aiosqlite.Row]:
@@ -642,13 +794,19 @@ async def cancel_booking(training_id: int, user_id: int) -> str:
     Возвращает статус продвинутого пользователя или пустую строку.
     """
     db = _db()
-    promoted_user: Optional[int] = None
+    promoted_user: int | None = None
     async with _lock:
-        await db.execute(
+        cursor = await db.execute(
             "UPDATE bookings SET status = 'cancelled', position = 0 "
-            "WHERE training_id = ? AND user_id = ?",
+            "WHERE training_id = ? AND user_id = ? "
+            "AND status IN ('booked', 'waitlist')",
             (training_id, user_id),
         )
+        if cursor.rowcount == 0:
+            # Игрок не записан (или уже отменён) — не трогаем очередь.
+            await db.commit()
+            return ""
+
         # Продвигаем первого в очереди, если есть свободное место.
         async with db.execute(
             "SELECT capacity FROM trainings WHERE id = ?", (training_id,)
@@ -677,6 +835,63 @@ async def cancel_booking(training_id: int, user_id: int) -> str:
                 )
         await db.commit()
     return str(promoted_user) if promoted_user is not None else ""
+
+
+async def restore_booking(training_id: int, user_id: int, capacity: int) -> str:
+    """
+    Возвращает снятого игрока.
+
+    Если есть лист ожидания — игрок встаёт в его конец (FIFO), даже когда
+    формально есть свободное место: нельзя обгонять очередь при восстановлении.
+    """
+    db = _db()
+    now = int(time.time())
+    async with _lock:
+        async with db.execute(
+            "SELECT status FROM bookings WHERE training_id = ? AND user_id = ?",
+            (training_id, user_id),
+        ) as cur:
+            existing = await cur.fetchone()
+        if existing is not None and existing["status"] in {"booked", "waitlist"}:
+            return existing["status"]
+
+        async with db.execute(
+            "SELECT 1 FROM bookings WHERE training_id = ? AND status = 'waitlist' LIMIT 1",
+            (training_id,),
+        ) as cur:
+            has_waitlist = await cur.fetchone() is not None
+
+        async with db.execute(
+            "SELECT COUNT(*) FROM bookings WHERE training_id = ? AND status = 'booked'",
+            (training_id,),
+        ) as cur:
+            (booked,) = await cur.fetchone()
+
+        if booked < capacity and not has_waitlist:
+            status = "booked"
+            position = 0
+        else:
+            status = "waitlist"
+            async with db.execute(
+                "SELECT COALESCE(MAX(position), 0) + 1 FROM bookings "
+                "WHERE training_id = ? AND status = 'waitlist'",
+                (training_id,),
+            ) as cur:
+                (position,) = await cur.fetchone()
+
+        await db.execute(
+            """
+            INSERT INTO bookings (training_id, user_id, status, position, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(training_id, user_id) DO UPDATE SET
+                status = excluded.status,
+                position = excluded.position,
+                created_at = excluded.created_at
+            """,
+            (training_id, user_id, status, position, now),
+        )
+        await db.commit()
+    return status
 
 
 # --------------------------------------------------------------------------- #

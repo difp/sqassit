@@ -32,7 +32,7 @@ EXPOSE 8000
 
 # Проверка живости (busybox wget есть в alpine).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD wget -qO- http://127.0.0.1:8000/healthz || exit 1
+    CMD wget -qO- http://127.0.0.1:8000/readyz || exit 1
 
 # Ошибки и логи пишем в stdout/stderr (собирает Docker).
 # Один воркер: внутри процесса живут long-polling и in-memory-состояние (кэш аватарок, режим ответа).

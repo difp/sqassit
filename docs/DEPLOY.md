@@ -47,9 +47,9 @@ docker compose version
 
 ```bash
 # вариант А: из архива релиза
-scp squash-bot-1.2.2.tar.gz user@device:~/
+scp squash-bot-1.2.3.tar.gz user@device:~/
 ssh user@device
-mkdir -p ~/squash-bot && tar -xzf squash-bot-1.2.2.tar.gz -C ~/squash-bot
+mkdir -p ~/squash-bot && tar -xzf squash-bot-1.2.3.tar.gz -C ~/squash-bot
 cd ~/squash-bot
 
 # вариант Б: из git (если репозиторий есть)
@@ -76,6 +76,7 @@ BOT_MODE=polling
 WEBHOOK_BASE_URL=https://ВАШ-ПУБЛИЧНЫЙ-АДРЕС   # из шага 6
 # WEBHOOK_SECRET нужен только при BOT_MODE=webhook (см. шаг 7)
 ALLOW_DEV_INIT_DATA=false
+ENABLE_API_DOCS=false
 ```
 
 > `WEBHOOK_BASE_URL` используется и как адрес Web App в кнопке бота, поэтому он
@@ -98,7 +99,8 @@ make logs        # логи (Ctrl+C — выйти, контейнер прод�
 Проверка внутри устройства:
 
 ```bash
-curl -s http://127.0.0.1:8000/healthz      # {"ok":true}
+curl -s http://127.0.0.1:8000/healthz      # liveness: {"ok":true}
+curl -s http://127.0.0.1:8000/readyz       # readiness: БД + Telegram Bot API
 ```
 
 ---
@@ -123,7 +125,7 @@ docker run -d --name cloudflared --restart always --network host \
   cloudflare/cloudflared:latest tunnel --no-autoupdate run --url http://127.0.0.1:8000 squashbot
 ```
 
-Получите `https://app.example.com` → `curl -s https://app.example.com/healthz`.
+Получите `https://app.example.com` → `curl -s https://app.example.com/readyz`.
 
 ### Вариант B — Cloudflare быстрый туннель (без домена, URL меняется при перезапуске)
 
@@ -218,7 +220,7 @@ make up          # пересборка образа; БД в ./data не тро
 
 | Симптом | Решение |
 |---|---|
-| `Unhealthy` в `make ps` | смотреть `make logs`; чаще всего неверный `BOT_TOKEN` |
+| `Unhealthy` в `make ps` | смотреть `make logs`; `/readyz` проверяет БД и `BOT_TOKEN` (частые причины: неверный токен, нет сети до Telegram, проблемы с volume) |
 | «Не задана … COACH_TELEGRAM_ID» | заполнить `.env` |
 | Web App не открывается / «Ошибка 401» | `WEBHOOK_BASE_URL` не тот или нет HTTPS; откройте именно по https |
 | Вкладка «Тренер» без занятий | пользователь не тренер — владелец одобряет заявку |

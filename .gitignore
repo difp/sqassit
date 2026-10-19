@@ -1,5 +1,7 @@
 # Секреты
 .env
+.env.*
+!.env.example
 
 # Данные
 data/*
