@@ -3,6 +3,22 @@
 Все значимые изменения проекта. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версии — [SemVer](https://semver.org/lang/ru/).
 
+## [Unreleased]
+
+### Безопасность
+- **Критично:** `/telegram/webhook` больше не принимает апдейты в `polling`-режиме.
+  В `webhook`-режиме `WEBHOOK_SECRET` обязателен (≥32 символов, без placeholder),
+  сравнение — в постоянном времени. Убран небезопасный placeholder из `.env.example`.
+- Аватарки и `.ics` авторизуются узкими HMAC-токенами с TTL вместо полного
+  `initData` в URL. Полный `initData` в query для `.ics` разрешён только при
+  `ALLOW_DEV_INIT_DATA=true`.
+- Обновлены зависимости с известными уязвимостями: aiogram, FastAPI, Starlette,
+  aiohttp, Jinja2, python-dotenv, pydantic.
+
+### Исправлено
+- Повторный `POST /api/trainings/{id}/book` (двойной тап/retry) больше не
+  переводит записанного игрока в лист ожидания и не меняет позицию в очереди.
+
 ## [1.2.2] — 2026-10-09
 
 ### Добавлено

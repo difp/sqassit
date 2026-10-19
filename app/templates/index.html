@@ -190,7 +190,7 @@ document.getElementById('schedule').addEventListener('click', async (ev) => {
   if (coachMsg) { openMsg(parseInt(coachMsg.getAttribute('data-coach-msg'), 10)); return; }
   if (calId) {
     const t = ITEMS[calId];
-    if (t) openCalendar(t.id, t.type, t.start_at, t.duration_min);
+    if (t) openCalendar(t.id, t.type, t.start_at, t.duration_min, t.ics_token);
     return;
   }
   if (!bookId && !cancelId) return;

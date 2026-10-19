@@ -103,8 +103,9 @@ docker compose logs -f          # логи в stdout
   календарь» (на всю ширину): она открывает
   выбор — скачать `.ics` (Apple / Android / Outlook) или открыть Google Календарь.
   `.ics` генерируется на сервере (RFC 5545, UTC, напоминание за 30 мин) и отдаётся
-  по `GET /calendar/{id}.ics`; авторизация — тем же подписанным `initData`, но
-  через query-параметр (для обычной ссылки-скачивания).
+  по `GET /calendar/{id}.ics?token=...`; API выдаёт для этого узкий подписанный
+  токен (`ics_token`), привязанный к занятию и пользователю. Полный `initData`
+  в query принимается только в dev-режиме (`ALLOW_DEV_INIT_DATA=true`).
 
 ### Защита от человеческих ошибок
 
@@ -152,10 +153,14 @@ docker compose up -d --build    # пересборка образа
 | Наименьшие привилегии | `USER appuser` (UID 1000), `read_only: true`, `no-new-privileges`, `tmpfs /tmp`, нет `docker.sock` и корневых монтирований |
 | Защита от SQL-инъекций | SQLite + `aiosqlite`, **все** запросы параметризованы (`?`); склейки строк нет |
 | Безопасность Web App | `app/secure_auth.py`: HMAC-SHA256 (`secret = HMAC("WebAppData", bot_token)`) + `hmac.compare_digest` + проверка `auth_date` (анти-replay) |
+| Webhook | маршрут активен только при `BOT_MODE=webhook`; `WEBHOOK_SECRET` обязателен (≥32 символов, без placeholder), сравнение в постоянном времени |
+| Ссылки-скачивания | аватарки и `.ics` используют узкие HMAC-токены с TTL, а не полный `initData` в URL |
 | Supply chain | только официальные библиотеки, версии зафиксированы в `requirements.txt`; нет `os.system`/`subprocess`/внешних shell-скриптов |
 | Секреты | только из env (`.env`), исключены из образа (`.dockerignore`) и из git (`.gitignore`) |
 
-Дополнительно: любой эндпоинт API требует валидный `X-Init-Data`; панель тренера
+Дополнительно: API требует валидный `X-Init-Data`; исключения — `/api/avatar`
+и `/calendar/{id}.ics`, для которых выдаются узкие токены (браузерный `<img>` и
+обычная ссылка-скачивание не могут передать заголовок). Панель тренера
 дополнительно проверяет роль (`require_coach`); Telegram-токен не утекает в
 браузер — аватарки отдаются через бэкенд-прокси.
 
@@ -168,9 +173,9 @@ docker compose up -d --build    # пересборка образа
 | `TIMEZONE` | нет | часовой пояс (по умолчанию `Europe/Moscow`) |
 | `DB_PATH` | нет | путь к БД (по умолчанию `/app/data/squash.db`) |
 | `BOT_MODE` | нет | `polling` (по умолч.) или `webhook` |
-| `WEBHOOK_BASE_URL` | для webhook | публичный HTTPS-адрес |
-| `WEBHOOK_SECRET` | для webhook | секрет заголовка вебхука |
-| `ALLOW_DEV_INIT_DATA` | нет | `false` в проде. `true` — превью Web App вне Telegram (dev) |
+| `WEBHOOK_BASE_URL` | для webhook и кнопки Web App | публичный HTTPS-адрес (без слэша) |
+| `WEBHOOK_SECRET` | для webhook | случайный секрет ≥32 символов (`openssl rand -hex 32`); без него приложение не стартует |
+| `ALLOW_DEV_INIT_DATA` | нет | `false` в проде. `true` — dev-превью: разрешает `initData` в query для `.ics` |
 
 ## 6. Релиз и эксплуатация
 

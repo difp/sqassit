@@ -159,8 +159,10 @@ def test_create_duplicate_and_booking(client):
     assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER).json()["status"] == "booked"
     assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER2).json()["status"] == "booked"
 
-    card = [t for t in client.get("/api/trainings?days=31", headers=PLAYER).json()["trainings"]
-            if t["id"] == tid][0]
+    card = next(
+        t for t in client.get("/api/trainings?days=31", headers=PLAYER).json()["trainings"]
+        if t["id"] == tid
+    )
     assert card["level"] == TRAINING_LEVELS[0] and card["is_booked"] is True
     assert card["coach"] and "links" not in card["coach"]
 
@@ -273,3 +275,137 @@ def test_club_readonly_and_transfer(client):
         **_future(11, "18:00"), "training_type": "Ещё", "capacity": 2}).json()["id"]
     assert client.post(f"/api/coach/trainings/{t2}/transfer", headers=COACH2,
                        json={"telegram_id": 888}).status_code == 404
+
+
+def test_webhook_disabled_in_polling(client):
+    """В polling-режиме маршрут вебхука не должен принимать апдейты."""
+    r = client.post("/telegram/webhook", json={"update_id": 1})
+    assert r.status_code == 404
+
+
+def test_webhook_requires_secret_when_enabled(client, monkeypatch):
+    """В webhook-режиме без правильного секрета апдейты не принимаются."""
+    from dataclasses import replace
+
+    secret = "a" * 32
+    monkeypatch.setattr(
+        mainmod,
+        "settings",
+        replace(
+            settings,
+            bot_mode="webhook",
+            webhook_base_url="https://example.com",
+            webhook_secret=secret,
+        ),
+    )
+    # Валидный update без подходящего хендлера: проверяем только секрет.
+    update = {
+        "update_id": 1,
+        "callback_query": {
+            "id": "cb",
+            "from": {"id": 123, "is_bot": False, "first_name": "Тренер"},
+            "chat_instance": "ci",
+            "data": "unknown",
+        },
+    }
+    assert client.post("/telegram/webhook", json=update).status_code == 403
+    assert client.post(
+        "/telegram/webhook",
+        json=update,
+        headers={"X-Telegram-Bot-Api-Secret-Token": "wrong"},
+    ).status_code == 403
+    r = client.post(
+        "/telegram/webhook",
+        json=update,
+        headers={"X-Telegram-Bot-Api-Secret-Token": secret},
+    )
+    assert r.status_code == 200 and r.json()["ok"] is True
+
+
+def test_booking_is_idempotent(client):
+    """Повторный /book не должен превращать booked в waitlist и менять очередь."""
+    player3 = {"X-Init-Data": _init({"id": 557, "first_name": "Пётр"})}
+    body = {
+        **_future(12, "14:00"),
+        "training_type": "Идемпотентность",
+        "capacity": 1,
+    }
+    tid = client.post("/api/coach/trainings", headers=COACH, json=body).json()["id"]
+
+    # первый игрок занимает единственное место; повторный вызов — тот же статус
+    assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER).json()["status"] == "booked"
+    assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER).json()["status"] == "booked"
+
+    # второй и третий — в очередь
+    assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER2).json()["status"] == "waitlist"
+    assert client.post(f"/api/trainings/{tid}/book", headers=player3).json()["status"] == "waitlist"
+
+    # повторная запись второго не двигает его в конец очереди
+    assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER2).json()["status"] == "waitlist"
+
+    participants = client.get(
+        f"/api/coach/trainings/{tid}/participants", headers=COACH
+    ).json()["participants"]
+    assert [(p["telegram_id"], p["status"]) for p in participants] == [
+        (555, "booked"),
+        (556, "waitlist"),
+        (557, "waitlist"),
+    ]
+
+
+def test_avatar_requires_scoped_token(client):
+    """<img> не может передать X-Init-Data, поэтому аватар авторизуется токеном."""
+    avatar_url = client.get("/api/me", headers=PLAYER).json()["user"]["avatar_url"]
+    assert "token=" in avatar_url
+
+    # без токена — 401 (именно так раньше ломались все аватарки)
+    assert client.get("/api/avatar/555").status_code == 401
+
+    # с токеном авторизация проходит; файла в тестовой БД нет -> 404, а не 401
+    assert client.get(avatar_url).status_code == 404
+
+    # подделанный токен не принимается
+    tampered = avatar_url[:-1] + ("0" if avatar_url[-1] != "0" else "1")
+    assert client.get(tampered).status_code == 401
+
+
+def test_calendar_uses_scoped_token(client):
+    tid = client.post("/api/coach/trainings", headers=COACH, json={
+        **_future(13, "16:00"), "training_type": "Календарь-токен", "capacity": 2}).json()["id"]
+    card = next(
+        t for t in client.get("/api/trainings?days=31", headers=PLAYER).json()["trainings"]
+        if t["id"] == tid
+    )
+    assert card["ics_token"]
+
+    # Ссылка-скачивание без заголовка X-Init-Data.
+    r = client.get(f"/calendar/{tid}.ics", params={"token": card["ics_token"]})
+    assert r.status_code == 200 and "BEGIN:VCALENDAR" in r.text
+
+    # Обычный заголовок тоже продолжает работать (для API-клиентов).
+    assert client.get(f"/calendar/{tid}.ics", headers=PLAYER).status_code == 200
+
+    # Чужой/подделанный токен не подходит.
+    assert client.get(f"/calendar/{tid}.ics", params={"token": card["ics_token"] + "x"}).status_code == 401
+    assert client.get("/calendar/999999.ics", params={"token": card["ics_token"]}).status_code == 401
+
+
+def test_calendar_dev_query_disabled_when_flag_false(client, monkeypatch):
+    """Полный initData в query разрешён только при ALLOW_DEV_INIT_DATA=true."""
+    from dataclasses import replace
+
+    tid = client.post("/api/coach/trainings", headers=COACH, json={
+        **_future(14, "16:00"), "training_type": "Календарь-dev", "capacity": 2}).json()["id"]
+
+    monkeypatch.setattr(mainmod, "settings", replace(settings, allow_dev_init_data=False))
+    r = client.get(f"/calendar/{tid}.ics", params={"initData": PLAYER["X-Init-Data"]})
+    assert r.status_code == 401
+
+    # Узкий токен продолжает работать и при выключенном dev-флаге.
+    card = next(
+        t for t in client.get("/api/trainings?days=31", headers=PLAYER).json()["trainings"]
+        if t["id"] == tid
+    )
+    assert client.get(
+        f"/calendar/{tid}.ics", params={"token": card["ics_token"]}
+    ).status_code == 200

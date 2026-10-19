@@ -74,6 +74,7 @@ TIMEZONE=Europe/Moscow
 DB_PATH=/app/data/squash.db
 BOT_MODE=polling
 WEBHOOK_BASE_URL=https://ВАШ-ПУБЛИЧНЫЙ-АДРЕС   # из шага 6
+# WEBHOOK_SECRET нужен только при BOT_MODE=webhook (см. шаг 7)
 ALLOW_DEV_INIT_DATA=false
 ```
 
@@ -164,10 +165,12 @@ make up
 Режим доставки апдейтов:
 - **`BOT_MODE=polling`** (по умолчанию) — проще, публичный URL нужен только для Web App.
 - **`BOT_MODE=webhook`** — Telegram сам шлёт апдейты на `/telegram/webhook`;
-  задайте случайный `WEBHOOK_SECRET`:
+  задайте случайный `WEBHOOK_SECRET` (не короче 32 символов). При пустом,
+  коротком или placeholder-значении приложение **не стартует** — это защита от
+  подделки апдейтов:
 
   ```bash
-  WEBHOOK_SECRET=$(openssl rand -hex 24)
+  WEBHOOK_SECRET=$(openssl rand -hex 32)
   ```
 
 ---

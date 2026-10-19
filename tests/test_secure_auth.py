@@ -10,7 +10,13 @@ from urllib.parse import urlencode
 
 import pytest
 
-from app.secure_auth import InitDataError, validate_init_data
+from app import secure_auth
+from app.secure_auth import (
+    InitDataError,
+    issue_scoped_token,
+    validate_init_data,
+    verify_scoped_token,
+)
 
 TOKEN = "123456:TEST-TOKEN"
 
@@ -55,3 +61,26 @@ def test_tampered_user_rejected():
 def test_empty_rejected():
     with pytest.raises(InitDataError):
         validate_init_data("", TOKEN)
+
+
+def test_scoped_token_roundtrip():
+    token = issue_scoped_token(TOKEN, "avatar", 555, 555)
+    assert verify_scoped_token(TOKEN, token, "avatar", 555) == 555
+    assert verify_scoped_token(TOKEN, token, "avatar", 556) is None
+    assert verify_scoped_token(TOKEN, token, "ics", 555) is None
+    assert verify_scoped_token("999:OTHER", token, "avatar", 555) is None
+    assert verify_scoped_token(TOKEN, "", "avatar", 555) is None
+
+
+def test_scoped_token_tampered():
+    token = issue_scoped_token(TOKEN, "ics", 7, 555)
+    assert verify_scoped_token(TOKEN, token[:-1] + ("0" if token[-1] != "0" else "1"), "ics", 7) is None
+    assert verify_scoped_token(TOKEN, token.replace(":555:", ":556:"), "ics", 7) is None
+
+
+def test_scoped_token_expired(monkeypatch):
+    monkeypatch.setattr(secure_auth.time, "time", lambda: 1_000_000)
+    token = issue_scoped_token(TOKEN, "avatar", 1, 2, ttl_seconds=10)
+    assert verify_scoped_token(TOKEN, token, "avatar", 1) == 2
+    monkeypatch.setattr(secure_auth.time, "time", lambda: 1_000_011)
+    assert verify_scoped_token(TOKEN, token, "avatar", 1) is None

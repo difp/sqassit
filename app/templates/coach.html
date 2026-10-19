@@ -446,7 +446,7 @@ document.getElementById('list').addEventListener('click', async (ev) => {
 
   if (cal) {
     const t = TRAININGS.find(x => x.id == cal);
-    if (t) openCalendar(t.id, t.type, t.start_at, t.duration_min);
+    if (t) openCalendar(t.id, t.type, t.start_at, t.duration_min, t.ics_token);
     return;
   }
   if (xfer) { openTransfer(xfer); return; }

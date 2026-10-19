@@ -66,17 +66,62 @@ def load_settings() -> Settings:
     if bot_mode not in {"polling", "webhook"}:
         raise RuntimeError("BOT_MODE должен быть 'polling' или 'webhook'.")
 
+    webhook_base_url = _optional("WEBHOOK_BASE_URL").rstrip("/")
+    webhook_secret = _optional("WEBHOOK_SECRET")
+    validate_webhook_settings(bot_mode, webhook_base_url, webhook_secret)
+
     return Settings(
         bot_token=_require("BOT_TOKEN"),
         coach_telegram_id=coach_id,
         timezone=tz,
         db_path=Path(_optional("DB_PATH", "/app/data/squash.db") or "/app/data/squash.db"),
         bot_mode=bot_mode,
-        webhook_base_url=_optional("WEBHOOK_BASE_URL"),
-        webhook_secret=_optional("WEBHOOK_SECRET"),
+        webhook_base_url=webhook_base_url,
+        webhook_secret=webhook_secret,
         allow_dev_init_data=_optional("ALLOW_DEV_INIT_DATA", "false").lower()
         in ("1", "true", "yes", "on"),
     )
+
+
+# Значения, которые нельзя использовать в качестве WEBHOOK_SECRET.
+# Попадают в репозиторий/документацию и потому считаются публичными.
+INSECURE_WEBHOOK_SECRETS = frozenset(
+    {
+        "change-me-to-random-string",
+        "changeme",
+        "change-me",
+        "secret",
+        "webhook-secret",
+        "test",
+    }
+)
+
+
+def validate_webhook_settings(bot_mode: str, base_url: str, secret: str) -> None:
+    """
+    Проверяет конфигурацию webhook до запуска приложения.
+
+    В webhook-режиме публичный эндпоинт /telegram/webhook — единственный вход
+    для апдейтов Telegram, поэтому без сильного секрета приложение не должно
+    стартовать. В polling-режиме webhook-маршрут отключён на уровне API.
+    """
+    if bot_mode != "webhook":
+        return
+    if not base_url:
+        raise RuntimeError(
+            "BOT_MODE=webhook требует WEBHOOK_BASE_URL (публичный HTTPS-адрес)."
+        )
+    if not secret:
+        raise RuntimeError(
+            "BOT_MODE=webhook требует WEBHOOK_SECRET. "
+            "Сгенерируйте: openssl rand -hex 32."
+        )
+    normalized = secret.strip().lower()
+    if normalized in INSECURE_WEBHOOK_SECRETS or len(secret.strip()) < 32:
+        raise RuntimeError(
+            "WEBHOOK_SECRET слишком слабый: нужен случайный секрет не короче 32 "
+            "символов (например, openssl rand -hex 32)."
+        )
 
 
 # Бизнес-константы (не секреты, вынесены явно).

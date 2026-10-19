@@ -95,3 +95,77 @@ def validate_init_data(
         raise InitDataError("Некорректные данные пользователя.")
 
     return {"user": user, "auth_date": int(auth_date_raw), "raw": pairs}
+
+
+# --------------------------------------------------------------------------- #
+# Узкие (scoped) токены для ссылок, которые нельзя авторизовать заголовком
+# --------------------------------------------------------------------------- #
+# initData — это полноценный bearer-токен на 24 часа. Подставлять его в src
+# картинки или в ссылку скачивания нельзя: он попадает в access-логи, историю
+# браузера и Referer. Вместо этого выдаём отдельный токен, привязанный к
+# конкретному ресурсу (аватар/занятие), пользователю и сроку жизни.
+#
+# Формат: kind:resource_id:user_id:expires_at:hmac_sha256_hex
+
+def _scoped_key(secret: str) -> bytes:
+    """Выводит отдельный ключ для scoped-токенов из секрета приложения."""
+    return hmac.new(
+        secret.encode("utf-8"), b"sqassit-scoped-token-v1", hashlib.sha256
+    ).digest()
+
+
+def issue_scoped_token(
+    secret: str,
+    kind: str,
+    resource_id: int,
+    user_id: int,
+    *,
+    ttl_seconds: int = 86400,
+) -> str:
+    """Создаёт подписанный токен для конкретного ресурса и пользователя."""
+    expires_at = int(time.time()) + max(1, int(ttl_seconds))
+    payload = f"{kind}:{int(resource_id)}:{int(user_id)}:{expires_at}"
+    signature = hmac.new(
+        _scoped_key(secret), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return f"{payload}:{signature}"
+
+
+def verify_scoped_token(
+    secret: str,
+    token: str,
+    kind: str,
+    resource_id: int,
+) -> int | None:
+    """
+    Проверяет scoped-токен и возвращает user_id либо None.
+
+    Проверяются: формат, тип ресурса, id ресурса, срок жизни и HMAC-подпись.
+    """
+    if not secret or not token or len(token) > 256:
+        return None
+
+    parts = token.split(":")
+    if len(parts) != 5:
+        return None
+
+    token_kind, resource_raw, user_raw, expires_raw, signature = parts
+    try:
+        resource = int(resource_raw)
+        user_id = int(user_raw)
+        expires_at = int(expires_raw)
+    except ValueError:
+        return None
+
+    if token_kind != kind or resource != int(resource_id):
+        return None
+    if expires_at < int(time.time()):
+        return None
+
+    payload = f"{token_kind}:{resource}:{user_id}:{expires_at}"
+    expected = hmac.new(
+        _scoped_key(secret), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        return None
+    return user_id

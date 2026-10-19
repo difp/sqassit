@@ -340,6 +340,7 @@
     {% else %}
     const INIT_DATA = fromTg;
     {% endif %}
+    const DEV_INIT_DATA_ENABLED = {% if allow_dev_init_data %}true{% else %}false{% endif %};
 
     function haptic(style) {
       try { tg && tg.HapticFeedback && tg.HapticFeedback.impactOccurred(style || 'light'); } catch (e) {}
@@ -454,8 +455,8 @@
         .toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
       return dateStr + ', ' + t1 + '–' + t2;
     }
-    function openCalendar(id, summary, startEpoch, durationMin) {
-      CAL = { id, summary, startEpoch, durationMin };
+    function openCalendar(id, summary, startEpoch, durationMin, icsToken) {
+      CAL = { id, summary, startEpoch, durationMin, icsToken };
       document.getElementById('cal-title').textContent = summary || 'Тренировка';
       document.getElementById('cal-when').textContent = fmtCalWhen(startEpoch, durationMin);
       calSheet.classList.add('is-open');
@@ -466,8 +467,18 @@
     document.addEventListener('keydown', e => { if (e.key === 'Escape') closeCalendar(); });
     document.getElementById('cal-ics').addEventListener('click', () => {
       if (!CAL) return;
-      // initData уходит в query (скачивание идёт обычной навигацией); подпись проверяется на сервере.
-      openExternal(`/calendar/${CAL.id}.ics?initData=${encodeURIComponent(INIT_DATA)}`);
+      // Узкий токен из API (не полный initData): ссылка открывается обычной
+      // навигацией, где нельзя передать заголовок X-Init-Data.
+      let query;
+      if (CAL.icsToken) {
+        query = '?token=' + encodeURIComponent(CAL.icsToken);
+      } else if (DEV_INIT_DATA_ENABLED) {
+        query = '?initData=' + encodeURIComponent(INIT_DATA);
+      } else {
+        toast('Не удалось подготовить ссылку. Обновите страницу.');
+        return;
+      }
+      openExternal(`${location.origin}/calendar/${CAL.id}.ics${query}`);
     });
     document.getElementById('cal-google').addEventListener('click', () => {
       if (!CAL) return;

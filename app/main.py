@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import html
 import logging
 import time
@@ -17,6 +18,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any, Optional
+from urllib.parse import urlencode
 
 import aiosqlite
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
@@ -34,7 +36,12 @@ from .config import (
     TRAINING_LEVELS,
     settings,
 )
-from .secure_auth import InitDataError, validate_init_data
+from .secure_auth import (
+    InitDataError,
+    issue_scoped_token,
+    validate_init_data,
+    verify_scoped_token,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -103,16 +110,17 @@ async def current_user(
     return await _authenticate(x_init_data)
 
 
-async def current_user_flexible(
-    x_init_data: Annotated[str, Header(alias="X-Init-Data")] = "",
-    init_data: Annotated[str, Query(alias="initData")] = "",
-) -> dict[str, Any]:
+def _avatar_url(telegram_id: int) -> str:
     """
-    Как current_user, но принимает initData ещё и из query-параметра.
-    Нужно для обычных ссылок-скачиваний (например, .ics), где нельзя
-    выставить HTTP-заголовок. Подпись всё равно проверяется.
+    Возвращает URL аватарки с узким токеном.
+
+    Обычный <img src="..."> не может отправить заголовок X-Init-Data,
+    поэтому для картинок выдаём отдельный токен, привязанный к telegram_id.
     """
-    return await _authenticate(x_init_data or init_data)
+    token = issue_scoped_token(
+        settings.bot_token, "avatar", telegram_id, telegram_id, ttl_seconds=86400
+    )
+    return f"/api/avatar/{telegram_id}?{urlencode({'token': token})}"
 
 
 async def require_coach(user: Annotated[dict, Depends(current_user)]) -> dict:
@@ -144,7 +152,9 @@ def _local_time(epoch: int) -> datetime:
     return datetime.fromtimestamp(epoch, tz=settings.timezone)
 
 
-def serialize_training(row: aiosqlite.Row, *, viewer: Optional[dict] = None) -> dict[str, Any]:
+def serialize_training(
+    row: aiosqlite.Row, *, viewer_id: int | None = None
+) -> dict[str, Any]:
     start = _local_time(row["start_at"])
     data: dict[str, Any] = {
         "id": row["id"],
@@ -171,9 +181,11 @@ def serialize_training(row: aiosqlite.Row, *, viewer: Optional[dict] = None) -> 
     data["cancel_lock_minutes"] = BOOKING_CANCEL_LOCK_MINUTES
     # Правило: самостоятельная отмена разрешена только если до старта >= 4.5 ч.
     data["can_self_cancel"] = seconds_left >= BOOKING_CANCEL_LOCK_MINUTES * 60
-    if viewer is not None:
-        # Информация о записи текущего игрока подставляется отдельно.
-        data["_viewer_id"] = viewer["telegram_id"]
+    if viewer_id is not None:
+        # Токен для скачивания .ics: обычная ссылка не может передать заголовок.
+        data["ics_token"] = issue_scoped_token(
+            settings.bot_token, "ics", row["id"], viewer_id, ttl_seconds=86400
+        )
     return data
 
 
@@ -183,7 +195,7 @@ def serialize_participant(row: aiosqlite.Row) -> dict[str, Any]:
         "telegram_id": row["telegram_id"],
         "first_name": row["first_name"] or "Игрок",
         "status": row["status"],
-        "avatar_url": f"/api/avatar/{row['telegram_id']}",
+        "avatar_url": _avatar_url(row["telegram_id"]),
     }
 
 
@@ -194,7 +206,7 @@ def serialize_coach(row: Optional[aiosqlite.Row]) -> Optional[dict[str, Any]]:
     return {
         "telegram_id": row["telegram_id"],
         "first_name": row["first_name"] or "Тренер",
-        "avatar_url": f"/api/avatar/{row['telegram_id']}",
+        "avatar_url": _avatar_url(row["telegram_id"]),
         "bio": row["bio"] or "",
     }
 
@@ -344,7 +356,7 @@ async def lifespan(app: FastAPI):
     tasks: list[asyncio.Task] = []
     polling_ctx = None
 
-    if settings.bot_mode == "webhook" and settings.webhook_base_url:
+    if settings.bot_mode == "webhook":
         url = f"{settings.webhook_base_url.rstrip('/')}/telegram/webhook"
         await tg_bot.set_webhook(
             url, secret_token=settings.webhook_secret or None, drop_pending_updates=True
@@ -411,7 +423,7 @@ async def api_me(user: Annotated[dict, Depends(current_user)]):
             "is_owner": bool(user.get("is_owner")),
             "is_manager": bool(user.get("is_manager")),
             "notifications_enabled": bool(user["notifications_enabled"]),
-            "avatar_url": f"/api/avatar/{user['telegram_id']}",
+            "avatar_url": _avatar_url(user["telegram_id"]),
         },
     }
 
@@ -445,7 +457,7 @@ async def api_trainings(user: Annotated[dict, Depends(current_user)], days: int 
             coach_cache[creator] = serialize_coach(
                 await db.get_user(creator) if creator is not None else None
             )
-        item = serialize_training(row, viewer=user)
+        item = serialize_training(row, viewer_id=user["telegram_id"])
         item["coach"] = coach_cache[creator]
         participants = await db.get_participants(row["id"])
         item["participants"] = [serialize_participant(p) for p in participants if p["status"] == "booked"]
@@ -456,7 +468,6 @@ async def api_trainings(user: Annotated[dict, Depends(current_user)], days: int 
             item["is_booked"] = True
         elif my is not None and my["status"] == "waitlist":
             item["is_waitlisted"] = True
-        item.pop("_viewer_id", None)
         result.append(item)
     return {"ok": True, "trainings": result}
 
@@ -504,9 +515,40 @@ async def api_cancel(training_id: int, user: Annotated[dict, Depends(current_use
 @app.get("/calendar/{training_id}.ics")
 async def api_calendar(
     training_id: int,
-    user: Annotated[dict, Depends(current_user_flexible)],
+    token: str = "",
+    x_init_data: Annotated[str, Header(alias="X-Init-Data")] = "",
+    init_data: Annotated[str, Query(alias="initData")] = "",
 ):
-    """Отдаёт .ics для добавления тренировки в календарь смартфона."""
+    """
+    Отдаёт .ics для добавления тренировки в календарь смартфона.
+
+    Авторизация — узким токеном из поля ``ics_token`` (выдаётся API вместе с
+    занятием). Для совместимости принимается и обычный заголовок X-Init-Data.
+    Полный initData в query принимается только в dev-режиме
+    (``ALLOW_DEV_INIT_DATA=true``), чтобы не светить bearer-токен в логах.
+    """
+    allowed = False
+    if token:
+        allowed = (
+            verify_scoped_token(settings.bot_token, token, "ics", training_id)
+            is not None
+        )
+    elif x_init_data:
+        try:
+            await _authenticate(x_init_data)
+            allowed = True
+        except HTTPException:
+            allowed = False
+    elif settings.allow_dev_init_data and init_data:
+        try:
+            await _authenticate(init_data)
+            allowed = True
+        except HTTPException:
+            allowed = False
+
+    if not allowed:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+
     training = await db.get_training(training_id)
     if training is None or training["deleted_at"]:
         raise HTTPException(status_code=404, detail="Тренировка не найдена.")
@@ -526,21 +568,36 @@ async def api_calendar(
 async def api_coach_trainings(coach: Annotated[dict, Depends(require_coach)]):
     """Предстоящие тренировки ТЕКУЩЕГО тренера (только свои)."""
     rows = await db.list_active_trainings(int(time.time()), coach["telegram_id"])
-    return {"ok": True, "trainings": [serialize_training(r) for r in rows]}
+    return {
+        "ok": True,
+        "trainings": [
+            serialize_training(r, viewer_id=coach["telegram_id"]) for r in rows
+        ],
+    }
 
 
 @app.get("/api/coach/history")
 async def api_coach_history(coach: Annotated[dict, Depends(require_coach)]):
     """История: прошедшие занятия текущего тренера."""
     rows = await db.list_history_trainings(int(time.time()), coach["telegram_id"])
-    return {"ok": True, "trainings": [serialize_training(r) for r in rows]}
+    return {
+        "ok": True,
+        "trainings": [
+            serialize_training(r, viewer_id=coach["telegram_id"]) for r in rows
+        ],
+    }
 
 
 @app.get("/api/coach/deleted")
 async def api_coach_deleted(coach: Annotated[dict, Depends(require_coach)]):
     """Корзина текущего тренера."""
     rows = await db.list_deleted_trainings(coach["telegram_id"])
-    return {"ok": True, "trainings": [serialize_training(r) for r in rows]}
+    return {
+        "ok": True,
+        "trainings": [
+            serialize_training(r, viewer_id=coach["telegram_id"]) for r in rows
+        ],
+    }
 
 
 @app.post("/api/coach/trainings")
@@ -649,7 +706,7 @@ async def api_coach_participants(training_id: int, coach: Annotated[dict, Depend
                     "first_name": r["first_name"],
                     "username": r["username"],
                     "status": r["status"],
-                    "avatar_url": f"/api/avatar/{r['telegram_id']}",
+                    "avatar_url": _avatar_url(r["telegram_id"]),
                 }
                 for r in rows
             ],
@@ -724,7 +781,7 @@ async def api_players(coach: Annotated[dict, Depends(require_coach)]):
                 "telegram_id": r["telegram_id"],
                 "first_name": r["first_name"],
                 "username": r["username"],
-                "avatar_url": f"/api/avatar/{r['telegram_id']}",
+                "avatar_url": _avatar_url(r["telegram_id"]),
                 "notes": r["notes"],
                 "notifications_enabled": bool(r["notifications_enabled"]),
             }
@@ -839,7 +896,7 @@ async def api_list_coaches(coach: Annotated[dict, Depends(require_coach)]):
                 "telegram_id": r["telegram_id"],
                 "first_name": r["first_name"] or "Тренер",
                 "username": r["username"],
-                "avatar_url": f"/api/avatar/{r['telegram_id']}",
+                "avatar_url": _avatar_url(r["telegram_id"]),
                 "is_owner": r["telegram_id"] == settings.coach_telegram_id,
                 "is_manager": bool(r["is_manager"]),
             }
@@ -961,7 +1018,7 @@ async def api_applications(manager: Annotated[dict, Depends(require_manager)]):
                 "telegram_id": r["telegram_id"],
                 "first_name": r["first_name"] or "Пользователь",
                 "username": r["username"],
-                "avatar_url": f"/api/avatar/{r['telegram_id']}",
+                "avatar_url": _avatar_url(r["telegram_id"]),
                 "message": r["message"],
                 "created_at": r["created_at"],
             }
@@ -1028,7 +1085,7 @@ async def api_club_trainings(coach: Annotated[dict, Depends(require_coach)]):
         creator = row["created_by"]
         if creator not in cache:
             cache[creator] = serialize_coach(await db.get_user(creator) if creator else None)
-        item = serialize_training(row)
+        item = serialize_training(row, viewer_id=coach["telegram_id"])
         item["coach"] = cache[creator]
         result.append(item)
     return {"ok": True, "trainings": result}
@@ -1071,11 +1128,23 @@ async def api_transfer_training(
 # --------------------------------------------------------------------------- #
 
 @app.get("/api/avatar/{telegram_id}")
-async def api_avatar(telegram_id: int, user: Annotated[dict, Depends(current_user)]):
-    """Отдаёт аватарку из Telegram через бота, не раскрывая токен и не сохраняя файл."""
+async def api_avatar(telegram_id: int, token: str = ""):
+    """
+    Отдаёт аватарку из Telegram через бота, не раскрывая токен и не сохраняя файл.
+
+    Авторизация — узким токеном из ``avatar_url``: браузерный <img> не может
+    передать заголовок X-Init-Data, а полный initData в URL светить нельзя.
+    """
+    if not verify_scoped_token(settings.bot_token, token, "avatar", telegram_id):
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+
     cached = _avatar_cache.get(telegram_id)
     if cached and time.time() - cached[0] < _AVATAR_TTL_SECONDS:
-        return StreamingResponse(iter([cached[1]]), media_type=cached[2])
+        return StreamingResponse(
+            iter([cached[1]]),
+            media_type=cached[2],
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
 
     row = await db.get_user(telegram_id)
     if row is None or not row["avatar_file_id"]:
@@ -1098,7 +1167,11 @@ async def api_avatar(telegram_id: int, user: Annotated[dict, Depends(current_use
     if file.file_path.lower().endswith((".jpg", ".jpeg")):
         media_type = "image/jpeg"
     _avatar_cache[telegram_id] = (time.time(), content, media_type)
-    return StreamingResponse(iter([content]), media_type=media_type)
+    return StreamingResponse(
+        iter([content]),
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1110,8 +1183,14 @@ async def telegram_webhook(
     request: Request,
     x_telegram_bot_api_secret_token: Annotated[str, Header()] = "",
 ):
-    # Проверяем секрет вебхука, чтобы принимали апдейты только от Telegram.
-    if settings.webhook_secret and x_telegram_bot_api_secret_token != settings.webhook_secret:
+    # Маршрут существует только для webhook-режима. В polling он не нужен:
+    # иначе при пустом/известном секрете можно подделать апдейт от имени владельца.
+    if settings.bot_mode != "webhook":
+        raise HTTPException(status_code=404, detail="Not Found")
+    if not settings.webhook_secret or not hmac.compare_digest(
+        x_telegram_bot_api_secret_token.encode("utf-8"),
+        settings.webhook_secret.encode("utf-8"),
+    ):
         return error_json("Forbidden", 403)
     try:
         payload = await request.json()

@@ -591,6 +591,17 @@ async def book_training(training_id: int, user_id: int, capacity: int) -> str:
     db = _db()
     now = int(time.time())
     async with _lock:
+        # Идемпотентность: повторный запрос (двойной тап, retry) не должен
+        # менять статус уже записанного игрока. Иначе на заполненной тренировке
+        # booked-участник превращается в waitlist и теряет место.
+        async with db.execute(
+            "SELECT status FROM bookings WHERE training_id = ? AND user_id = ?",
+            (training_id, user_id),
+        ) as cur:
+            existing = await cur.fetchone()
+        if existing is not None and existing["status"] in {"booked", "waitlist"}:
+            return existing["status"]
+
         # Считаем занятые места.
         async with db.execute(
             "SELECT COUNT(*) FROM bookings WHERE training_id = ? AND status = 'booked'",
