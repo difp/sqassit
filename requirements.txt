@@ -12,3 +12,5 @@ tzdata==2026.5
 # resolver не откатился на уязвимую версию при следующей установке.
 aiohttp==3.14.5
 starlette==1.9.0
+# Прокси для Telegram API (BOT_PROXY): HTTP/SOCKS5.
+aiohttp-socks==0.12.0

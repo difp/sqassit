@@ -15,6 +15,7 @@ from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.filters import BaseFilter, Command, CommandStart
 from aiogram.types import (
@@ -267,8 +268,12 @@ async def fallback(message: Message) -> None:
 
 
 def create_bot() -> Bot:
+    session = (
+        AiohttpSession(proxy=settings.bot_proxy) if settings.bot_proxy else None
+    )
     return Bot(
         token=settings.bot_token,
+        session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
