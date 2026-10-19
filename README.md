@@ -3,7 +3,7 @@
 Telegram Web App для сквош-клуба: расписание, запись в один тап, лист ожидания,
 несколько тренеров и CRM — без отдельного мобильного приложения.
 
-![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.146-009688?logo=fastapi&logoColor=white)
 ![aiogram](https://img.shields.io/badge/aiogram-3.31-2CA5E0)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite&logoColor=white)
@@ -39,7 +39,8 @@ make run          # http://127.0.0.1:8000
 ```
 
 Для production: `make install-prod`, systemd-сервис с `uvicorn` и HTTPS
-reverse-proxy — см. [`docs/DEPLOY.md`](docs/DEPLOY.md).
+reverse-proxy — см. [`docs/DEPLOY.md`](docs/DEPLOY.md). На Ubuntu 22.04 нужен
+Python 3.11+ (deadsnakes); на 24.04 подходит системный Python 3.12.
 
 Минимальный `.env`:
 
@@ -101,7 +102,7 @@ make audit      # pip-audit
 
 ## Стек
 
-FastAPI · aiogram 3 · SQLite (WAL) · Jinja2 · Python 3.11
+FastAPI · aiogram 3 · SQLite (WAL) · Jinja2 · Python 3.11+
 
 ## Лицензия
 

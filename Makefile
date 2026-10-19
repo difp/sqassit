@@ -1,7 +1,8 @@
 # Makefile — локальные команды.
 # Использование: make help
 
-PYTHON_VERSION ?= python3.11
+# Приоритет: Python 3.11, затем 3.12, затем системный python3 (3.11+).
+PYTHON_VERSION ?= $(shell command -v python3.11 || command -v python3.12 || command -v python3)
 VENV ?= .venv
 PYTHON ?= $(VENV)/bin/python
 PORT ?= 8000
