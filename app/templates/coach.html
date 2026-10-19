@@ -11,7 +11,7 @@
       <textarea class="input" id="apply-text" rows="3" maxlength="1000"
                 placeholder="Опыт, где играли/тренировали, зачем вам роль тренера"></textarea></label>
     <button class="btn btn--primary btn--block" id="apply-send">Отправить заявку</button>
-    <div class="hint" style="margin-top:8px">Заявку рассматривает владелец клуба или доверенный тренер.</div>
+    <div class="hint" style="margin-top:8px">Заявку рассматривает тренер клуба.</div>
   </div>
 </section>
 
@@ -35,7 +35,7 @@
     <div id="players"></div>
   </section>
 
-  <!-- Заявки (владелец/менеджер) -->
+  <!-- Заявки (администратор/менеджер) -->
   <section id="applications-section" hidden style="margin-top:24px">
     <div class="section-title">Заявки в тренеры</div>
     <div class="card" id="applications-list"></div>
@@ -50,7 +50,7 @@
     </div>
   </section>
 
-  <!-- Тренеры (владелец/менеджер) -->
+  <!-- Тренеры (администратор/менеджер) -->
   <section id="coaches-section" hidden style="margin-top:24px">
     <div class="section-title">Тренеры</div>
     <div class="card">
@@ -60,7 +60,7 @@
         <input class="input" id="coach-input" placeholder="telegram_id или @username" autocomplete="off">
       </label>
       <button class="btn btn--primary btn--block" id="coach-add">Добавить тренера</button>
-      <div class="hint" style="margin-top:8px">Добавить можно только того, кто уже запускал бота (/start). Владельца снять нельзя. Каждый тренер редактирует только свои занятия, а чужие видит в режиме «Клуб».</div>
+      <div class="hint" style="margin-top:8px">Добавить можно только того, кто уже запускал бота (/start). Администратора снять нельзя. Каждый тренер редактирует только свои занятия, а чужие видит в режиме «Клуб».</div>
     </div>
   </section>
 
@@ -546,7 +546,7 @@ async function openTransfer(id) {
       <div class="p-row" data-xrow="${c.telegram_id}">
         ${avatarHtml(c.first_name, c.avatar_url, true)}
         <div style="flex:1;min-width:0">
-          <div style="font-weight:600;font-size:14px">${esc(c.first_name)}${c.is_owner ? ' <span class="badge badge--muted">владелец</span>' : ''}</div>
+          <div style="font-weight:600;font-size:14px">${esc(c.first_name)}${c.is_owner ? ' <span class="badge badge--muted">администратор</span>' : ''}</div>
           <div class="hint">id: ${c.telegram_id}</div>
         </div>
         <button class="btn btn--primary btn--sm" data-xto="${c.telegram_id}">Передать</button>
@@ -572,7 +572,7 @@ async function loadApplyStatus() {
     const data = await api('/api/coach/apply');
     const box = document.getElementById('apply-status');
     const app = data.application;
-    if (!app) box.textContent = 'Заполните заявку — её рассмотрит владелец клуба.';
+    if (!app) box.textContent = 'Заполните заявку — её рассмотрит тренер клуба.';
     else if (app.status === 'pending') box.innerHTML = '⏳ Заявка отправлена и ожидает подтверждения.';
     else if (app.status === 'rejected') box.innerHTML = '❌ Прошлая заявка отклонена. Можно отправить снова.';
     else box.innerHTML = '✅ Одобрено.';
@@ -671,7 +671,7 @@ document.getElementById('players').addEventListener('click', async (ev) => {
   } catch (e) { hapticNotify('error'); toast(e.message); }
 });
 
-// ===== Заявки (владелец/менеджер) =====
+// ===== Заявки (администратор/менеджер) =====
 async function loadApplications() {
   if (!IS_MANAGER) return;
   try {
@@ -706,9 +706,9 @@ document.getElementById('applications-list').addEventListener('click', async (ev
   } catch (e) { hapticNotify('error'); toast(e.message); }
 });
 
-// ===== Реестр тренеров (владелец/менеджер) =====
+// ===== Реестр тренеров (администратор/менеджер) =====
 function coachRow(c) {
-  const owner = c.is_owner ? ' <span class="badge badge--muted">владелец</span>' : '';
+  const owner = c.is_owner ? ' <span class="badge badge--muted">администратор</span>' : '';
   const mgr = c.is_manager && !c.is_owner ? ' <span class="badge badge--level">менеджер</span>' : '';
   const mgrToggle = (IS_OWNER && !c.is_owner)
     ? `<label class="switch" style="transform:scale(.8);transform-origin:right center">
