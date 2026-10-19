@@ -82,7 +82,9 @@ async def cmd_start(message: Message) -> None:
             first_name=user.first_name,
             is_coach=is_coach,
         )
-        await _cache_avatar(message.bot, user.id)
+        bot = message.bot
+        if bot is not None:
+            await _cache_avatar(bot, user.id)
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -115,6 +117,8 @@ async def cmd_reply(message: Message) -> None:
             return
         player_id = int(parts[1])
         body = html.escape(parts[2].strip())
+        if message.bot is None:
+            return
         await message.bot.send_message(player_id, f"💬 <b>Сообщение от тренера:</b>\n{body}")
         await message.answer("Отправлено ✅")
     except Exception:
@@ -133,12 +137,15 @@ async def cb_reply(callback: CallbackQuery) -> None:
         if not is_coach:
             await callback.answer("Недоступно", show_alert=True)
             return
-        target = int(callback.data.split(":", 1)[1])
+        data = callback.data or ""
+        target = int(data.split(":", 1)[1])
         _pending_reply[callback.from_user.id] = (
             target,
             time.time() + _PENDING_REPLY_TTL_SECONDS,
         )
         await callback.answer()
+        if callback.message is None:
+            return
         await callback.message.answer(
             "✍️ Напишите ответ игроку и отправьте одним сообщением.\nОтмена: /cancel"
         )
@@ -160,6 +167,8 @@ async def coach_reply_text(message: Message) -> None:
         text = (message.text or "").strip()
         if text == "/cancel":
             await message.answer("Отменено")
+            return
+        if message.bot is None:
             return
         await message.bot.send_message(
             target, f"💬 <b>Сообщение от тренера:</b>\n{html.escape(text)}"
@@ -218,14 +227,19 @@ async def cb_apply(callback: CallbackQuery) -> None:
             await callback.answer("Заявка уже рассмотрена", show_alert=True)
             return
 
+        chat = callback.message
+        if chat is None:
+            await callback.answer("Сообщение недоступно", show_alert=True)
+            return
+
         if action == "ok":
             await db.add_coach(applicant, uid)
             await db.decide_application(applicant, "approved", uid)
-            await callback.message.answer("✅ Заявка одобрена")
+            await chat.answer("✅ Заявка одобрена")
             await callback.answer("Одобрено")
         else:
             await db.decide_application(applicant, "rejected", uid)
-            await callback.message.answer("❌ Заявка отклонена")
+            await chat.answer("❌ Заявка отклонена")
             await callback.answer("Отклонено")
 
         # Уведомляем заявителя (best-effort).
@@ -234,7 +248,8 @@ async def cb_apply(callback: CallbackQuery) -> None:
                 "🎉 Ваша заявка одобрена! Откройте приложение — появится вкладка «Тренер»."
                 if action == "ok" else "Ваша заявка на тренера отклонена."
             )
-            await callback.message.bot.send_message(applicant, text)
+            if chat.bot is not None:
+                await chat.bot.send_message(applicant, text)
     except Exception:
         logger.exception("Ошибка обработки заявки")
 

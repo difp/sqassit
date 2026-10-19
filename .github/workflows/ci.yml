@@ -24,6 +24,8 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Lint
         run: ruff check app tests
+      - name: Type check
+        run: mypy
       - name: Security scan
         run: bandit -r app -ll
       - name: Dependency audit

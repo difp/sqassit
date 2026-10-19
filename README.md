@@ -24,6 +24,7 @@ squash-bot/
 ├── docker-compose.yml
 ├── Makefile             # операционные команды (up/logs/backup/release)
 ├── VERSION / CHANGELOG.md
+├── LICENSE (MIT)
 ├── SECURITY.md
 ├── .env.example
 └── .dockerignore / .gitignore
@@ -211,6 +212,7 @@ make ps        # статус и health
 make backup    # hot-бэкап SQLite в ./data/backup-<дата>.db
 make test      # pytest
 make lint      # ruff
+make typecheck # mypy
 make audit     # pip-audit по requirements.txt
 make down      # остановить (данные в ./data сохраняются)
 ```
@@ -232,9 +234,10 @@ pip install -r requirements-dev.txt
 mkdir -p ./data
 DB_PATH=./data/squash.db ALLOW_DEV_INIT_DATA=true ENABLE_API_DOCS=true \
   uvicorn app.main:app --reload
-make test   # pytest
-make lint   # ruff
-make audit  # pip-audit
+make test       # pytest
+make lint       # ruff
+make typecheck  # mypy
+make audit      # pip-audit
 ```
 
 > Локально Web App откроется только внутри клиента Telegram: `initData`

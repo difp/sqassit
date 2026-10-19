@@ -162,7 +162,7 @@ async def _fetchall(sql: str, params: tuple[Any, ...] = ()) -> list[aiosqlite.Ro
     async with _lock:
         cursor = await db.execute(sql, params)
         try:
-            return await cursor.fetchall()
+            return list(await cursor.fetchall())
         finally:
             await cursor.close()
 
@@ -183,7 +183,7 @@ async def _execute(sql: str, params: tuple[Any, ...] = ()) -> int:
     async with _lock:
         cursor = await db.execute(sql, params)
         await db.commit()
-        return cursor.lastrowid
+        return int(cursor.lastrowid or 0)
 
 
 async def _execute_rowcount(sql: str, params: tuple[Any, ...] = ()) -> int:
@@ -192,7 +192,7 @@ async def _execute_rowcount(sql: str, params: tuple[Any, ...] = ()) -> int:
     async with _lock:
         cursor = await db.execute(sql, params)
         await db.commit()
-        return cursor.rowcount
+        return int(cursor.rowcount or 0)
 
 
 # --------------------------------------------------------------------------- #
@@ -759,7 +759,8 @@ async def book_training(training_id: int, user_id: int, capacity: int) -> str:
             "SELECT COUNT(*) FROM bookings WHERE training_id = ? AND status = 'booked'",
             (training_id,),
         ) as cur:
-            (booked,) = await cur.fetchone()
+            row = await cur.fetchone()
+            booked = int(row[0]) if row is not None else 0
 
         if booked < capacity:
             status = "booked"
@@ -771,7 +772,8 @@ async def book_training(training_id: int, user_id: int, capacity: int) -> str:
                 "WHERE training_id = ? AND status = 'waitlist'",
                 (training_id,),
             ) as cur:
-                (position,) = await cur.fetchone()
+                position_row = await cur.fetchone()
+                position = int(position_row[0]) if position_row is not None else 1
 
         await db.execute(
             """
@@ -817,7 +819,8 @@ async def cancel_booking(training_id: int, user_id: int) -> str:
             "SELECT COUNT(*) FROM bookings WHERE training_id = ? AND status = 'booked'",
             (training_id,),
         ) as cur:
-            (booked,) = await cur.fetchone()
+            row = await cur.fetchone()
+            booked = int(row[0]) if row is not None else 0
 
         if booked < capacity:
             async with db.execute(
@@ -865,7 +868,8 @@ async def restore_booking(training_id: int, user_id: int, capacity: int) -> str:
             "SELECT COUNT(*) FROM bookings WHERE training_id = ? AND status = 'booked'",
             (training_id,),
         ) as cur:
-            (booked,) = await cur.fetchone()
+            row = await cur.fetchone()
+            booked = int(row[0]) if row is not None else 0
 
         if booked < capacity and not has_waitlist:
             status = "booked"
@@ -877,7 +881,8 @@ async def restore_booking(training_id: int, user_id: int, capacity: int) -> str:
                 "WHERE training_id = ? AND status = 'waitlist'",
                 (training_id,),
             ) as cur:
-                (position,) = await cur.fetchone()
+                position_row = await cur.fetchone()
+                position = int(position_row[0]) if position_row is not None else 1
 
         await db.execute(
             """

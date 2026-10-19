@@ -5,7 +5,7 @@ COMPOSE := docker compose
 PYTHON ?= python3.11
 
 .DEFAULT_GOAL := help
-.PHONY: help build up down restart logs ps doctor shell test lint audit backup release clean
+.PHONY: help build up down restart logs ps doctor shell test lint typecheck audit backup release clean
 
 help: ## Показать список команд
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -44,6 +44,9 @@ test: ## Локальные тесты
 
 lint: ## Проверка стиля/ошибок (ruff)
 	$(PYTHON) -m ruff check app tests
+
+typecheck: ## Проверка типов (mypy)
+	$(PYTHON) -m mypy
 
 audit: ## Проверка зависимостей на известные уязвимости
 	$(PYTHON) -m pip_audit -r requirements.txt

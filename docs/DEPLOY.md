@@ -1,5 +1,54 @@
 # Пошаговый деплой
 
+## TL;DR — быстрый деплой на сервер
+
+```bash
+# 1. Код
+git clone https://github.com/difp/sqassit.git ~/sqassit && cd ~/sqassit
+
+# 2. Конфиг
+cp .env.example .env
+nano .env
+#   BOT_TOKEN=...
+#   COACH_TELEGRAM_ID=...
+#   TIMEZONE=Europe/Moscow
+#   WEBHOOK_BASE_URL=https://app.example.com
+#   BOT_MODE=polling
+#   ALLOW_DEV_INIT_DATA=false
+#   ENABLE_API_DOCS=false
+
+# 3. Данные (UID контейнера = 1000)
+mkdir -p ./data && sudo chown -R 1000:1000 ./data
+
+# 4. Запуск
+docker compose up -d --build
+docker compose ps                 # healthy?
+curl -fsS http://127.0.0.1:8000/readyz
+```
+
+Снаружи ставьте HTTPS reverse-proxy на `127.0.0.1:8000`. Пример Caddy:
+
+```caddyfile
+app.example.com {
+    reverse_proxy 127.0.0.1:8000
+}
+```
+
+Если нужен `BOT_MODE=webhook` — добавьте в `.env`:
+
+```bash
+WEBHOOK_SECRET=$(openssl rand -hex 32)
+BOT_MODE=webhook
+```
+
+и перезапустите `docker compose up -d`. Для polling публичный HTTPS нужен
+только для Web App (кнопка бота использует `WEBHOOK_BASE_URL`).
+
+Дальше: открыть бота → `/start` → проверить расписание; настроить бэкап
+`make backup` по cron. Подробности и туннели — ниже.
+
+---
+
 Инструкция для запуска на своём железе (Raspberry Pi, мини-ПК, ноутбук, NAS)
 без арендованного сервера. Нужна одна вещь извне — **публичный HTTPS-адрес**
 для Web App (даётся бесплатным туннелем, см. шаг 6).

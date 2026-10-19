@@ -23,7 +23,7 @@
   переведён на него.
 - Уведомления игрокам: повышение из листа ожидания, отмена тренировки тренером,
   снятие/возврат игрока; уведомление нового тренера о передаче занятия.
-- CI (GitHub Actions): ruff, bandit, pip-audit, pytest, docker build.
+- CI (GitHub Actions): ruff, mypy, bandit, pip-audit, pytest, docker build.
 - Изоляция тестов: чистая БД и in-memory-состояния на каждый тест.
 - Экспорт и удаление персональных данных: `GET /api/me/export`,
   `DELETE /api/me?confirm=true`; документация `docs/PRIVACY.md`.
