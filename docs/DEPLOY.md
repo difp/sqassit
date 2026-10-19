@@ -1,293 +1,163 @@
-# Пошаговый деплой
+# Деплой на сервер
 
-## TL;DR — быстрый деплой на сервер
+Приложение — обычный Python-процесс: `uvicorn` + SQLite. Нужны Python 3.11,
+публичный HTTPS-адрес и любой reverse-proxy (Caddy/nginx) или Render.
+
+## TL;DR — VPS
 
 ```bash
-# 1. Код
-git clone https://github.com/difp/sqassit.git ~/sqassit && cd ~/sqassit
+# 1. Пользователь и код
+sudo useradd --system --create-home --shell /usr/sbin/nologin sqassit
+sudo mkdir -p /opt/sqassit && sudo chown sqassit:sqassit /opt/sqassit
+sudo -u sqassit git clone https://github.com/difp/sqassit.git /opt/sqassit
+cd /opt/sqassit
 
-# 2. Конфиг
-cp .env.example .env
-nano .env
-#   BOT_TOKEN=...
-#   COACH_TELEGRAM_ID=...
-#   TIMEZONE=Europe/Moscow
-#   WEBHOOK_BASE_URL=https://app.example.com
-#   BOT_MODE=polling
-#   ALLOW_DEV_INIT_DATA=false
-#   ENABLE_API_DOCS=false
+# 2. Зависимости
+sudo -u sqassit python3.11 -m venv .venv
+sudo -u sqassit .venv/bin/pip install -r requirements.txt
 
-# 3. Данные (UID контейнера = 1000)
-mkdir -p ./data && sudo chown -R 1000:1000 ./data
+# 3. Конфиг
+sudo -u sqassit cp .env.example .env
+sudo -u sqassit nano .env          # BOT_TOKEN, COACH_TELEGRAM_ID, WEBHOOK_BASE_URL
+sudo -u sqassit mkdir -p data
 
-# 4. Запуск
-docker compose up -d --build
-docker compose ps                 # healthy?
-curl -fsS http://127.0.0.1:8000/readyz
+# 4. systemd
+sudo tee /etc/systemd/system/sqassit.service >/dev/null <<'EOF'
+[Unit]
+Description=Squash-Bot Telegram Web App
+After=network.target
+
+[Service]
+Type=simple
+User=sqassit
+WorkingDirectory=/opt/sqassit
+EnvironmentFile=/opt/sqassit/.env
+ExecStart=/opt/sqassit/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now sqassit
+curl -fsS http://127.0.0.1:8000/healthz
 ```
 
-Снаружи ставьте HTTPS reverse-proxy на `127.0.0.1:8000`. Пример Caddy:
+Дальше — HTTPS reverse-proxy. Пример Caddy:
 
-```caddyfile
+```bash
+sudo apt install -y caddy
+sudo tee /etc/caddy/Caddyfile >/dev/null <<'EOF'
 app.example.com {
     reverse_proxy 127.0.0.1:8000
 }
+EOF
+sudo systemctl reload caddy
 ```
 
-Если нужен `BOT_MODE=webhook` — добавьте в `.env`:
+DNS-запись `app.example.com` → IP сервера. Caddy сам получит Let's Encrypt.
+После этого проверьте:
 
 ```bash
-WEBHOOK_SECRET=$(openssl rand -hex 32)
-BOT_MODE=webhook
+curl -fsS https://app.example.com/readyz
 ```
 
-и перезапустите `docker compose up -d`. Для polling публичный HTTPS нужен
-только для Web App (кнопка бота использует `WEBHOOK_BASE_URL`).
+`/healthz` — liveness, `/readyz` — БД + доступность Telegram Bot API.
 
-Дальше: открыть бота → `/start` → проверить расписание; настроить бэкап
-`make backup` по cron. Подробности и туннели — ниже.
-
----
-
-Инструкция для запуска на своём железе (Raspberry Pi, мини-ПК, ноутбук, NAS)
-без арендованного сервера. Нужна одна вещь извне — **публичный HTTPS-адрес**
-для Web App (даётся бесплатным туннелем, см. шаг 6).
-
-Ориентир по ресурсам: 1 vCPU, **512 МБ RAM минимум** (лучше 1 ГБ),
-~300–500 МБ диска, 64-битная ОС. Один процесс приложения занимает ~190 МБ RSS;
-остальное — запас на ОС, Docker и reverse-proxy.
-
----
-
-## 0. Что понадобится
-
-- Устройство с Linux (Raspberry Pi OS / Ubuntu / Debian и т.п.), 64-bit.
-- Docker + Docker Compose v2.
-- Telegram-аккаунт тренера (для `COACH_TELEGRAM_ID`).
-- Бот в Telegram (@BotFather) → токен.
-- Туннель для HTTPS (Cloudflare Tunnel или Tailscale Funnel) — шаг 6.
-
----
-
-## 1. Установить Docker
-
-```bash
-# официальный скрипт (Ubuntu/Debian/Raspberry Pi OS)
-curl -fsSL https://get.docker.com | sh
-
-# разрешить запуск без sudo (перелогиньтесь после)
-sudo usermod -aG docker "$USER"
-newgrp docker
-
-# проверить
-docker run --rm hello-world
-docker compose version
-```
-
----
-
-## 2. Получить токен бота и id тренера
-
-1. **@BotFather** → `/newbot` → скопируйте `BOT_TOKEN` (вида `123456789:AA…`).
-2. Тренер открывает **@userinfobot** → `/start` → присылает число — это
-   `COACH_TELEGRAM_ID` (администратор, личный аккаунт).
-
----
-
-## 3. Доставить проект на устройство
-
-```bash
-# вариант А: из архива релиза
-scp squash-bot-1.2.3.tar.gz user@device:~/
-ssh user@device
-mkdir -p ~/squash-bot && tar -xzf squash-bot-1.2.3.tar.gz -C ~/squash-bot
-cd ~/squash-bot
-
-# вариант Б: из git (если репозиторий есть)
-git clone <URL> ~/squash-bot && cd ~/squash-bot
-```
-
----
-
-## 4. Настроить `.env`
-
-```bash
-cp .env.example .env
-nano .env
-```
-
-Минимум:
+## `.env`
 
 ```ini
-BOT_TOKEN=123456789:AA...your...token
+BOT_TOKEN=123456789:AA...
 COACH_TELEGRAM_ID=123456789
 TIMEZONE=Europe/Moscow
-DB_PATH=/app/data/squash.db
+DB_PATH=./data/squash.db
+
 BOT_MODE=polling
-WEBHOOK_BASE_URL=https://ВАШ-ПУБЛИЧНЫЙ-АДРЕС   # из шага 6
-# WEBHOOK_SECRET нужен только при BOT_MODE=webhook (см. шаг 7)
+WEBHOOK_BASE_URL=https://app.example.com
+WEBHOOK_SECRET=
+
 ALLOW_DEV_INIT_DATA=false
 ENABLE_API_DOCS=false
 ```
 
-> `WEBHOOK_BASE_URL` используется и как адрес Web App в кнопке бота, поэтому он
-> нужен даже при `BOT_MODE=polling`. Временно можно оставить пустым и заполнить
-> после шага 6.
-
----
-
-## 5. Подготовить папку данных и запустить
+- `COACH_TELEGRAM_ID` — числовой Telegram ID администратора.
+- `WEBHOOK_BASE_URL` нужен и для кнопки Web App в боте, даже при `polling`.
+- `BOT_MODE=webhook` требует случайный `WEBHOOK_SECRET` (≥32 символов). Без него
+  приложение не стартует — это защита от подделки апдейтов:
 
 ```bash
-mkdir -p ./data
-sudo chown -R 1000:1000 ./data     # контейнер работает от UID 1000
-
-make up          # = docker compose up -d --build
-make ps          # статус; должен стать healthy
-make logs        # логи (Ctrl+C — выйти, контейнер продолжит работать)
+openssl rand -hex 32
 ```
 
-Проверка внутри устройства:
+- `ALLOW_DEV_INIT_DATA=true` — только для локальной разработки.
+- `.env` должен быть доступен только сервису: `chmod 600 .env`.
 
-```bash
-curl -s http://127.0.0.1:8000/healthz      # liveness: {"ok":true}
-curl -s http://127.0.0.1:8000/readyz       # readiness: БД + Telegram Bot API
-```
+## Polling или webhook
 
----
-
-## 6. Публичный HTTPS (без сервера)
-
-### Вариант A — Cloudflare Tunnel с доменом (рекомендуется, стабильный URL)
-
-```bash
-# 1) залогиниться (откроет браузер/даст ссылку)
-docker run --rm -it -v ~/.cloudflared:/home/nonroot/.cloudflared cloudflare/cloudflared:latest tunnel login
-
-# 2) создать туннель
-docker run --rm -v ~/.cloudflared:/home/nonroot/.cloudflared cloudflare/cloudflared:latest tunnel create squashbot
-
-# 3) привязать домен (DNS создастся автоматически)
-docker run --rm -v ~/.cloudflared:/home/nonroot/.cloudflared cloudflare/cloudflared:latest tunnel route dns squashbot app.example.com
-
-# 4) запустить туннель к приложению
-docker run -d --name cloudflared --restart always --network host \
-  -v ~/.cloudflared:/home/nonroot/.cloudflared \
-  cloudflare/cloudflared:latest tunnel --no-autoupdate run --url http://127.0.0.1:8000 squashbot
-```
-
-Получите `https://app.example.com` → `curl -s https://app.example.com/readyz`.
-
-### Вариант B — Cloudflare быстрый туннель (без домена, URL меняется при перезапуске)
-
-```bash
-docker run -d --name cloudflared --restart always --network host \
-  cloudflare/cloudflared:latest tunnel --no-autoupdate --url http://127.0.0.1:8000
-docker logs cloudflared 2>&1 | grep -o 'https://[a-z0-9.-]*trycloudflare.com' | head -1
-```
-
-### Вариант C — Tailscale Funnel
-
-```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
-sudo tailscale funnel 8000          # даст https://<host>.<tailnet>.ts.net
-```
-
-### Вариант D — свой домен + «белый» IP
-
-Caddy как reverse-proxy (сам получит Let's Encrypt):
-
-```
-# Caddyfile
-app.example.com {
-    reverse_proxy 127.0.0.1:8000
-}
-```
-
----
-
-## 7. Прописать URL и применить
-
-Впишите полученный HTTPS-адрес в `.env` → `WEBHOOK_BASE_URL=https://…` и перезапустите:
-
-```bash
-make up
-```
-
-Режим доставки апдейтов:
-- **`BOT_MODE=polling`** (по умолчанию) — проще, публичный URL нужен только для Web App.
-- **`BOT_MODE=webhook`** — Telegram сам шлёт апдейты на `/telegram/webhook`;
-  задайте случайный `WEBHOOK_SECRET` (не короче 32 символов). При пустом,
-  коротком или placeholder-значении приложение **не стартует** — это защита от
-  подделки апдейтов:
-
-  ```bash
-  WEBHOOK_SECRET=$(openssl rand -hex 32)
-  ```
-
----
-
-## 8. Проверка
-
-1. Открыть бота в Telegram → **/start** → кнопка **«🏸 Открыть тренировки»**.
-2. Появляется Web App: расписание (игрок) и вкладка «Тренер».
-3. Тренер создаёт занятие → оно видно игрокам; «Добавить в календарь» отдаёт `.ics`.
-4. Проверить контейнер: `make ps` (healthy), логов ошибок нет: `make logs`.
-
----
-
-## 9. Резервные копии
-
-```bash
-make backup     # создаст ./data/backup-<дата>.db
-```
-
-В cron (ежедневно в 03:30):
-
-```bash
-crontab -e
-# 30 3 * * * cd /home/user/squash-bot && make backup >>/tmp/squash-backup.log 2>&1
-```
-
-Восстановление: остановить контейнер, положить нужный `backup-*.db` как
-`./data/squash.db` (удалить `squash.db-wal`/`squash.db-shm`), `make up`.
-
----
-
-## 10. Обновление без потери данных
-
-```bash
-# распаковать новый релиз поверх, либо:
-git pull
-make up          # пересборка образа; БД в ./data не трогается
-```
-
-Схема БД мигрирует автоматически (идемпотентно).
-
----
-
-## 11. Частые проблемы
-
-| Симптом | Решение |
+| Режим | Когда использовать |
 |---|---|
-| `Unhealthy` в `make ps` | смотреть `make logs`; `/readyz` проверяет БД и `BOT_TOKEN` (частые причины: неверный токен, нет сети до Telegram, проблемы с volume) |
-| «Не задана … COACH_TELEGRAM_ID» | заполнить `.env` |
-| Web App не открывается / «Ошибка 401» | `WEBHOOK_BASE_URL` не тот или нет HTTPS; откройте именно по https |
-| Вкладка «Тренер» без занятий | пользователь не тренер — администратор одобряет заявку |
-| Кнопка бота ведёт не туда | обновите `WEBHOOK_BASE_URL` и `make up` |
-| Туннель даёт новый URL после перезапуска | используйте named-tunnel (Вариант A) или Tailscale |
-| Напоминания не пришли | не было интернета в окне отправки; окно задаётся в карточке |
+| `polling` | проще, не нужен входящий webhook; процесс должен работать постоянно |
+| `webhook` | лучше для Render/always-on VPS: Telegram сам присылает апдейты на `/telegram/webhook` |
 
----
-
-## Мини-шпаргалка
+При `webhook` после смены домена обновите `WEBHOOK_BASE_URL` и перезапустите сервис:
 
 ```bash
-make up        # запустить/обновить
-make ps        # статус и health
-make logs      # логи
-make backup    # бэкап БД
-make down      # остановить (данные в ./data сохраняются)
-make release   # чек-лист релиза
+sudo systemctl restart sqassit
 ```
+
+## Обновление
+
+```bash
+cd /opt/sqassit
+sudo -u sqassit git pull
+sudo -u sqassit .venv/bin/pip install -r requirements.txt
+sudo systemctl restart sqassit
+curl -fsS http://127.0.0.1:8000/readyz
+```
+
+## Бэкапы
+
+```bash
+cd /opt/sqassit
+sudo -u sqassit make backup
+```
+
+Cron (ежедневно в 03:30):
+
+```cron
+30 3 * * * cd /opt/sqassit && make backup >> /var/log/sqassit-backup.log 2>&1
+```
+
+Бэкапы появятся в `data/backup-*.db`. Восстановление: остановить сервис,
+положить файл как `data/squash.db`, удалить `squash.db-wal`/`squash.db-shm`,
+запустить сервис.
+
+## Логи и диагностика
+
+```bash
+sudo systemctl status sqassit
+sudo journalctl -u sqassit -f
+curl -i http://127.0.0.1:8000/healthz
+curl -i http://127.0.0.1:8000/readyz
+```
+
+Частые причины `readyz 503`: неверный `BOT_TOKEN`, нет сети до Telegram,
+проблемы с правами на `data/`, неверный `DB_PATH`.
+
+## Render
+
+Инструкция для Render (с `render.yaml` и persistent disk):
+[`RENDER.md`](RENDER.md).
+
+## Туннель без своего домена
+
+Можно поставить `cloudflared` и получить HTTPS без сервера:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8000
+```
+
+Полученный URL впишите в `WEBHOOK_BASE_URL` и перезапустите сервис. Для
+стабильного адреса используйте named tunnel или Render.

@@ -4,7 +4,7 @@
 
 Please do not open a public issue for security problems. Use GitHub's private
 vulnerability reporting (Repository → Security → Advisories → Report a
-vulnerability) or contact the repository owner directly.
+vulnerability) or contact the maintainers directly.
 
 Include:
 
@@ -21,4 +21,5 @@ Include:
 - HTTPS reverse proxy in front of the app
 - `.env` is never committed; rotate `BOT_TOKEN`/`WEBHOOK_SECRET` if leaked
 - regular `make backup`
-- `docker compose ps` shows `healthy` (`/readyz` checks DB and Bot API)
+- `curl -fsS https://your-domain/readyz` returns 200 (checks DB and Bot API)
+- systemd/service manager restarts the app on failure

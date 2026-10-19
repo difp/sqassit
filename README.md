@@ -7,7 +7,6 @@ Telegram Web App для сквош-клуба: расписание, запис�
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.146-009688?logo=fastapi&logoColor=white)
 ![aiogram](https://img.shields.io/badge/aiogram-3.31-2CA5E0)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 <p align="center">
@@ -31,15 +30,16 @@ Telegram Web App для сквош-клуба: расписание, запис�
 git clone https://github.com/difp/sqassit.git
 cd sqassit
 
+make install
 cp .env.example .env
 # заполните BOT_TOKEN, COACH_TELEGRAM_ID и WEBHOOK_BASE_URL
 
 mkdir -p ./data
-sudo chown -R 1000:1000 ./data
-
-docker compose up -d --build
-curl -fsS http://127.0.0.1:8000/readyz
+make run          # http://127.0.0.1:8000
 ```
+
+Для production: `make install-prod`, systemd-сервис с `uvicorn` и HTTPS
+reverse-proxy — см. [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 Минимальный `.env`:
 
@@ -47,6 +47,7 @@ curl -fsS http://127.0.0.1:8000/readyz
 BOT_TOKEN=123456789:AA...
 COACH_TELEGRAM_ID=123456789
 WEBHOOK_BASE_URL=https://app.example.com
+DB_PATH=./data/squash.db
 
 BOT_MODE=polling
 ALLOW_DEV_INIT_DATA=false
@@ -71,8 +72,8 @@ ENABLE_API_DOCS=false
 - Подпись Telegram `initData` — HMAC-SHA256, проверка `auth_date` и постоянное сравнение.
 - Webhook активен только в webhook-режиме; секрет обязателен и проверяется.
 - Аватарки и `.ics` используют узкие токены с TTL — полный `initData` не попадает в URL.
-- Rate limiting, CSP и security-заголовки; контейнер — non-root, read-only, `cap_drop: ALL`.
-- Зависимости проверяются `pip-audit`; в CI — ruff, mypy, bandit, pytest и сборка Docker.
+- Rate limiting, CSP и security-заголовки; приложение не требует root-прав.
+- Зависимости проверяются `pip-audit`; в CI — ruff, mypy, bandit и pytest.
 
 ## Разработка
 
@@ -91,7 +92,8 @@ make audit      # pip-audit
 
 ## Документация
 
-- [`docs/DEPLOY.md`](docs/DEPLOY.md) — деплой, HTTPS, туннели, бэкапы.
+- [`docs/DEPLOY.md`](docs/DEPLOY.md) — VPS, systemd, HTTPS, туннели, бэкапы.
+- [`docs/RENDER.md`](docs/RENDER.md) — деплой на Render.
 - [`docs/COACHES.md`](docs/COACHES.md) — роли, заявки, передача занятий.
 - [`docs/PRIVACY.md`](docs/PRIVACY.md) — данные, экспорт и удаление.
 - [`SECURITY.md`](SECURITY.md) — как сообщить об уязвимости.
@@ -99,7 +101,7 @@ make audit      # pip-audit
 
 ## Стек
 
-FastAPI · aiogram 3 · SQLite (WAL) · Jinja2 · Docker · Python 3.11
+FastAPI · aiogram 3 · SQLite (WAL) · Jinja2 · Python 3.11
 
 ## Лицензия
 

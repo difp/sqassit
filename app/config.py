@@ -14,8 +14,8 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
-# Загружаем .env при локальном запуске. В Docker переменные приходят из
-# docker-compose (env_file) — load_dotenv просто не найдёт файл и не упадёт.
+# Загружаем .env при локальном запуске. В production переменные приходят из
+# окружения/systemd EnvironmentFile — load_dotenv просто не найдёт файл и не упадёт.
 load_dotenv()
 
 
@@ -75,7 +75,7 @@ def load_settings() -> Settings:
         bot_token=_require("BOT_TOKEN"),
         coach_telegram_id=coach_id,
         timezone=tz,
-        db_path=Path(_optional("DB_PATH", "/app/data/squash.db") or "/app/data/squash.db"),
+        db_path=Path(_optional("DB_PATH", "./data/squash.db") or "./data/squash.db"),
         bot_mode=bot_mode,
         webhook_base_url=webhook_base_url,
         webhook_secret=webhook_secret,

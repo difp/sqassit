@@ -410,7 +410,7 @@ def _parse_local_epoch(date_str: str, time_str: str) -> int:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 1. Готовим директорию данных (изолированный volume).
+    # 1. Готовим директорию данных.
     settings.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 2. Инициализируем БД.
