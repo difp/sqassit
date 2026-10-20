@@ -109,15 +109,18 @@ def _stream_settings(link: dict[str, Any]) -> dict[str, Any]:
             tls["allowInsecure"] = True
         stream["tlsSettings"] = tls
     elif security == "reality":
-        if not link["public_key"] or not link["short_id"]:
-            raise VlessError("Для Reality нужны параметры pbk и sid.")
-        stream["realitySettings"] = {
+        if not link["public_key"]:
+            raise VlessError("Для Reality нужен параметр pbk.")
+        reality: dict[str, Any] = {
             "serverName": link["server_name"],
             "fingerprint": link["fingerprint"] or "chrome",
             "publicKey": link["public_key"],
-            "shortId": link["short_id"],
             "spiderX": link["spider_x"],
         }
+        # sid может быть пустым — это допустимо для Reality.
+        if link["short_id"]:
+            reality["shortId"] = link["short_id"]
+        stream["realitySettings"] = reality
     elif security != "none":
         raise VlessError(f"Неподдерживаемый security={security!r}")
 

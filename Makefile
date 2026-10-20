@@ -8,9 +8,10 @@ PYTHON ?= $(VENV)/bin/python
 PORT ?= 8000
 DB_PATH ?= ./data/squash.db
 XRAY_CONFIG ?= /usr/local/etc/xray/config.json
+SUBSCRIPTION_FILE ?= /etc/xray-subscription.url
 
 .DEFAULT_GOAL := help
-.PHONY: help venv install install-prod run test lint typecheck audit xray-config backup release clean
+.PHONY: help venv install install-prod run test lint typecheck audit xray-config xray-update backup release clean
 
 help: ## Показать список команд
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -42,6 +43,12 @@ audit: ## Проверка зависимостей (pip-audit)
 xray-config: ## Сгенерировать Xray config из VLESS_URL
 	@test -n "$(VLESS_URL)" || (echo "Укажите VLESS_URL=vless://..."; exit 1)
 	$(PYTHON) scripts/xray_vless.py "$(VLESS_URL)" --write "$(XRAY_CONFIG)"
+
+xray-update: ## Обновить Xray config из subscription и перезапустить Xray
+	sudo $(PYTHON) scripts/update_xray_config.py \
+		--url-file "$(SUBSCRIPTION_FILE)" \
+		--write "$(XRAY_CONFIG)" \
+		--restart
 
 backup: ## Бэкап SQLite в data/backup-<дата>.db
 	@set -a; [ -f .env ] && . ./.env; set +a; \

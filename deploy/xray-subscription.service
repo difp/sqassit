@@ -1,0 +1,9 @@
+[Unit]
+Description=Update Xray VLESS config from subscription
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/sqassit/.venv/bin/python /opt/sqassit/scripts/update_xray_config.py --url-file /etc/xray-subscription.url --write /usr/local/etc/xray/config.json --restart
+Environment=PYTHONUNBUFFERED=1

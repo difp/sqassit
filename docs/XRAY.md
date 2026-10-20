@@ -105,7 +105,71 @@ curl -s http://127.0.0.1:8000/readyz
 
 Должно вернуться `{"ok":true}`. После этого бот снова получит `/start`.
 
-## 6. Автозапуск
+## 6. Автообновление по subscription URL
+
+Если Paper VPN отдаёт ключ по ссылке (в браузере открывается `vless://...`),
+не нужно копировать ключ вручную. Сохраните URL в файл:
+
+```bash
+echo 'https://...' | sudo tee /etc/xray-subscription.url >/dev/null
+sudo chmod 600 /etc/xray-subscription.url
+```
+
+Проверьте обновление один раз:
+
+```bash
+cd /opt/sqassit
+sudo .venv/bin/python scripts/update_xray_config.py \
+  --url-file /etc/xray-subscription.url \
+  --write /usr/local/etc/xray/config.json \
+  --restart
+```
+
+Или:
+
+```bash
+cd /opt/sqassit
+sudo make xray-update
+```
+
+Скрипт:
+
+- скачивает URL с браузерным User-Agent;
+- понимает plain text, base64 (обычный/URL-safe), JSON и HTML;
+- выбирает первую `vless://`-ссылку;
+- атомарно пишет конфиг;
+- проверяет его через `xray run -test`;
+- перезапускает `xray`;
+- при ошибке оставляет старый конфиг.
+
+Установите таймер (обновление каждые 6 часов и через 2 минуты после загрузки):
+
+```bash
+sudo cp /opt/sqassit/deploy/xray-subscription.service /etc/systemd/system/
+sudo cp /opt/sqassit/deploy/xray-subscription.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now xray-subscription.timer
+
+systemctl list-timers xray-subscription.timer
+sudo journalctl -u xray-subscription.service -n 50 --no-pager
+```
+
+Если subscription вернул несколько ссылок, можно выбрать нужную:
+
+```bash
+sudo .venv/bin/python scripts/update_xray_config.py \
+  --url-file /etc/xray-subscription.url \
+  --index 1 --write /usr/local/etc/xray/config.json --restart
+```
+
+Проверить без записи:
+
+```bash
+sudo .venv/bin/python scripts/update_xray_config.py \
+  --url-file /etc/xray-subscription.url --dry-run
+```
+
+## 7. Автозапуск
 
 Официальный установщик Xray создаёт `xray.service`:
 
@@ -119,7 +183,7 @@ sudo systemctl enable --now xray
 systemctl cat xray
 ```
 
-## 7. Безопасность
+## 8. Безопасность
 
 - `/usr/local/etc/xray/config.json` содержит UUID — `chmod 600`.
 - SOCKS слушает только `127.0.0.1:1080`, наружу не открывайте.

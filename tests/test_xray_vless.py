@@ -71,12 +71,22 @@ def test_no_tls_config():
     assert stream["security"] == "none"
 
 
-def test_reality_requires_keys():
+def test_reality_requires_public_key():
     with pytest.raises(VlessError):
         build_xray_config(
             "vless://11111111-2222-3333-4444-555555555555@example.com:443"
             "?type=tcp&security=reality&sni=example.com"
         )
+
+
+def test_reality_allows_empty_short_id():
+    url = (
+        "vless://11111111-2222-3333-4444-555555555555@example.com:443"
+        "?type=tcp&security=reality&pbk=PUBLIC_KEY&sid=&sni=example.com"
+    )
+    reality = _outbound(build_xray_config(url))["streamSettings"]["realitySettings"]
+    assert reality["publicKey"] == "PUBLIC_KEY"
+    assert "shortId" not in reality
 
 
 def test_rejects_non_vless():

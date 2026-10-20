@@ -30,6 +30,9 @@
 - `SECURITY.md` с порядком сообщения об уязвимостях.
 - `BOT_PROXY` для HTTP/SOCKS5 и генератор Xray-конфига из VLESS-ссылки
   (`scripts/xray_vless.py`, `make xray-config`, `docs/XRAY.md`).
+- Автообновление Xray-конфига из subscription URL: `scripts/update_xray_config.py`,
+  systemd timer (`deploy/xray-subscription.*`), `make xray-update`; парсер
+  plain/base64/JSON/HTML, атомарная запись и проверка `xray run -test`.
 
 ### Исправлено
 - Повторный `POST /api/trainings/{id}/book` (двойной тап/retry) больше не

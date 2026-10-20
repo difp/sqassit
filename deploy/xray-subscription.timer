@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Xray VLESS subscription periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=6h
+Persistent=true
+Unit=xray-subscription.service
+
+[Install]
+WantedBy=timers.target
