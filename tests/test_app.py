@@ -10,6 +10,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlencode
 
 import pytest
@@ -739,3 +740,61 @@ def test_avatar_endpoint_hides_photo_in_animal_mode(client):
     response = client.get(f"/api/avatar/555?token={public_token}")
     assert response.status_code == 404
     assert response.json()["detail"] == "Аватарка скрыта."
+
+
+def test_coach_message_hides_player_id(client, monkeypatch):
+    sent = {}
+
+    async def fake_send(chat_id, text, reply_markup=None):
+        sent["chat_id"] = chat_id
+        sent["text"] = text
+        sent["reply_markup"] = reply_markup
+
+    monkeypatch.setattr(mainmod.app.state, "bot", SimpleNamespace(send_message=fake_send))
+    asyncio.run(
+        mainmod._deliver_to_coach(
+            123, 555, "Иван", "Не смогу прийти в субботу"
+        )
+    )
+
+    assert sent["chat_id"] == 123
+    assert "Иван" in sent["text"]
+    assert "Не смогу прийти в субботу" in sent["text"]
+    assert "555" not in sent["text"]
+    assert "id:" not in sent["text"].lower()
+    button = sent["reply_markup"].inline_keyboard[0][0]
+    assert button.callback_data == "reply:555"
+
+
+def test_inbox_hides_player_id(monkeypatch):
+    rows = [
+        {
+            "from_user": 555,
+            "sender_name": "Иван",
+            "text": "Можно перенести тренировку?",
+            "created_at": 1,
+        }
+    ]
+
+    async def fake_list_inbox(coach_id, limit):
+        return rows
+
+    monkeypatch.setattr(botmod.db, "list_inbox", fake_list_inbox)
+    answers = []
+
+    async def fake_answer(text, reply_markup=None):
+        answers.append((text, reply_markup))
+
+    fake_message = SimpleNamespace(
+        from_user=SimpleNamespace(id=settings.coach_telegram_id),
+        answer=fake_answer,
+    )
+    asyncio.run(botmod.cmd_inbox(fake_message))
+
+    assert len(answers) == 1
+    text, markup = answers[0]
+    assert "Иван" in text
+    assert "Можно перенести тренировку?" in text
+    assert "555" not in text
+    assert "/reply" not in text
+    assert markup.inline_keyboard[0][0].callback_data == "reply:555"

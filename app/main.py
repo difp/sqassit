@@ -1175,7 +1175,8 @@ async def api_message_coach(payload: MessageIn, user: Annotated[dict, Depends(cu
     """
     Личное сообщение тренеру. Сохраняем в БД и доставляем через бота в фоне
     (чтобы недоступность Telegram не блокировала ответ игроку).
-    Тренер может прочитать всё командой /inbox и ответить /reply.
+    Тренер читает сообщения командой /inbox и отвечает кнопкой «Ответить» —
+    без показа Telegram ID игрока.
     """
     _message_limiter.check(str(user["telegram_id"]))
     text = (payload.text or "").strip()
@@ -1208,9 +1209,7 @@ async def _deliver_to_coach(coach_id: int, sender_id: int, sender_name: str, tex
         )
         await app.state.bot.send_message(
             coach_id,
-            f"✉️ <b>Сообщение от {sender}</b>\n"
-            f"<code>id: {sender_id}</code>\n\n"
-            f"{html.escape(text)}",
+            f"✉️ <b>Сообщение от {sender}</b>\n\n{html.escape(text)}",
             reply_markup=keyboard,
         )
     except Exception:
@@ -1481,7 +1480,7 @@ async def _notify_managers_about_application(applicant_id: int, name: str) -> No
             try:
                 await app.state.bot.send_message(
                     rid,
-                    f"📝 <b>Заявка в тренеры</b>\n{html.escape(name)} (<code>{applicant_id}</code>)",
+                    f"📝 <b>Заявка в тренеры</b>\n{html.escape(name)}",
                     reply_markup=keyboard,
                 )
             except Exception:

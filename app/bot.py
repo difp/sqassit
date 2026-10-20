@@ -104,30 +104,6 @@ async def cmd_start(message: Message) -> None:
         logger.exception("Ошибка в обработчике /start")
 
 
-async def cmd_reply(message: Message) -> None:
-    """Ответ тренера игроку: /reply <telegram_id> <текст> (только для тренера)."""
-    try:
-        user = message.from_user
-        if user is None or not (
-            user.id == settings.coach_telegram_id or await db.is_coach_id(user.id)
-        ):
-            return  # не тренер — игнорируем
-        parts = (message.text or "").split(maxsplit=2)
-        if len(parts) < 3 or not parts[1].lstrip("-").isdigit():
-            await message.answer("Формат: <code>/reply &lt;id игрока&gt; текст</code>")
-            return
-        player_id = int(parts[1])
-        body = html.escape(parts[2].strip())
-        if message.bot is None:
-            return
-        await message.bot.send_message(player_id, f"💬 <b>Сообщение от тренера:</b>\n{body}")
-        await message.answer("Отправлено ✅")
-    except Exception:
-        logger.exception("Ошибка ответа игроку")
-        with contextlib.suppress(Exception):
-            await message.answer("Не удалось отправить: игрок ещё не начинал чат с ботом.")
-
-
 async def cb_reply(callback: CallbackQuery) -> None:
     """Кнопка «Ответить» под сообщением игрока: тренер пишет ответ следующим сообщением."""
     try:
@@ -193,18 +169,22 @@ async def cmd_inbox(message: Message) -> None:
         if not rows:
             await message.answer("📭 Входящих сообщений нет.")
             return
-        blocks = []
         for r in rows:
             name = html.escape(r["sender_name"] or "Игрок")
-            blocks.append(
-                f"✉️ <b>{name}</b> (<code>{r['from_user']}</code>)\n"
-                f"{html.escape(r['text'])}\n"
-                f"↩ <code>/reply {r['from_user']} текст</code>"
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="✍️ Ответить",
+                            callback_data=f"reply:{r['from_user']}",
+                        )
+                    ]
+                ]
             )
-        for chunk in _chunk_telegram_messages(
-            blocks, header="📥 <b>Последние сообщения</b>"
-        ):
-            await message.answer(chunk)
+            await message.answer(
+                f"✉️ <b>{name}</b>\n{html.escape(r['text'])}",
+                reply_markup=keyboard,
+            )
     except Exception:
         logger.exception("Ошибка чтения входящих")
 
@@ -290,7 +270,6 @@ def create_dispatcher() -> Dispatcher:
 
     # Порядок важен: команды/кнопки должны проверяться раньше fallback.
     router.message.register(cmd_start, CommandStart())
-    router.message.register(cmd_reply, Command("reply"))
     router.callback_query.register(cb_reply, F.data.startswith("reply:"))
     router.message.register(coach_reply_text, F.text, PendingReplyFilter())
     router.message.register(cmd_inbox, Command("inbox"))
