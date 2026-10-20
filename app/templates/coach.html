@@ -1,9 +1,16 @@
 {% extends "base.html" %}
 {% block header %}Тренер{% endblock %}
+{% block header_right %}
+<button class="header-action" id="fab-add" type="button" aria-label="Создать тренировку" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+    <path d="M12 5v14M5 12h14"/>
+  </svg>
+</button>
+{% endblock %}
 
 {% block content %}
 <!-- ===== Заявка в тренеры (для обычных пользователей) ===== -->
-<section id="apply-section" hidden>
+<section class="section" id="apply-section" hidden>
   <div class="section-title">Стать тренером</div>
   <div class="card">
     <div id="apply-status" class="hint" style="margin-bottom:12px"></div>
@@ -30,49 +37,42 @@
   </div>
 
   <!-- CRM -->
-  <section style="margin-top:24px">
+  <section class="section">
     <div class="section-title">Игроки</div>
     <div id="players"></div>
   </section>
 
   <!-- Заявки (администратор/менеджер) -->
-  <section id="applications-section" hidden style="margin-top:24px">
+  <section class="section" id="applications-section" hidden>
     <div class="section-title">Заявки в тренеры</div>
-    <div class="card" id="applications-list"></div>
+    <div class="card card--compact" id="applications-list"></div>
   </section>
 
   <!-- Профиль тренера -->
-  <section style="margin-top:24px">
+  <section class="section">
     <div class="section-title">Профиль тренера</div>
     <div class="card" id="profile-card">
       <div class="coach-row" id="profile-head"></div>
-      <button class="btn btn--sm" id="profile-edit" style="margin-top:12px">Редактировать профиль</button>
+      <button class="btn btn--sm coach-edit" id="profile-edit">Редактировать профиль</button>
     </div>
   </section>
 
   <!-- Тренеры (администратор/менеджер) -->
-  <section id="coaches-section" hidden style="margin-top:24px">
+  <section class="section" id="coaches-section" hidden>
     <div class="section-title">Тренеры</div>
-    <div class="card">
+    <div class="card card--list" id="coaches-card">
       <div id="coaches-list"></div>
-      <label class="field" style="margin-top:12px">
+    </div>
+    <div class="card card--form">
+      <label class="field">
         <span class="label">Добавить тренера</span>
         <input class="input" id="coach-input" placeholder="telegram_id или @username" autocomplete="off">
       </label>
       <button class="btn btn--primary btn--block" id="coach-add">Добавить тренера</button>
-      <div class="hint" style="margin-top:8px">Добавить можно только того, кто уже запускал бота (/start). Администратора снять нельзя. Каждый тренер редактирует только свои занятия, а чужие видит в режиме «Клуб».</div>
+      <p class="hint hint--tight">Добавить можно только того, кто уже запускал бота (/start). Администратора снять нельзя. Каждый тренер редактирует только свои занятия, а чужие видит в режиме «Клуб».</p>
     </div>
   </section>
-
-  <div style="height:84px"></div>
 </div>
-
-<!-- FAB: создать тренировку (только тренер) -->
-<button class="fab" id="fab-add" aria-label="Создать тренировку" hidden>
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
-    <path d="M12 5v14M5 12h14"/>
-  </svg>
-</button>
 
 <!-- Bottom sheet: создание -->
 <div class="sheet" id="create-sheet">
@@ -99,8 +99,8 @@
         <label class="field"><span class="label">Длительность, мин</span>
           <input class="input" name="duration_min" type="number" min="15" max="600" value="60"></label>
       </div>
-      <div class="card" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-        <span style="font-size:15px">Напоминание игрокам</span>
+      <div class="card card--compact reminder-row">
+        <span class="reminder-row__text">Напоминание игрокам</span>
         <label class="switch"><input name="reminder_enabled" type="checkbox" checked><span></span></label>
       </div>
       <div class="field">
@@ -131,7 +131,7 @@
     <label class="field"><span class="label">Кратко о себе</span>
       <textarea class="input" id="profile-bio" maxlength="300" rows="3"
                 placeholder="Например: тренер с 10-летним опытом, работаю над техникой и подачей"></textarea></label>
-    <div class="hint" style="margin:-4px 0 12px">Игроки увидят это в карточке тренировки и смогут написать вам личное сообщение через бота.</div>
+    <p class="hint hint--tight form-note">Игроки увидят это в карточке тренировки и смогут написать вам личное сообщение через бота.</p>
     <button class="btn btn--primary btn--block" id="save-profile" style="margin-top:6px">Сохранить</button>
   </div>
 </div>
@@ -603,7 +603,7 @@ async function loadLevels() {
 let PROFILE = { bio: '' };
 function renderProfileCard(p) {
   document.getElementById('profile-head').innerHTML = `
-    ${avatarHtml(p.first_name, p.avatar_url, true)}
+    ${avatarHtml(p.first_name, p.avatar_url)}
     <div style="flex:1;min-width:0">
       <div class="coach-name">${esc(p.first_name)}</div>
       <div class="coach-bio">${esc(p.bio || 'Описание пока не заполнено')}</div>
@@ -689,7 +689,7 @@ async function loadApplications() {
           <button class="btn btn--primary btn--sm" data-approve="${a.telegram_id}">Одобрить</button>
           <button class="btn btn--danger btn--sm" data-reject="${a.telegram_id}">Отклонить</button>
         </div>
-      </div>`).join('') : '<div class="hint" style="padding:6px 0">Новых заявок нет.</div>';
+      </div>`).join('') : '<div class="hint" style="padding:4px 0">Новых заявок нет.</div>';
   } catch (e) { toast(e.message); }
 }
 document.getElementById('applications-list').addEventListener('click', async (ev) => {
@@ -717,13 +717,13 @@ function coachRow(c) {
   const remove = c.is_owner ? ''
     : `<button class="btn btn--danger btn--sm" data-cremove="${c.telegram_id}">Снять</button>`;
   return `
-  <div class="p-row">
+  <div class="coach-item">
     ${avatarHtml(c.first_name, c.avatar_url, true)}
-    <div style="flex:1;min-width:0">
-      <div style="font-weight:600;font-size:14px">${esc(c.first_name)}${owner}${mgr}</div>
-      <div class="hint">${c.username ? '@' + esc(c.username) + ' · ' : ''}id: ${c.telegram_id}</div>
+    <div class="coach-item__text">
+      <div class="coach-item__name">${esc(c.first_name)}${owner}${mgr}</div>
+      <div class="coach-item__meta">${c.username ? '@' + esc(c.username) + ' · ' : ''}id: ${c.telegram_id}</div>
     </div>
-    ${mgrToggle}${remove}
+    <div class="coach-item__actions">${mgrToggle}${remove}</div>
   </div>`;
 }
 async function loadCoaches() {
