@@ -122,8 +122,19 @@ cd /opt/sqassit
 sudo .venv/bin/python scripts/update_xray_config.py \
   --url-file /etc/xray-subscription.url \
   --write /usr/local/etc/xray/config.json \
+  --owner nobody:nogroup \
   --restart
 ```
+
+`--owner` нужен потому, что Xray обычно запускается systemd от пользователя
+`nobody`. Если сервис работает от другого пользователя:
+
+```bash
+systemctl show -p User --value xray
+id nobody
+```
+
+и подставьте нужное значение.
 
 Или:
 
@@ -168,6 +179,27 @@ sudo .venv/bin/python scripts/update_xray_config.py \
 sudo .venv/bin/python scripts/update_xray_config.py \
   --url-file /etc/xray-subscription.url --dry-run
 ```
+
+## Если SOCKS не слушает 1080
+
+```bash
+sudo systemctl status xray --no-pager
+sudo journalctl -u xray -n 80 --no-pager
+systemctl show -p User --value xray
+ls -l /usr/local/etc/xray/config.json
+```
+
+Если в логе `permission denied`:
+
+```bash
+sudo chown nobody:nogroup /usr/local/etc/xray/config.json
+sudo chmod 600 /usr/local/etc/xray/config.json
+sudo systemctl restart xray
+ss -ltnp | grep 1080
+```
+
+Если Xray работает от другого пользователя — замените `nobody:nogroup`
+на `$(systemctl show -p User --value xray)` и его группу.
 
 ## 7. Автозапуск
 

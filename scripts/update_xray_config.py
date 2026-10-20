@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import argparse
 import base64
+import grp
 import html
 import json
 import os
+import pwd
 import re
 import shutil
 import subprocess
@@ -177,11 +179,33 @@ def _validate_config(config: dict[str, Any], xray_bin: str) -> None:
         Path(temp_name).unlink(missing_ok=True)
 
 
+def _parse_owner(value: str) -> tuple[int, int]:
+    """Преобразует nobody:nogroup в uid/gid."""
+    user, _, group = value.partition(":")
+    try:
+        pw = pwd.getpwnam(user)
+    except KeyError as exc:
+        raise SubscriptionError(f"Пользователь {user!r} не найден") from exc
+    gid = pw.pw_gid
+    if group:
+        try:
+            gid = grp.getgrnam(group).gr_gid
+        except KeyError as exc:
+            raise SubscriptionError(f"Группа {group!r} не найдена") from exc
+    return pw.pw_uid, gid
+
+
 def _write_atomic(
-    path: Path, config: dict[str, Any], *, validate: bool, xray_bin: str
+    path: Path,
+    config: dict[str, Any],
+    *,
+    validate: bool,
+    xray_bin: str,
+    owner: tuple[int, int] | None = None,
 ) -> bytes | None:
     path.parent.mkdir(parents=True, exist_ok=True)
     old = path.read_bytes() if path.exists() else None
+    old_stat = path.stat() if path.exists() else None
     if validate:
         _validate_config(config, xray_bin)
 
@@ -194,6 +218,11 @@ def _write_atomic(
             encoding="utf-8",
         )
         os.chmod(temp_path, 0o600)
+        # Xray обычно работает от nobody — конфиг должен быть ему доступен.
+        if owner is not None:
+            os.chown(temp_path, owner[0], owner[1])
+        elif old_stat is not None:
+            os.chown(temp_path, old_stat.st_uid, old_stat.st_gid)
         os.replace(temp_path, path)
     except Exception:
         temp_path.unlink(missing_ok=True)
@@ -251,6 +280,7 @@ def update_once(args: argparse.Namespace) -> int:
         config,
         validate=args.validate,
         xray_bin=xray_bin or "xray",
+        owner=_parse_owner(args.owner) if args.owner else None,
     )
     print(f"config updated: {args.write} ({summary})")
 
@@ -285,6 +315,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--index", type=int, default=0, help="какую ссылку выбрать")
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--xray", help="путь к бинарнику xray")
+    parser.add_argument(
+        "--owner",
+        help="владелец config.json, например nobody:nogroup "
+        "(по умолчанию сохраняется текущий)",
+    )
     parser.add_argument("--service", default="xray", help="имя systemd-сервиса")
     parser.add_argument("--restart", action="store_true", help="перезапустить Xray")
     parser.add_argument(
