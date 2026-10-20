@@ -655,3 +655,15 @@ def test_ics_has_real_booked_count_and_valid_folding(client):
     for line in text.split("\r\n"):
         if line:
             assert len(line.encode("utf-8")) <= 75
+
+
+def test_telegram_webapp_script_is_served_locally(client):
+    page = client.get("/")
+    assert page.status_code == 200
+    assert "/static/telegram-web-app.js" in page.text
+    assert "https://telegram.org/js/telegram-web-app.js" not in page.text
+
+    script = client.get("/static/telegram-web-app.js")
+    assert script.status_code == 200
+    assert "WebView" in script.text[:200]
+    assert "max-age=" in script.headers["cache-control"]

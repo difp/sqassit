@@ -24,6 +24,7 @@ import aiosqlite
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
@@ -467,6 +468,7 @@ app = FastAPI(
     redoc_url=None,
     openapi_url="/openapi.json" if settings.enable_api_docs else None,
 )
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
 @app.middleware("http")
@@ -481,7 +483,7 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; "
-        "script-src 'self' https://telegram.org 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
         "connect-src 'self'; "
@@ -491,6 +493,8 @@ async def security_headers(request: Request, call_next):
         "frame-ancestors https://telegram.org https://web.telegram.org "
         "https://*.telegram.org https://*.t.me",
     )
+    if request.url.path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", "public, max-age=604800")
     return response
 
 
