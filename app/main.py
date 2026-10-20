@@ -17,7 +17,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import urlencode
 
 import aiosqlite
@@ -163,15 +163,39 @@ async def current_user(
     return await _authenticate(x_init_data)
 
 
-def _avatar_url(telegram_id: int) -> str:
+ANIMALS: tuple[tuple[str, str], ...] = (
+    ("🦊", "Лиса"),
+    ("🐻", "Медведь"),
+    ("🐼", "Панда"),
+    ("🦉", "Сова"),
+    ("🦦", "Выдра"),
+    ("🦔", "Ёж"),
+    ("🦡", "Барсук"),
+    ("🐧", "Пингвин"),
+    ("🐰", "Кролик"),
+    ("🐸", "Лягушка"),
+    ("🐯", "Тигр"),
+    ("🐨", "Коала"),
+)
+
+
+def animal_identity(telegram_id: int) -> dict[str, str]:
+    """Стабильное вымышленное животное для анонимного отображения."""
+    emoji, name = ANIMALS[int(telegram_id) % len(ANIMALS)]
+    return {"emoji": emoji, "name": name}
+
+
+def _avatar_url(telegram_id: int, *, real: bool = False) -> str:
     """
     Возвращает URL аватарки с узким токеном.
 
-    Обычный <img src="..."> не может отправить заголовок X-Init-Data,
-    поэтому для картинок выдаём отдельный токен, привязанный к telegram_id.
+    ``real=True`` — только для ответов самому пользователю и тренерам:
+    такой токен обходит режим «животное». Публичные карточки используют
+    обычный токен, который уважает настройку приватности.
     """
+    kind = "avatar_real" if real else "avatar"
     token = issue_scoped_token(
-        settings.bot_token, "avatar", telegram_id, telegram_id, ttl_seconds=86400
+        settings.bot_token, kind, telegram_id, telegram_id, ttl_seconds=86400
     )
     return f"/api/avatar/{telegram_id}?{urlencode({'token': token})}"
 
@@ -244,13 +268,32 @@ def serialize_training(
     return data
 
 
-def serialize_participant(row: aiosqlite.Row) -> dict[str, Any]:
-    """Участник для «социальной сетки» — имя и аватарка, без username."""
+def serialize_participant(
+    row: aiosqlite.Row, *, show_real: bool = False
+) -> dict[str, Any]:
+    """
+    Участник для «социальной сетки».
+
+    Игроки видят только имя/фото или вымышленное животное — без username,
+    telegram_id и «о себе». Тренер видит реальные данные для управления
+    занятием.
+    """
+    first_name = row["first_name"] or "Игрок"
+    if not show_real and row["display_mode"] == "animal":
+        animal = animal_identity(row["telegram_id"])
+        return {
+            "first_name": animal["name"],
+            "status": row["status"],
+            "avatar_url": "",
+            "avatar_emoji": animal["emoji"],
+            "anonymous": True,
+        }
     return {
-        "telegram_id": row["telegram_id"],
-        "first_name": row["first_name"] or "Игрок",
+        "first_name": first_name,
         "status": row["status"],
-        "avatar_url": _avatar_url(row["telegram_id"]),
+        "avatar_url": _avatar_url(row["telegram_id"], real=show_real),
+        "avatar_emoji": "",
+        "anonymous": False,
     }
 
 
@@ -261,13 +304,13 @@ def serialize_coach(row: aiosqlite.Row | None) -> dict[str, Any] | None:
     return {
         "telegram_id": row["telegram_id"],
         "first_name": row["first_name"] or "Тренер",
-        "avatar_url": _avatar_url(row["telegram_id"]),
+        "avatar_url": _avatar_url(row["telegram_id"], real=True),
         "bio": row["bio"] or "",
     }
 
 
 def sanitize_bio(value: str) -> str:
-    """Обрезает описание профиля тренера."""
+    """Обрезает текст профиля (био тренера или «о себе» игрока)."""
     return (value or "").strip()[:300]
 
 
@@ -376,6 +419,12 @@ class NotificationsIn(BaseModel):
 
 class TrainerProfileIn(BaseModel):
     bio: str = Field(default="", max_length=300)
+
+
+class PlayerProfileIn(BaseModel):
+    about: str = Field(default="", max_length=300)
+    display_mode: Literal["name", "animal"] = "name"
+    show_username: bool = False
 
 
 class CoachIn(BaseModel):
@@ -495,6 +544,10 @@ async def security_headers(request: Request, call_next):
     )
     if request.url.path.startswith("/static/"):
         response.headers.setdefault("Cache-Control", "public, max-age=604800")
+    elif request.url.path in {"/", "/coach"}:
+        # HTML обновляется чаще статики; не даём WebView закэшировать старую
+        # версию страницы со ссылкой на внешний telegram.org.
+        response.headers.setdefault("Cache-Control", "no-cache")
     return response
 
 
@@ -547,9 +600,45 @@ async def api_me(user: Annotated[dict, Depends(current_user)]):
             "is_owner": bool(user.get("is_owner")),
             "is_manager": bool(user.get("is_manager")),
             "notifications_enabled": bool(user["notifications_enabled"]),
-            "avatar_url": _avatar_url(user["telegram_id"]),
+            "avatar_url": _avatar_url(user["telegram_id"], real=True),
+            "about": user["about"] or "",
+            "display_mode": user["display_mode"] or "name",
+            "show_username": bool(user["show_username"]),
+            "animal": animal_identity(user["telegram_id"]),
         },
     }
+
+
+@app.put("/api/me/profile")
+async def api_set_player_profile(
+    payload: PlayerProfileIn,
+    user: Annotated[dict, Depends(current_user)],
+):
+    """Сохраняет «о себе» и настройки показа в списке участников."""
+    try:
+        await db.set_player_profile(
+            user["telegram_id"],
+            about=sanitize_bio(payload.about),
+            display_mode=payload.display_mode,
+            show_username=payload.show_username,
+        )
+        updated = await db.get_user(user["telegram_id"])
+        if updated is None:
+            raise HTTPException(status_code=500, detail="Профиль не найден.")
+        return {
+            "ok": True,
+            "profile": {
+                "about": updated["about"] or "",
+                "display_mode": updated["display_mode"] or "name",
+                "show_username": bool(updated["show_username"]),
+                "animal": animal_identity(user["telegram_id"]),
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Ошибка сохранения профиля игрока")
+        return error_json("Внутренняя ошибка сервера", 500)
 
 
 @app.put("/api/me/notifications")
@@ -573,6 +662,9 @@ async def api_export_me(user: Annotated[dict, Depends(current_user)]):
             "first_name": user["first_name"],
             "notifications_enabled": bool(user["notifications_enabled"]),
             "notes": user["notes"],
+            "about": user["about"] or "",
+            "display_mode": user["display_mode"] or "name",
+            "show_username": bool(user["show_username"]),
         },
         "bookings": [dict(row) for row in await db.list_user_bookings(user["telegram_id"])],
         "messages": [dict(row) for row in await db.list_user_messages(user["telegram_id"])],
@@ -643,8 +735,11 @@ async def api_trainings(user: Annotated[dict, Depends(current_user)], days: int 
         item = serialize_training(row, viewer_id=user["telegram_id"])
         item["coach"] = coach_cache[creator]
         participants = participants_by_training.get(row["id"], [])
+        show_real = bool(user.get("is_coach"))
         item["participants"] = [
-            serialize_participant(p) for p in participants if p["status"] == "booked"
+            serialize_participant(p, show_real=show_real)
+            for p in participants
+            if p["status"] == "booked"
         ]
         item["waitlist_count"] = sum(
             1 for p in participants if p["status"] == "waitlist"
@@ -919,9 +1014,11 @@ async def api_coach_participants(training_id: int, coach: Annotated[dict, Depend
                 {
                     "telegram_id": r["telegram_id"],
                     "first_name": r["first_name"],
-                    "username": r["username"],
+                    "username": r["username"] if r["show_username"] else None,
+                    "username_visible": bool(r["show_username"]),
+                    "about": r["about"] or "",
                     "status": r["status"],
-                    "avatar_url": _avatar_url(r["telegram_id"]),
+                    "avatar_url": _avatar_url(r["telegram_id"], real=True),
                 }
                 for r in rows
             ],
@@ -1015,8 +1112,11 @@ async def api_players(coach: Annotated[dict, Depends(require_coach)]):
             {
                 "telegram_id": r["telegram_id"],
                 "first_name": r["first_name"],
-                "username": r["username"],
-                "avatar_url": _avatar_url(r["telegram_id"]),
+                "username": r["username"] if r["show_username"] else None,
+                "username_visible": bool(r["show_username"]),
+                "about": r["about"] or "",
+                "display_mode": r["display_mode"] or "name",
+                "avatar_url": _avatar_url(r["telegram_id"], real=True),
                 "notes": r["notes"],
                 "notifications_enabled": bool(r["notifications_enabled"]),
             }
@@ -1189,8 +1289,9 @@ async def api_list_coaches(coach: Annotated[dict, Depends(require_coach)]):
             {
                 "telegram_id": r["telegram_id"],
                 "first_name": r["first_name"] or "Тренер",
-                "username": r["username"],
-                "avatar_url": _avatar_url(r["telegram_id"]),
+                "username": r["username"] if r["show_username"] else None,
+                "username_visible": bool(r["show_username"]),
+                "avatar_url": _avatar_url(r["telegram_id"], real=True),
                 "is_owner": r["telegram_id"] == settings.coach_telegram_id,
                 "is_manager": bool(r["is_manager"]),
             }
@@ -1312,8 +1413,9 @@ async def api_applications(manager: Annotated[dict, Depends(require_manager)]):
             {
                 "telegram_id": r["telegram_id"],
                 "first_name": r["first_name"] or "Пользователь",
-                "username": r["username"],
-                "avatar_url": _avatar_url(r["telegram_id"]),
+                "username": r["username"] if r["show_username"] else None,
+                "username_visible": bool(r["show_username"]),
+                "avatar_url": _avatar_url(r["telegram_id"], real=True),
                 "message": r["message"],
                 "created_at": r["created_at"],
             }
@@ -1453,8 +1555,22 @@ async def api_avatar(telegram_id: int, token: str = ""):
     Авторизация — узким токеном из ``avatar_url``: браузерный <img> не может
     передать заголовок X-Init-Data, а полный initData в URL светить нельзя.
     """
-    if not verify_scoped_token(settings.bot_token, token, "avatar", telegram_id):
+    real = (
+        verify_scoped_token(settings.bot_token, token, "avatar_real", telegram_id)
+        == telegram_id
+    )
+    if not real and verify_scoped_token(
+        settings.bot_token, token, "avatar", telegram_id
+    ) != telegram_id:
         raise HTTPException(status_code=401, detail="Требуется авторизация.")
+
+    row = await db.get_user(telegram_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Аватарка недоступна.")
+    if not real and row["display_mode"] == "animal":
+        # Пользователь выбрал анонимный режим: публичная ссылка больше не
+        # должна отдавать его фотографию, даже если старый токен ещё жив.
+        raise HTTPException(status_code=404, detail="Аватарка скрыта.")
 
     cached = _avatar_cache.get(telegram_id)
     if cached and time.time() - cached[0] < _AVATAR_TTL_SECONDS:
@@ -1464,7 +1580,10 @@ async def api_avatar(telegram_id: int, token: str = ""):
             headers={"Cache-Control": "private, max-age=3600"},
         )
 
-    row = await db.get_user(telegram_id)
+    if not row["avatar_file_id"]:
+        # Пользователь мог запустить бота до появления кэша аватарок.
+        await bot_module._cache_avatar(app.state.bot, telegram_id)
+        row = await db.get_user(telegram_id)
     if row is None or not row["avatar_file_id"]:
         raise HTTPException(status_code=404, detail="Аватарка недоступна.")
 

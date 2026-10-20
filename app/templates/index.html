@@ -8,12 +8,17 @@
   <div class="profile-card__text">
     <div class="profile-card__name" id="me-name">Игрок</div>
     <div class="profile-card__sub">Push-уведомления о тренировках</div>
+    <div class="profile-card__about" id="me-about" hidden></div>
   </div>
   <label class="switch">
     <input id="notif-toggle" type="checkbox" disabled>
     <span></span>
   </label>
 </section>
+<div class="profile-actions">
+  <button class="btn btn--sm" id="profile-edit" type="button">Настроить профиль</button>
+  <button class="btn btn--sm" id="profile-msg" type="button">Написать тренеру</button>
+</div>
 <div style="height:18px"></div>
 
 <div id="loading">
@@ -43,6 +48,35 @@
     <button class="btn btn--primary btn--block" id="msg-send" style="margin-top:12px">Отправить</button>
   </div>
 </div>
+
+<!-- Bottom sheet: профиль и приватность -->
+<div class="sheet" id="profile-sheet">
+  <div class="sheet__backdrop" data-profile-close></div>
+  <div class="sheet__panel" role="dialog" aria-modal="true">
+    <div class="sheet__handle"></div>
+    <h2 class="sheet__title">Профиль игрока</h2>
+    <label class="field"><span class="label">О себе</span>
+      <textarea class="input" id="profile-about" rows="3" maxlength="300"
+                placeholder="Например: играю два года, хочу подтянуть подачу"></textarea></label>
+    <label class="field"><span class="label">Как показываться в списке участников</span>
+      <select class="input" id="profile-display">
+        <option value="name">Имя и фото из Telegram</option>
+        <option value="animal">Вымышленное животное</option>
+      </select></label>
+    <div class="card card--compact setting-row">
+      <div class="setting-row__text">
+        <div class="reminder-row__text">Показывать @username</div>
+        <div class="hint">По умолчанию скрыт. Включайте, только если хотите, чтобы тренер видел ваш username.</div>
+      </div>
+      <label class="switch">
+        <input id="profile-username" type="checkbox">
+        <span></span>
+      </label>
+    </div>
+    <p class="hint hint--tight form-note" id="profile-preview"></p>
+    <button class="btn btn--primary btn--block" id="profile-save" type="button">Сохранить</button>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -52,7 +86,7 @@ const ITEMS = {};
 function participantsLine(list) {
   if (!list.length) return '<span class="t-names">Пока никто не записан</span>';
   const stack = '<div class="avatar-stack">' +
-    list.slice(0, 5).map(p => avatarHtml(p.first_name, p.avatar_url, true)).join('') + '</div>';
+    list.slice(0, 5).map(p => avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)).join('') + '</div>';
   const names = list.map(p => esc(p.first_name)).join(', ');
   return stack + `<span class="t-names">${names}</span>`;
 }
@@ -166,6 +200,7 @@ async function loadProfile() {
   const toggle = document.getElementById('notif-toggle');
   toggle.checked = !!APP.me.notifications_enabled;
   toggle.disabled = false;
+  paintProfile();
 }
 
 document.getElementById('notif-toggle').addEventListener('change', async (ev) => {
@@ -237,6 +272,72 @@ document.getElementById('msg-send').addEventListener('click', async () => {
     toast('Сообщение отправлено тренеру');
     ta.value = '';
     closeMsg();
+  } catch (e) {
+    hapticNotify('error');
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ===== Профиль и приватность =====
+const profileSheet = document.getElementById('profile-sheet');
+const profileAbout = document.getElementById('profile-about');
+const profileDisplay = document.getElementById('profile-display');
+const profileUsername = document.getElementById('profile-username');
+
+function paintProfile() {
+  const about = document.getElementById('me-about');
+  if (!APP.me) return;
+  about.textContent = APP.me.about || '';
+  about.hidden = !APP.me.about;
+}
+
+function updateProfilePreview() {
+  const el = document.getElementById('profile-preview');
+  if (!APP.me) return;
+  if (profileDisplay.value === 'animal') {
+    const a = APP.me.animal;
+    el.textContent = a
+      ? `Другие игроки увидят: ${a.emoji} ${a.name}. Тренер по-прежнему видит ваше реальное имя.`
+      : 'Другие игроки увидят вымышленное животное.';
+  } else {
+    el.textContent = 'Другие игроки увидят ваше имя и фото из Telegram.';
+  }
+}
+
+function openProfile() {
+  if (!APP.me) return;
+  profileAbout.value = APP.me.about || '';
+  profileDisplay.value = APP.me.display_mode || 'name';
+  profileUsername.checked = !!APP.me.show_username;
+  updateProfilePreview();
+  profileSheet.classList.add('is-open');
+  haptic('light');
+}
+
+function closeProfile() { profileSheet.classList.remove('is-open'); }
+
+document.getElementById('profile-edit').addEventListener('click', openProfile);
+document.querySelector('[data-profile-close]').addEventListener('click', closeProfile);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeProfile(); });
+profileDisplay.addEventListener('change', updateProfilePreview);
+document.getElementById('profile-msg').addEventListener('click', () => openMsg(null));
+
+document.getElementById('profile-save').addEventListener('click', async () => {
+  const btn = document.getElementById('profile-save');
+  btn.disabled = true;
+  try {
+    const data = await api('/api/me/profile', 'PUT', {
+      about: profileAbout.value.trim(),
+      display_mode: profileDisplay.value,
+      show_username: profileUsername.checked,
+    });
+    APP.me = Object.assign({}, APP.me, data.profile);
+    paintProfile();
+    hapticNotify('success');
+    toast('Профиль сохранён');
+    closeProfile();
   } catch (e) {
     hapticNotify('error');
     toast(e.message);

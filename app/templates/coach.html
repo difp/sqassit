@@ -636,15 +636,19 @@ document.getElementById('save-profile').addEventListener('click', async () => {
 // ===== CRM =====
 function playerRow(p) {
   const notif = p.notifications_enabled ? 'вкл' : 'выкл';
+  const handle = p.username_visible
+    ? (p.username ? '@' + esc(p.username) : 'без username')
+    : 'username скрыт';
   return `
   <div class="card">
     <div style="display:flex;align-items:center;gap:12px">
       ${avatarHtml(p.first_name, p.avatar_url)}
       <div style="flex:1;min-width:0">
         <div style="font-weight:600">${esc(p.first_name || 'Игрок')}</div>
-        <div style="font-size:12px;color:var(--hint)">${p.username ? '@' + esc(p.username) : 'без username'} · уведомления: ${notif}</div>
+        <div style="font-size:12px;color:var(--hint)">${handle} · уведомления: ${notif}</div>
       </div>
     </div>
+    ${p.about ? `<div class="player-about">${esc(p.about)}</div>` : ''}
     <details style="margin-top:12px">
       <summary style="font-size:13px;font-weight:600;color:var(--link);cursor:pointer">Заметки тренера</summary>
       <textarea class="input" data-notes="${p.telegram_id}" rows="2" style="margin-top:8px">${esc(p.notes)}</textarea>

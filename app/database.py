@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS users (
     notes                 TEXT NOT NULL DEFAULT '',
     bio                   TEXT NOT NULL DEFAULT '',   -- кратко о тренере
     links                 TEXT NOT NULL DEFAULT '[]', -- ссылки тренера (JSON-массив)
+    about                 TEXT NOT NULL DEFAULT '',   -- «о себе» игрока (видит тренер)
+    display_mode          TEXT NOT NULL DEFAULT 'name', -- name | animal
+    show_username         INTEGER NOT NULL DEFAULT 0, -- согласие показывать @username
     created_at            INTEGER NOT NULL
 );
 
@@ -129,6 +132,13 @@ async def _migrate() -> None:
         ("trainings", "level"): "ALTER TABLE trainings ADD COLUMN level TEXT NOT NULL DEFAULT ''",
         ("users", "bio"): "ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''",
         ("users", "links"): "ALTER TABLE users ADD COLUMN links TEXT NOT NULL DEFAULT '[]'",
+        ("users", "about"): "ALTER TABLE users ADD COLUMN about TEXT NOT NULL DEFAULT ''",
+        ("users", "display_mode"): (
+            "ALTER TABLE users ADD COLUMN display_mode TEXT NOT NULL DEFAULT 'name'"
+        ),
+        ("users", "show_username"): (
+            "ALTER TABLE users ADD COLUMN show_username INTEGER NOT NULL DEFAULT 0"
+        ),
         ("coaches", "is_manager"): "ALTER TABLE coaches ADD COLUMN is_manager INTEGER NOT NULL DEFAULT 0",
     }
     present = {"trainings": trainings_cols, "users": users_cols, "coaches": coaches_cols}
@@ -247,6 +257,21 @@ async def set_trainer_profile(telegram_id: int, bio: str) -> None:
     )
 
 
+async def set_player_profile(
+    telegram_id: int,
+    *,
+    about: str,
+    display_mode: str,
+    show_username: bool,
+) -> None:
+    """Сохраняет «о себе» и настройки приватности игрока."""
+    await _execute(
+        "UPDATE users SET about = ?, display_mode = ?, show_username = ? "
+        "WHERE telegram_id = ?",
+        (about, display_mode, int(show_username), telegram_id),
+    )
+
+
 async def find_user_by_username(username: str) -> aiosqlite.Row | None:
     """Ищет пользователя по @username (без учёта регистра)."""
     return await _fetchone(
@@ -315,7 +340,7 @@ async def list_coaches() -> list[aiosqlite.Row]:
     return await _fetchall(
         """
         SELECT c.telegram_id, c.added_by, c.created_at, c.is_manager,
-               u.first_name, u.username, u.avatar_file_id
+               u.first_name, u.username, u.show_username, u.avatar_file_id
           FROM coaches c
           LEFT JOIN users u ON u.telegram_id = c.telegram_id
          ORDER BY c.created_at ASC
@@ -355,7 +380,7 @@ async def list_applications(status: str = "pending") -> list[aiosqlite.Row]:
     return await _fetchall(
         """
         SELECT a.telegram_id, a.message, a.status, a.created_at,
-               u.first_name, u.username, u.avatar_file_id
+               u.first_name, u.username, u.show_username, u.avatar_file_id
           FROM coach_applications a
           LEFT JOIN users u ON u.telegram_id = a.telegram_id
          WHERE a.status = ?
@@ -661,7 +686,8 @@ async def get_participants(training_id: int) -> list[aiosqlite.Row]:
     """Записавшиеся + лист ожидания с данными профиля (для аватарок)."""
     return await _fetchall(
         """
-        SELECT b.status, b.position, b.created_at, u.telegram_id, u.first_name, u.avatar_file_id
+        SELECT b.status, b.position, b.created_at,
+               u.telegram_id, u.first_name, u.avatar_file_id, u.display_mode
           FROM bookings b
           JOIN users u ON u.telegram_id = b.user_id
          WHERE b.training_id = ? AND b.status IN ('booked', 'waitlist')
@@ -681,7 +707,7 @@ async def get_participants_for_trainings(
     rows = await _fetchall(
         """
         SELECT b.training_id, b.status, b.position, b.created_at,
-               u.telegram_id, u.first_name, u.avatar_file_id
+               u.telegram_id, u.first_name, u.avatar_file_id, u.display_mode
           FROM bookings b
           JOIN users u ON u.telegram_id = b.user_id
          WHERE b.training_id IN (SELECT value FROM json_each(?))
@@ -723,7 +749,8 @@ async def get_participants_full(training_id: int) -> list[aiosqlite.Row]:
     return await _fetchall(
         """
         SELECT b.status, b.position, b.created_at,
-               u.telegram_id, u.first_name, u.username, u.avatar_file_id
+               u.telegram_id, u.first_name, u.username, u.show_username,
+               u.avatar_file_id, u.about
           FROM bookings b
           JOIN users u ON u.telegram_id = b.user_id
          WHERE b.training_id = ?

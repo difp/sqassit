@@ -18,6 +18,7 @@ from starlette.testclient import TestClient
 import app.bot as botmod
 import app.main as mainmod
 from app.config import TRAINING_LEVELS, settings
+from app.secure_auth import issue_scoped_token
 
 
 # --- Заглушки сети Telegram (в тестах наружу не ходим) --- #
@@ -667,3 +668,74 @@ def test_telegram_webapp_script_is_served_locally(client):
     assert script.status_code == 200
     assert "WebView" in script.text[:200]
     assert "max-age=" in script.headers["cache-control"]
+
+
+def test_player_privacy_about_and_animal_participant(client):
+    # Игрок 555 приходит с username, но по умолчанию username скрыт.
+    headers = {"X-Init-Data": _init({"id": 555, "first_name": "Иван", "username": "ivan"})}
+    assert client.get("/api/me", headers=headers).status_code == 200
+
+    players = client.get("/api/coach/players", headers=COACH).json()["players"]
+    player = next(p for p in players if p["telegram_id"] == 555)
+    assert player["username"] is None
+    assert player["username_visible"] is False
+    assert player["about"] == ""
+
+    # Игрок заполняет «о себе» и выбирает анонимного животного.
+    r = client.put(
+        "/api/me/profile",
+        headers=headers,
+        json={
+            "about": "Люблю подачу и игру у стены",
+            "display_mode": "animal",
+            "show_username": True,
+        },
+    )
+    assert r.status_code == 200
+    me = client.get("/api/me", headers=headers).json()["user"]
+    assert me["about"] == "Люблю подачу и игру у стены"
+    assert me["display_mode"] == "animal"
+    assert me["show_username"] is True
+    animal = me["animal"]
+    assert animal["emoji"] and animal["name"]
+
+    # Тренер видит username только после согласия и видит «о себе».
+    players = client.get("/api/coach/players", headers=COACH).json()["players"]
+    player = next(p for p in players if p["telegram_id"] == 555)
+    assert player["username"] == "ivan"
+    assert player["username_visible"] is True
+    assert player["about"] == "Люблю подачу и игру у стены"
+
+    # На занятии другой игрок видит животное, без telegram_id и username.
+    tid = _create_training(client, day=20, time_str="18:00")
+    assert client.post(f"/api/trainings/{tid}/book", headers=headers).status_code == 200
+    other = client.get("/api/trainings?days=31", headers=PLAYER2).json()["trainings"]
+    card = next(t for t in other if t["id"] == tid)
+    participant = next(p for p in card["participants"] if p["first_name"] == animal["name"])
+    assert participant["anonymous"] is True
+    assert participant["avatar_emoji"] == animal["emoji"]
+    assert participant["avatar_url"] == ""
+    assert "telegram_id" not in participant
+    assert "username" not in participant
+
+    # Тренер в том же занятии видит реальное имя и реальную аватарку.
+    coach_view = client.get("/api/trainings?days=31", headers=COACH).json()["trainings"]
+    coach_card = next(t for t in coach_view if t["id"] == tid)
+    real = next(p for p in coach_card["participants"] if p["first_name"] == "Иван")
+    assert real["anonymous"] is False
+    assert real["avatar_url"].startswith("/api/avatar/555?token=")
+
+
+def test_avatar_endpoint_hides_photo_in_animal_mode(client):
+    headers = {"X-Init-Data": _init({"id": 555, "first_name": "Иван"})}
+    assert client.get("/api/me", headers=headers).status_code == 200
+    assert client.put(
+        "/api/me/profile",
+        headers=headers,
+        json={"about": "", "display_mode": "animal", "show_username": False},
+    ).status_code == 200
+
+    public_token = issue_scoped_token(settings.bot_token, "avatar", 555, 555)
+    response = client.get(f"/api/avatar/555?token={public_token}")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Аватарка скрыта."
