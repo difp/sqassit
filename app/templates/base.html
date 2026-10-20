@@ -147,7 +147,9 @@
 
     /* ===== Тренировка ===== */
     .t-top { display: flex; gap: 12px; align-items: flex-start; }
-    .t-time { font-size: 22px; font-weight: 800; letter-spacing: -.5px; line-height: 1.1; min-width: 56px; font-variant-numeric: tabular-nums; }
+    .t-when { flex: none; min-width: 58px; }
+    .t-time { font-size: 22px; font-weight: 800; letter-spacing: -.5px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+    .t-duration { font-size: 11.5px; color: var(--hint); line-height: 1.25; margin-top: 3px; white-space: nowrap; }
     .t-info { flex: 1; min-width: 0; }
     .t-title {
       font-weight: 600; font-size: 15.5px; line-height: 1.28;
@@ -219,6 +221,13 @@
 
     /* ===== Бейдж «менеджер» ===== */
     .badge--level { background: rgba(94,92,230,.16); color: #5e5ce6; }
+
+    /* ===== Уровни игры: только цвет текста, без заливки ===== */
+    .level { font-weight: 700; white-space: nowrap; }
+    .level--orange { color: #ff9f0a; color: color-mix(in srgb, #ff9f0a 78%, var(--text)); }
+    .level--green { color: #30d158; color: color-mix(in srgb, #30d158 78%, var(--text)); }
+    .level--white { color: var(--text); }
+    .level--muted { color: var(--hint); }
 
     /* ===== Блок тренера в карточке (тап -> написать) ===== */
     .t-coach {
@@ -480,6 +489,17 @@
       return String(s == null ? '' : s).replace(/[&<>"']/g, c => (
         { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
       ));
+    }
+
+    // Уровень игры: короткая цветная плашка вместо длинной строки.
+    function levelPill(level) {
+      if (!level) return '';
+      const label = String(level).replace(/\s*\([^)]*\)\s*$/, '');
+      const s = label.toLowerCase();
+      const tone = s.includes('уверен') ? 'orange'
+        : s.includes('начин') ? 'green'
+          : s.includes('нович') ? 'white' : 'muted';
+      return `<span class="level level--${tone}">${esc(label)}</span>`;
     }
 
     // Аватар: цветной круг с инициалом; картинка грузится поверх, при ошибке удаляется.

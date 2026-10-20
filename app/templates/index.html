@@ -147,10 +147,13 @@ function trainingCard(t) {
   return `
   <div class="card">
     <div class="t-top">
-      <div class="t-time">${esc(t.time)}</div>
+      <div class="t-when">
+        <div class="t-time">${esc(t.time)}</div>
+        <div class="t-duration">${t.duration_min} мин</div>
+      </div>
       <div class="t-info">
         <div class="t-title">${esc(t.type)}</div>
-        <div class="t-meta">${t.duration_min} мин${t.level ? ' · ' + esc(t.level) : ''}</div>
+        ${t.level ? `<div class="t-meta">${levelPill(t.level)}</div>` : ''}
       </div>
       <div class="t-occ">
         <b>${free}</b><span style="color:var(--hint)">/${t.capacity}</span>

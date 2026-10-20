@@ -336,10 +336,13 @@ function activeRow(t) {
   return `
   <div class="card">
     <div class="t-top">
-      <div class="t-time">${esc(t.time)}</div>
+      <div class="t-when">
+        <div class="t-time">${esc(t.time)}</div>
+        <div class="t-duration">${t.duration_min} мин</div>
+      </div>
       <div class="t-info">
         <div class="t-title">${esc(t.type)}</div>
-        <div class="t-meta">${esc(fmtDay(t.date))} · ${t.duration_min} мин${t.level ? ' · ' + esc(t.level) : ''}</div>
+        <div class="t-meta">${esc(fmtDay(t.date))}${t.level ? ' · ' + levelPill(t.level) : ''}</div>
       </div>
       <div style="display:flex;gap:2px">
         ${iconBtn(`data-cal="${t.id}"`, 'В календарь', ICON_CAL, 'var(--link)')}
@@ -364,10 +367,13 @@ function historyRow(t) {
   return `
   <div class="card">
     <div class="t-top">
-      <div class="t-time" style="opacity:.7">${esc(t.time)}</div>
+      <div class="t-when">
+        <div class="t-time" style="opacity:.7">${esc(t.time)}</div>
+        <div class="t-duration">${t.duration_min} мин</div>
+      </div>
       <div class="t-info">
         <div class="t-title">${esc(t.type)}</div>
-        <div class="t-meta">${esc(fmtDay(t.date))} · ${t.duration_min} мин${t.level ? ' · ' + esc(t.level) : ''}</div>
+        <div class="t-meta">${esc(fmtDay(t.date))}${t.level ? ' · ' + levelPill(t.level) : ''}</div>
       </div>
       <div style="display:flex;gap:2px">
         ${iconBtn(`data-cal="${t.id}"`, 'В календарь', ICON_CAL, 'var(--link)')}
@@ -385,10 +391,13 @@ function deletedRow(t) {
   return `
   <div class="card deleted-card">
     <div class="t-top">
-      <div class="t-time" style="opacity:.6">${esc(t.time)}</div>
+      <div class="t-when">
+        <div class="t-time" style="opacity:.6">${esc(t.time)}</div>
+        <div class="t-duration">${t.duration_min} мин</div>
+      </div>
       <div class="t-info">
         <div class="t-title">${esc(t.type)}</div>
-        <div class="t-meta">${esc(fmtDay(t.date))} · ${t.duration_min} мин</div>
+        <div class="t-meta">${esc(fmtDay(t.date))}</div>
       </div>
     </div>
     <div class="hint" style="margin-top:8px">Было записано: ${t.booked_count}${t.waitlist_count ? ', в очереди: ' + t.waitlist_count : ''}</div>
@@ -406,10 +415,13 @@ function clubRow(t) {
   return `
   <div class="card">
     <div class="t-top">
-      <div class="t-time">${esc(t.time)}</div>
+      <div class="t-when">
+        <div class="t-time">${esc(t.time)}</div>
+        <div class="t-duration">${t.duration_min} мин</div>
+      </div>
       <div class="t-info">
         <div class="t-title">${esc(t.type)}</div>
-        <div class="t-meta">${esc(fmtDay(t.date))} · ${t.duration_min} мин${t.level ? ' · ' + esc(t.level) : ''}</div>
+        <div class="t-meta">${esc(fmtDay(t.date))}${t.level ? ' · ' + levelPill(t.level) : ''}</div>
       </div>
       <div class="t-occ"><b>${t.booked_count}</b><span style="color:var(--hint)">/${t.capacity}</span><span class="lbl">записано</span></div>
     </div>
