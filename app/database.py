@@ -750,7 +750,7 @@ async def get_participants_full(training_id: int) -> list[aiosqlite.Row]:
         """
         SELECT b.status, b.position, b.created_at,
                u.telegram_id, u.first_name, u.username, u.show_username,
-               u.avatar_file_id, u.about
+               u.avatar_file_id, u.about, u.display_mode
           FROM bookings b
           JOIN users u ON u.telegram_id = b.user_id
          WHERE b.training_id = ?
@@ -982,7 +982,8 @@ async def list_inbox(to_user: int, limit: int = 20) -> list[aiosqlite.Row]:
     """Последние входящие сообщения (для тренера)."""
     return await _fetchall(
         """
-        SELECT m.text, m.created_at, m.from_user, u.first_name AS sender_name
+        SELECT m.text, m.created_at, m.from_user,
+               u.first_name AS sender_name, u.display_mode
           FROM messages m
           LEFT JOIN users u ON u.telegram_id = m.from_user
          WHERE m.to_user = ?

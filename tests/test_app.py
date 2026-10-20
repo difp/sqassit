@@ -701,13 +701,18 @@ def test_player_privacy_about_and_animal_participant(client):
     assert animal["emoji"] and animal["name"]
 
     # Тренер видит username только после согласия и видит «о себе».
+    # Имя/фото в режиме «животное» скрыто и от тренера.
     players = client.get("/api/coach/players", headers=COACH).json()["players"]
     player = next(p for p in players if p["telegram_id"] == 555)
     assert player["username"] == "ivan"
     assert player["username_visible"] is True
     assert player["about"] == "Люблю подачу и игру у стены"
+    assert player["first_name"] == animal["name"]
+    assert player["avatar_emoji"] == animal["emoji"]
+    assert player["avatar_url"] == ""
+    assert player["anonymous"] is True
 
-    # На занятии другой игрок видит животное, без telegram_id и username.
+    # На занятии и другой игрок, и тренер видят только животное.
     tid = _create_training(client, day=20, time_str="18:00")
     assert client.post(f"/api/trainings/{tid}/book", headers=headers).status_code == 200
     other = client.get("/api/trainings?days=31", headers=PLAYER2).json()["trainings"]
@@ -719,7 +724,24 @@ def test_player_privacy_about_and_animal_participant(client):
     assert "telegram_id" not in participant
     assert "username" not in participant
 
-    # Тренер в том же занятии видит реальное имя и реальную аватарку.
+    coach_view = client.get("/api/trainings?days=31", headers=COACH).json()["trainings"]
+    coach_card = next(t for t in coach_view if t["id"] == tid)
+    coach_participant = next(
+        p for p in coach_card["participants"] if p["first_name"] == animal["name"]
+    )
+    assert coach_participant["anonymous"] is True
+    assert coach_participant["avatar_url"] == ""
+
+    # В обычном режиме тренер снова видит реальное имя и аватарку.
+    assert client.put(
+        "/api/me/profile",
+        headers=headers,
+        json={
+            "about": "Люблю подачу и игру у стены",
+            "display_mode": "name",
+            "show_username": True,
+        },
+    ).status_code == 200
     coach_view = client.get("/api/trainings?days=31", headers=COACH).json()["trainings"]
     coach_card = next(t for t in coach_view if t["id"] == tid)
     real = next(p for p in coach_card["participants"] if p["first_name"] == "Иван")
@@ -771,6 +793,7 @@ def test_inbox_hides_player_id(monkeypatch):
         {
             "from_user": 555,
             "sender_name": "Иван",
+            "display_mode": "name",
             "text": "Можно перенести тренировку?",
             "created_at": 1,
         }
@@ -797,4 +820,46 @@ def test_inbox_hides_player_id(monkeypatch):
     assert "Можно перенести тренировку?" in text
     assert "555" not in text
     assert "/reply" not in text
+    assert markup.inline_keyboard[0][0].callback_data == "reply:555"
+
+
+def test_training_time_uses_24_hour_input(client):
+    page = client.get("/coach")
+    assert page.status_code == 200
+    assert 'id="training-time"' in page.text
+    assert 'Время · 24 ч' in page.text
+    assert 'pattern="(?:[01][0-9]|2[0-3]):[0-5][0-9]"' in page.text
+
+
+def test_inbox_uses_animal_name_in_anonymous_mode(monkeypatch):
+    rows = [
+        {
+            "from_user": 555,
+            "sender_name": "Иван",
+            "display_mode": "animal",
+            "text": "Привет",
+            "created_at": 1,
+        }
+    ]
+
+    async def fake_list_inbox(coach_id, limit):
+        return rows
+
+    monkeypatch.setattr(botmod.db, "list_inbox", fake_list_inbox)
+    answers = []
+
+    async def fake_answer(text, reply_markup=None):
+        answers.append((text, reply_markup))
+
+    fake_message = SimpleNamespace(
+        from_user=SimpleNamespace(id=settings.coach_telegram_id),
+        answer=fake_answer,
+    )
+    asyncio.run(botmod.cmd_inbox(fake_message))
+
+    animal = botmod.animal_identity(555)
+    text, markup = answers[0]
+    assert animal["name"] in text
+    assert "Иван" not in text
+    assert "555" not in text
     assert markup.inline_keyboard[0][0].callback_data == "reply:555"

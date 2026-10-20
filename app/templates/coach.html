@@ -37,23 +37,25 @@
   </div>
 
   <!-- CRM -->
-  <section class="section">
+  <section class="section" id="players-section">
     <div class="section-title">Игроки</div>
-    <div id="players"></div>
+    <div id="players"><div class="skeleton skeleton--row"></div></div>
   </section>
 
   <!-- Заявки (администратор/менеджер) -->
   <section class="section" id="applications-section" hidden>
     <div class="section-title">Заявки в тренеры</div>
-    <div class="card card--compact" id="applications-list"></div>
+    <div class="card card--compact" id="applications-list">
+      <div class="skeleton skeleton--row"></div>
+    </div>
   </section>
 
   <!-- Профиль тренера -->
-  <section class="section">
+  <section class="section" id="profile-section">
     <div class="section-title">Профиль тренера</div>
     <div class="card" id="profile-card">
-      <div class="coach-row" id="profile-head"></div>
-      <button class="btn btn--sm coach-edit" id="profile-edit">Редактировать профиль</button>
+      <div class="coach-row" id="profile-head"><div class="skeleton skeleton--row"></div></div>
+      <button class="btn btn--sm btn--block coach-edit" id="profile-edit">Редактировать профиль</button>
     </div>
   </section>
 
@@ -61,7 +63,7 @@
   <section class="section" id="coaches-section" hidden>
     <div class="section-title">Тренеры</div>
     <div class="card card--list" id="coaches-card">
-      <div id="coaches-list"></div>
+      <div id="coaches-list"><div class="skeleton skeleton--row"></div></div>
     </div>
     <div class="card card--form">
       <label class="field">
@@ -69,7 +71,7 @@
         <input class="input" id="coach-input" placeholder="telegram_id или @username" autocomplete="off">
       </label>
       <button class="btn btn--primary btn--block" id="coach-add">Добавить тренера</button>
-      <p class="hint hint--tight">Добавить можно только того, кто уже запускал бота (/start). Администратора снять нельзя. Каждый тренер редактирует только свои занятия, а чужие видит в режиме «Клуб».</p>
+      <p class="hint hint--tight">Добавить можно только после /start. Администратора снять нельзя; чужие занятия видны в режиме «Клуб».</p>
     </div>
   </section>
 </div>
@@ -84,8 +86,12 @@
       <div class="row2">
         <label class="field"><span class="label">Дата</span>
           <input class="input" name="date" type="date" required></label>
-        <label class="field"><span class="label">Время</span>
-          <input class="input" name="time" type="time" value="19:00" required></label>
+        <label class="field"><span class="label">Время · 24 ч</span>
+          <input class="input" id="training-time" name="time" type="text"
+                 inputmode="numeric" pattern="(?:[01][0-9]|2[0-3]):[0-5][0-9]"
+                 maxlength="5" value="19:00" placeholder="19:00"
+                 title="24-часовой формат, например 19:30"
+                 autocomplete="off" required></label>
       </div>
       <label class="field"><span class="label">Тип тренировки</span>
         <input class="input" name="training_type" type="text" value="Тренировка" maxlength="100" required></label>
@@ -166,6 +172,7 @@ function openSheet() {
   const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
   const dateInput = sheet.querySelector('[name="date"]');
   if (!dateInput.value) dateInput.value = local;
+  ensureLevels();
   sheet.classList.add('is-open');
   haptic('light');
   try { tg && tg.BackButton && tg.BackButton.show(); } catch (e) {}
@@ -178,6 +185,30 @@ document.getElementById('fab-add').addEventListener('click', openSheet);
 sheet.querySelector('[data-close]').addEventListener('click', closeSheet);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSheet(); });
 if (tg && tg.BackButton) tg.BackButton.onClick(closeSheet);
+
+// Время всегда в 24-часовом формате: 1930 -> 19:30, 07:00 и т.п.
+const trainingTime = document.getElementById('training-time');
+trainingTime.addEventListener('input', () => {
+  const raw = trainingTime.value;
+  if (raw.includes(':')) {
+    const [h, m] = raw.split(':');
+    const hh = h.replace(/\D/g, '').slice(0, 2);
+    const mm = m.replace(/\D/g, '').slice(0, 2);
+    trainingTime.value = (hh.length === 1 ? '0' + hh : hh) + ':' + mm;
+    return;
+  }
+  const digits = raw.replace(/\D/g, '').slice(0, 4);
+  trainingTime.value = digits.length > 2
+    ? digits.slice(0, 2) + ':' + digits.slice(2)
+    : digits;
+});
+trainingTime.addEventListener('blur', () => {
+  if (!trainingTime.value.trim()) return;
+  const digits = trainingTime.value.replace(/\D/g, '').padEnd(4, '0').slice(0, 4);
+  const h = Math.min(23, parseInt(digits.slice(0, 2), 10) || 0);
+  const m = Math.min(59, parseInt(digits.slice(2, 4), 10) || 0);
+  trainingTime.value = String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+});
 
 document.getElementById('rem-presets').addEventListener('click', ev => {
   const preset = ev.target.closest('[data-preset]');
@@ -418,7 +449,7 @@ function participantRow(tid, p, own) {
       : `<button class="btn btn--danger btn--sm" data-premove="${p.telegram_id}">Снять</button>`;
   return `
   <div class="p-row" data-ptid="${tid}" data-uid="${p.telegram_id}">
-    ${avatarHtml(p.first_name, p.avatar_url, true)}
+    ${avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)}
     <div style="flex:1;min-width:0">
       <div style="font-weight:600;font-size:14px">${esc(p.first_name)}</div>
       ${badge}
@@ -590,17 +621,23 @@ document.getElementById('apply-send').addEventListener('click', async () => {
 });
 
 // ===== Уровни игры =====
+let LEVELS_LOADED = false;
 async function loadLevels() {
   try {
     const data = await api('/api/levels');
     const sel = document.getElementById('level-select');
     sel.innerHTML = '<option value="">Не указан</option>' +
       data.levels.map(l => `<option value="${esc(l)}">${esc(l)}</option>`).join('');
+    LEVELS_LOADED = true;
   } catch (e) { /* не критично */ }
+}
+function ensureLevels() {
+  if (!LEVELS_LOADED) loadLevels();
 }
 
 // ===== Профиль тренера =====
 let PROFILE = { bio: '' };
+let PROFILE_LOADED = false;
 function renderProfileCard(p) {
   document.getElementById('profile-head').innerHTML = `
     ${avatarHtml(p.first_name, p.avatar_url)}
@@ -614,9 +651,14 @@ async function loadProfile() {
     const data = await api('/api/coach/profile');
     PROFILE = data.profile || { bio: '' };
     renderProfileCard(PROFILE);
+    PROFILE_LOADED = true;
   } catch (e) { toast(e.message); }
 }
-document.getElementById('profile-edit').addEventListener('click', () => {
+async function ensureProfile() {
+  if (!PROFILE_LOADED) await loadProfile();
+}
+document.getElementById('profile-edit').addEventListener('click', async () => {
+  await ensureProfile();
   document.getElementById('profile-bio').value = PROFILE.bio || '';
   profileSheet.classList.add('is-open');
   haptic('light');
@@ -642,7 +684,7 @@ function playerRow(p) {
   return `
   <div class="card">
     <div style="display:flex;align-items:center;gap:12px">
-      ${avatarHtml(p.first_name, p.avatar_url)}
+      ${avatarHtml(p.first_name, p.avatar_url, false, p.avatar_emoji)}
       <div style="flex:1;min-width:0">
         <div style="font-weight:600">${esc(p.first_name || 'Игрок')}</div>
         <div style="font-size:12px;color:var(--hint)">${handle} · уведомления: ${notif}</div>
@@ -661,7 +703,7 @@ async function loadPlayers() {
     const data = await api('/api/coach/players');
     document.getElementById('players').innerHTML = data.players.length
       ? data.players.map(playerRow).join('')
-      : '<div class="empty"><div>Игроков пока нет.</div></div>';
+      : '<div class="empty empty--inline"><div>Игроков пока нет.</div></div>';
   } catch (e) { toast(e.message); }
 }
 document.getElementById('players').addEventListener('click', async (ev) => {
@@ -770,6 +812,24 @@ document.getElementById('coaches-list').addEventListener('change', async (ev) =>
   } catch (e) { hapticNotify('error'); toast(e.message); loadCoaches(); }
 });
 
+// ===== Ленивая загрузка нижних секций =====
+function whenVisible(id, fn) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!('IntersectionObserver' in window)) {
+    fn();
+    return;
+  }
+  let done = false;
+  const observer = new IntersectionObserver(entries => {
+    if (done || !entries.some(e => e.isIntersecting)) return;
+    done = true;
+    observer.disconnect();
+    fn();
+  }, { rootMargin: '140px 0px' });
+  observer.observe(el);
+}
+
 // ===== Инициализация по роли =====
 (async () => {
   await APP.ready;
@@ -781,16 +841,15 @@ document.getElementById('coaches-list').addEventListener('change', async (ev) =>
   if (me.is_coach) {
     document.getElementById('coach-content').hidden = false;
     document.getElementById('fab-add').hidden = false;
+    loadView();
+    whenVisible('players-section', loadPlayers);
+    whenVisible('profile-section', loadProfile);
     if (IS_MANAGER) {
       document.getElementById('applications-section').hidden = false;
       document.getElementById('coaches-section').hidden = false;
-      loadApplications();
-      loadCoaches();
+      whenVisible('applications-section', loadApplications);
+      whenVisible('coaches-section', loadCoaches);
     }
-    loadLevels();
-    loadProfile();
-    loadView();
-    loadPlayers();
   } else {
     document.getElementById('apply-section').hidden = false;
     loadApplyStatus();

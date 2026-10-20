@@ -28,6 +28,7 @@ from aiogram.types import (
 
 from . import database as db
 from .config import settings
+from .identity import animal_identity
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +53,18 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
+WEB_APP_VERSION = "2"
+
+
 def _web_app_url() -> str:
     """Публичный HTTPS-адрес Web App (для кнопки в боте)."""
     base = settings.webhook_base_url.rstrip("/")
-    return base or "https://t.me"
+    if not base:
+        return "https://t.me"
+    # Версия в query сбрасывает старый HTML из кэша Telegram WebView после
+    # заметных обновлений интерфейса. Меняйте при крупных релизах.
+    separator = "&" if "?" in base else "?"
+    return f"{base}{separator}v={WEB_APP_VERSION}"
 
 
 async def _cache_avatar(bot: Bot, user_id: int) -> None:
@@ -170,7 +179,11 @@ async def cmd_inbox(message: Message) -> None:
             await message.answer("📭 Входящих сообщений нет.")
             return
         for r in rows:
-            name = html.escape(r["sender_name"] or "Игрок")
+            if r["display_mode"] == "animal":
+                sender_name = animal_identity(r["from_user"])["name"]
+            else:
+                sender_name = r["sender_name"] or "Игрок"
+            name = html.escape(sender_name)
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [

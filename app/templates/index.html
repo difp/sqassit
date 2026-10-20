@@ -299,10 +299,10 @@ function updateProfilePreview() {
   if (profileDisplay.value === 'animal') {
     const a = APP.me.animal;
     el.textContent = a
-      ? `Другие игроки увидят: ${a.emoji} ${a.name}. Тренер по-прежнему видит ваше реальное имя.`
-      : 'Другие игроки увидят вымышленное животное.';
+      ? `Тренер и другие игроки увидят: ${a.emoji} ${a.name}.`
+      : 'Тренер и другие игроки увидят вымышленное животное.';
   } else {
-    el.textContent = 'Другие игроки увидят ваше имя и фото из Telegram.';
+    el.textContent = 'Тренер и другие игроки увидят ваше имя и фото из Telegram.';
   }
 }
 

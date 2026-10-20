@@ -37,6 +37,7 @@ from .config import (
     TRAINING_LEVELS,
     settings,
 )
+from .identity import animal_identity
 from .rate_limit import RateLimiter
 from .secure_auth import (
     InitDataError,
@@ -163,28 +164,6 @@ async def current_user(
     return await _authenticate(x_init_data)
 
 
-ANIMALS: tuple[tuple[str, str], ...] = (
-    ("🦊", "Лиса"),
-    ("🐻", "Медведь"),
-    ("🐼", "Панда"),
-    ("🦉", "Сова"),
-    ("🦦", "Выдра"),
-    ("🦔", "Ёж"),
-    ("🦡", "Барсук"),
-    ("🐧", "Пингвин"),
-    ("🐰", "Кролик"),
-    ("🐸", "Лягушка"),
-    ("🐯", "Тигр"),
-    ("🐨", "Коала"),
-)
-
-
-def animal_identity(telegram_id: int) -> dict[str, str]:
-    """Стабильное вымышленное животное для анонимного отображения."""
-    emoji, name = ANIMALS[int(telegram_id) % len(ANIMALS)]
-    return {"emoji": emoji, "name": name}
-
-
 def _avatar_url(telegram_id: int, *, real: bool = False) -> str:
     """
     Возвращает URL аватарки с узким токеном.
@@ -268,33 +247,34 @@ def serialize_training(
     return data
 
 
-def serialize_participant(
-    row: aiosqlite.Row, *, show_real: bool = False
-) -> dict[str, Any]:
+def participant_identity(row: aiosqlite.Row) -> dict[str, Any]:
     """
-    Участник для «социальной сетки».
+    Имя/аватар для списка участников.
 
-    Игроки видят только имя/фото или вымышленное животное — без username,
-    telegram_id и «о себе». Тренер видит реальные данные для управления
-    занятием.
+    В режиме «животное» реальные имя и фото не показываются ни игрокам,
+    ни тренеру: тренер тоже видит стабильное вымышленное животное.
     """
-    first_name = row["first_name"] or "Игрок"
-    if not show_real and row["display_mode"] == "animal":
+    if row["display_mode"] == "animal":
         animal = animal_identity(row["telegram_id"])
         return {
             "first_name": animal["name"],
-            "status": row["status"],
             "avatar_url": "",
             "avatar_emoji": animal["emoji"],
             "anonymous": True,
         }
     return {
-        "first_name": first_name,
-        "status": row["status"],
-        "avatar_url": _avatar_url(row["telegram_id"], real=show_real),
+        "first_name": row["first_name"] or "Игрок",
+        "avatar_url": _avatar_url(row["telegram_id"]),
         "avatar_emoji": "",
         "anonymous": False,
     }
+
+
+def serialize_participant(row: aiosqlite.Row) -> dict[str, Any]:
+    """Участник для «социальной сетки» — без username и telegram_id."""
+    data = participant_identity(row)
+    data["status"] = row["status"]
+    return data
 
 
 def serialize_coach(row: aiosqlite.Row | None) -> dict[str, Any] | None:
@@ -735,9 +715,8 @@ async def api_trainings(user: Annotated[dict, Depends(current_user)], days: int 
         item = serialize_training(row, viewer_id=user["telegram_id"])
         item["coach"] = coach_cache[creator]
         participants = participants_by_training.get(row["id"], [])
-        show_real = bool(user.get("is_coach"))
         item["participants"] = [
-            serialize_participant(p, show_real=show_real)
+            serialize_participant(p)
             for p in participants
             if p["status"] == "booked"
         ]
@@ -1012,13 +991,12 @@ async def api_coach_participants(training_id: int, coach: Annotated[dict, Depend
             "ok": True,
             "participants": [
                 {
+                    **participant_identity(r),
                     "telegram_id": r["telegram_id"],
-                    "first_name": r["first_name"],
                     "username": r["username"] if r["show_username"] else None,
                     "username_visible": bool(r["show_username"]),
                     "about": r["about"] or "",
                     "status": r["status"],
-                    "avatar_url": _avatar_url(r["telegram_id"], real=True),
                 }
                 for r in rows
             ],
@@ -1110,13 +1088,12 @@ async def api_players(coach: Annotated[dict, Depends(require_coach)]):
         "ok": True,
         "players": [
             {
+                **participant_identity(r),
                 "telegram_id": r["telegram_id"],
-                "first_name": r["first_name"],
                 "username": r["username"] if r["show_username"] else None,
                 "username_visible": bool(r["show_username"]),
                 "about": r["about"] or "",
                 "display_mode": r["display_mode"] or "name",
-                "avatar_url": _avatar_url(r["telegram_id"], real=True),
                 "notes": r["notes"],
                 "notifications_enabled": bool(r["notifications_enabled"]),
             }
@@ -1192,8 +1169,13 @@ async def api_message_coach(payload: MessageIn, user: Annotated[dict, Depends(cu
         coach_id = training["created_by"] or coach_id
 
     await db.add_message(user["telegram_id"], coach_id, text)
+    sender_name = (
+        animal_identity(user["telegram_id"])["name"]
+        if user.get("display_mode") == "animal"
+        else (user["first_name"] or "Игрок")
+    )
     asyncio.create_task(
-        _deliver_to_coach(coach_id, user["telegram_id"], user["first_name"] or "Игрок", text)
+        _deliver_to_coach(coach_id, user["telegram_id"], sender_name, text)
     )
     return {"ok": True}
 
@@ -1333,11 +1315,13 @@ async def api_add_coach(payload: CoachIn, manager: Annotated[dict, Depends(requi
 async def _notify_new_coach(tg_id: int) -> None:
     """Фоновое уведомление новому тренеру со ссылкой на Web App."""
     try:
-        base = settings.webhook_base_url.rstrip("/")
         markup = None
-        if base:
+        if settings.webhook_base_url:
             markup = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🏸 Открыть тренировки", web_app=WebAppInfo(url=base))
+                InlineKeyboardButton(
+                    text="🏸 Открыть тренировки",
+                    web_app=WebAppInfo(url=bot_module._web_app_url()),
+                )
             ]])
         await app.state.bot.send_message(
             tg_id,
