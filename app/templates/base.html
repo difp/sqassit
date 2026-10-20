@@ -491,10 +491,10 @@
       ));
     }
 
-    // Уровень игры: короткая цветная плашка вместо длинной строки.
+    // Уровень игры: цвет только у текста, название показываем полностью.
     function levelPill(level) {
       if (!level) return '';
-      const label = String(level).replace(/\s*\([^)]*\)\s*$/, '');
+      const label = String(level).trim();
       const s = label.toLowerCase();
       const tone = s.includes('уверен') ? 'orange'
         : s.includes('начин') ? 'green'
