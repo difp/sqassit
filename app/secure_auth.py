@@ -60,10 +60,10 @@ def validate_init_data(
     if not received_hash:
         raise InitDataError("В initData отсутствует поле hash.")
 
-    # Поле signature (Telegram Web App 7.x) не участвует в data_check_string.
-    pairs.pop("signature", None)
+    # data_check_string: все поля, кроме hash, отсортированы по ключу и
+    # соединены через \n. Поле signature тоже входит в строку: Telegram
+    # считает hash от всех переданных полей.
 
-    # data_check_string: отсортировано по ключу, соединено через \n.
     data_check_string = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs))
 
     secret_key = _build_secret_key(bot_token)

@@ -21,11 +21,14 @@ from app.secure_auth import (
 TOKEN = "123456:TEST-TOKEN"
 
 
-def _sign(user: dict, token: str, auth_date: int | None = None) -> str:
+def _sign(
+    user: dict, token: str, auth_date: int | None = None, **extra: str
+) -> str:
     pairs = {
         "auth_date": str(auth_date if auth_date is not None else int(time.time())),
         "query_id": "AA",
         "user": json.dumps(user, separators=(",", ":")),
+        **extra,
     }
     dcs = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs))
     secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
@@ -37,6 +40,12 @@ def test_valid_signature():
     user = {"id": 42, "first_name": "Иван"}
     result = validate_init_data(_sign(user, TOKEN), TOKEN)
     assert result["user"]["id"] == 42
+
+
+def test_signature_field_is_part_of_hash():
+    user = {"id": 42, "first_name": "Иван"}
+    signed = _sign(user, TOKEN, signature="telegram-signature")
+    assert validate_init_data(signed, TOKEN)["user"]["id"] == 42
 
 
 def test_wrong_token_rejected():
