@@ -8,7 +8,7 @@ PYTHON ?= $(VENV)/bin/python
 PORT ?= 8000
 DB_PATH ?= ./data/squash.db
 XRAY_CONFIG ?= /usr/local/etc/xray/config.json
-XRAY_OWNER ?= nobody:nogroup
+XRAY_OWNER ?=
 SUBSCRIPTION_FILE ?= /etc/xray-subscription.url
 
 .DEFAULT_GOAL := help
@@ -49,7 +49,7 @@ xray-update: ## Обновить Xray config из subscription и перезап
 	sudo $(PYTHON) scripts/update_xray_config.py \
 		--url-file "$(SUBSCRIPTION_FILE)" \
 		--write "$(XRAY_CONFIG)" \
-		--owner "$(XRAY_OWNER)" \
+		$(if $(XRAY_OWNER),--owner "$(XRAY_OWNER)",) \
 		--restart
 
 backup: ## Бэкап SQLite в data/backup-<дата>.db

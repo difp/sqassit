@@ -180,7 +180,7 @@ def _validate_config(config: dict[str, Any], xray_bin: str) -> None:
 
 
 def _parse_owner(value: str) -> tuple[int, int]:
-    """Преобразует nobody:nogroup в uid/gid."""
+    """Преобразует xray:xray / nobody:nogroup в uid/gid."""
     user, _, group = value.partition(":")
     try:
         pw = pwd.getpwnam(user)
@@ -193,6 +193,33 @@ def _parse_owner(value: str) -> tuple[int, int]:
         except KeyError as exc:
             raise SubscriptionError(f"Группа {group!r} не найдена") from exc
     return pw.pw_uid, gid
+
+
+def _service_owner(service: str) -> tuple[int, int] | None:
+    """Берёт User/Group из systemd-сервиса Xray (например, xray:xray)."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", "-p", "User", "-p", "Group", service],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    props: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            props[key.strip()] = value.strip()
+    user = props.get("User") or "root"
+    group = props.get("Group") or ""
+    try:
+        return _parse_owner(f"{user}:{group}" if group else user)
+    except SubscriptionError:
+        return None
 
 
 def _write_atomic(
@@ -275,12 +302,13 @@ def update_once(args: argparse.Namespace) -> int:
     if args.validate and not xray_bin:
         raise SubscriptionError("xray не найден; установите Xray или --no-validate")
 
+    owner = _parse_owner(args.owner) if args.owner else _service_owner(args.service)
     old = _write_atomic(
         args.write,
         config,
         validate=args.validate,
         xray_bin=xray_bin or "xray",
-        owner=_parse_owner(args.owner) if args.owner else None,
+        owner=owner,
     )
     print(f"config updated: {args.write} ({summary})")
 
@@ -317,8 +345,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--xray", help="путь к бинарнику xray")
     parser.add_argument(
         "--owner",
-        help="владелец config.json, например nobody:nogroup "
-        "(по умолчанию сохраняется текущий)",
+        help="владелец config.json, например xray:xray; "
+        "по умолчанию определяется из systemd-сервиса Xray",
     )
     parser.add_argument("--service", default="xray", help="имя systemd-сервиса")
     parser.add_argument("--restart", action="store_true", help="перезапустить Xray")

@@ -120,7 +120,10 @@ curl -fsS http://127.0.0.1:8000/healthz
 
 ## 6. nginx + HTTPS
 
-DNS-запись `app.example.com` должна указывать на IP сервера.
+DNS-запись `app.example.com` должна указывать на IP сервера. Если домена нет,
+используйте `sslip.io`: имя `<IP-с-точками>.sslip.io` автоматически указывает
+на этот IP, например `203.0.113.10.sslip.io`. Сертификат Let's Encrypt для
+него выпускается так же.
 
 ```bash
 sudo tee /etc/nginx/sites-available/sqassit >/dev/null <<'EOF'
@@ -236,10 +239,29 @@ curl -i http://127.0.0.1:8000/readyz
 Инструкция для Render (с `render.yaml` и persistent disk):
 [`RENDER.md`](RENDER.md).
 
-## Туннель без своего домена
+## Публичный адрес без своего домена
+
+Не используйте быстрый туннель Cloudflare для постоянной работы: его URL
+меняется при каждом перезапуске. Надёжнее `sslip.io` + nginx + Let's Encrypt:
 
 ```bash
-cloudflared tunnel --url http://127.0.0.1:8000
+PUBLIC_HOST="$(curl -4 -s https://api.ipify.org).sslip.io"
+echo "$PUBLIC_HOST"
 ```
 
-Полученный URL впишите в `WEBHOOK_BASE_URL` и перезапустите сервис.
+Укажите это имя в `server_name` nginx и выпустите сертификат:
+
+```bash
+sudo certbot --nginx -d "$PUBLIC_HOST"
+```
+
+В `.env`:
+
+```ini
+WEBHOOK_BASE_URL=https://<IP>.sslip.io
+```
+
+```bash
+sudo systemctl restart sqassit
+curl -fsS https://<IP>.sslip.io/healthz
+```

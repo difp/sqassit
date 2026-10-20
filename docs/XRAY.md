@@ -122,19 +122,17 @@ cd /opt/sqassit
 sudo .venv/bin/python scripts/update_xray_config.py \
   --url-file /etc/xray-subscription.url \
   --write /usr/local/etc/xray/config.json \
-  --owner nobody:nogroup \
   --restart
 ```
 
-`--owner` нужен потому, что Xray обычно запускается systemd от пользователя
-`nobody`. Если сервис работает от другого пользователя:
+Скрипт сам определяет владельца конфига из systemd-сервиса:
 
 ```bash
-systemctl show -p User --value xray
-id nobody
+systemctl show -p User -p Group xray
 ```
 
-и подставьте нужное значение.
+Официальный установщик Xray запускает сервис от `xray:xray`. Если нужен
+другой владелец, добавьте `--owner user:group`.
 
 Или:
 
@@ -189,17 +187,22 @@ systemctl show -p User --value xray
 ls -l /usr/local/etc/xray/config.json
 ```
 
-Если в логе `permission denied`:
+Если в логе `permission denied`, проверьте пользователя сервиса:
 
 ```bash
-sudo chown nobody:nogroup /usr/local/etc/xray/config.json
+systemctl show -p User -p Group xray
+```
+
+Официальный `xray-install` использует `xray:xray`, поэтому:
+
+```bash
+sudo chown xray:xray /usr/local/etc/xray/config.json
 sudo chmod 600 /usr/local/etc/xray/config.json
 sudo systemctl restart xray
 ss -ltnp | grep 1080
 ```
 
-Если Xray работает от другого пользователя — замените `nobody:nogroup`
-на `$(systemctl show -p User --value xray)` и его группу.
+Если сервис работает от другого пользователя — подставьте его имя и группу.
 
 ## 7. Автозапуск
 
