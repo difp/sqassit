@@ -95,6 +95,7 @@ make audit      # pip-audit
 
 - [`docs/DEPLOY.md`](docs/DEPLOY.md) — VPS, systemd, HTTPS, туннели, бэкапы.
 - [`docs/RENDER.md`](docs/RENDER.md) — деплой на Render.
+- [`docs/XRAY.md`](docs/XRAY.md) — VLESS/Xray и локальный SOCKS для Telegram API.
 - [`docs/COACHES.md`](docs/COACHES.md) — роли, заявки, передача занятий.
 - [`docs/PRIVACY.md`](docs/PRIVACY.md) — данные, экспорт и удаление.
 - [`SECURITY.md`](SECURITY.md) — как сообщить об уязвимости.

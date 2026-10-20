@@ -28,6 +28,8 @@
 - Экспорт и удаление персональных данных: `GET /api/me/export`,
   `DELETE /api/me?confirm=true`; документация `docs/PRIVACY.md`.
 - `SECURITY.md` с порядком сообщения об уязвимостях.
+- `BOT_PROXY` для HTTP/SOCKS5 и генератор Xray-конфига из VLESS-ссылки
+  (`scripts/xray_vless.py`, `make xray-config`, `docs/XRAY.md`).
 
 ### Исправлено
 - Повторный `POST /api/trainings/{id}/book` (двойной тап/retry) больше не

@@ -7,9 +7,10 @@ VENV ?= .venv
 PYTHON ?= $(VENV)/bin/python
 PORT ?= 8000
 DB_PATH ?= ./data/squash.db
+XRAY_CONFIG ?= /usr/local/etc/xray/config.json
 
 .DEFAULT_GOAL := help
-.PHONY: help venv install install-prod run test lint typecheck audit backup release clean
+.PHONY: help venv install install-prod run test lint typecheck audit xray-config backup release clean
 
 help: ## Показать список команд
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -30,13 +31,17 @@ test: ## Тесты
 	$(PYTHON) -m pytest -q
 
 lint: ## Проверка стиля (ruff)
-	$(PYTHON) -m ruff check app tests
+	$(PYTHON) -m ruff check app tests scripts
 
 typecheck: ## Проверка типов (mypy)
 	$(PYTHON) -m mypy
 
 audit: ## Проверка зависимостей (pip-audit)
 	$(PYTHON) -m pip_audit -r requirements.txt
+
+xray-config: ## Сгенерировать Xray config из VLESS_URL
+	@test -n "$(VLESS_URL)" || (echo "Укажите VLESS_URL=vless://..."; exit 1)
+	$(PYTHON) scripts/xray_vless.py "$(VLESS_URL)" --write "$(XRAY_CONFIG)"
 
 backup: ## Бэкап SQLite в data/backup-<дата>.db
 	@set -a; [ -f .env ] && . ./.env; set +a; \

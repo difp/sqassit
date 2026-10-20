@@ -82,6 +82,7 @@ ENABLE_API_DOCS=false
 - `WEBHOOK_BASE_URL` нужен даже при `polling`: это адрес кнопки Web App в боте.
 - `BOT_PROXY` — опционально, если `api.telegram.org` недоступен напрямую:
   `socks5://127.0.0.1:1080` или `http://user:pass@proxy:3128`.
+  VLESS/Xray и локальный SOCKS — [`XRAY.md`](XRAY.md).
 - `.env` должен быть доступен только сервису (`chmod 600`).
 
 ## 5. systemd
