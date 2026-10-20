@@ -11,7 +11,7 @@
 {% block content %}
 <!-- ===== Заявка в тренеры (для обычных пользователей) ===== -->
 <section class="section" id="apply-section" hidden>
-  <div class="section-title">Стать тренером</div>
+  <h2 class="section-title">Стать тренером</h2>
   <div class="card">
     <div id="apply-status" class="hint" style="margin-bottom:12px"></div>
     <label class="field"><span class="label">Расскажите о себе</span>
@@ -38,21 +38,19 @@
 
   <!-- CRM -->
   <section class="section" id="players-section">
-    <div class="section-title">Игроки</div>
+    <h2 class="section-title">Игроки</h2>
     <div id="players"><div class="skeleton skeleton--row"></div></div>
   </section>
 
   <!-- Заявки (администратор/менеджер) -->
   <section class="section" id="applications-section" hidden>
-    <div class="section-title">Заявки в тренеры</div>
-    <div class="card card--compact" id="applications-list">
-      <div class="skeleton skeleton--row"></div>
-    </div>
+    <h2 class="section-title">Заявки в тренеры</h2>
+    <div class="card card--compact" id="applications-list"></div>
   </section>
 
   <!-- Профиль тренера -->
   <section class="section" id="profile-section">
-    <div class="section-title">Профиль тренера</div>
+    <h2 class="section-title">Профиль тренера</h2>
     <div class="card" id="profile-card">
       <div class="coach-row" id="profile-head"><div class="skeleton skeleton--row"></div></div>
       <button class="btn btn--sm btn--block coach-edit" id="profile-edit">Редактировать профиль</button>
@@ -61,7 +59,7 @@
 
   <!-- Тренеры (администратор/менеджер) -->
   <section class="section" id="coaches-section" hidden>
-    <div class="section-title">Тренеры</div>
+    <h2 class="section-title">Тренеры</h2>
     <div class="card card--list" id="coaches-card">
       <div id="coaches-list"><div class="skeleton skeleton--row"></div></div>
     </div>
@@ -107,7 +105,7 @@
       </div>
       <div class="card card--compact reminder-row">
         <span class="reminder-row__text">Напоминание игрокам</span>
-        <label class="switch"><input name="reminder_enabled" type="checkbox" checked><span></span></label>
+        <label class="switch"><input name="reminder_enabled" type="checkbox" aria-label="Напоминание игрокам" checked><span></span></label>
       </div>
       <div class="field">
         <span class="label">За сколько до старта</span>
@@ -309,9 +307,9 @@ function reminderEditor(t) {
   return `
   <div class="inline-row" style="margin-top:12px">
     <span style="font-size:15px">Напоминание</span>
-    <label class="switch"><input type="checkbox" data-remind="${t.id}" ${t.reminder_enabled ? 'checked' : ''}><span></span></label>
+    <label class="switch"><input type="checkbox" data-remind="${t.id}" aria-label="Напоминание о тренировке" ${t.reminder_enabled ? 'checked' : ''}><span></span></label>
   </div>
-  <div class="inline-row" style="margin-top:10px">
+  <div class="inline-row reminder-offset" style="margin-top:10px">
     <span class="hint">За сколько до старта</span>
     <div class="hm">
       <input class="input" style="width:62px;min-height:42px;padding:8px;text-align:center" type="number" min="0" max="48" data-oh="${t.id}" value="${h}"> ч
@@ -342,9 +340,11 @@ function activeRow(t) {
       </div>
       <div class="t-info">
         <div class="t-title">${esc(t.type)}</div>
-        <div class="t-meta">${esc(fmtDay(t.date))}${t.level ? ' · ' + levelPill(t.level) : ''}</div>
       </div>
-      <div style="display:flex;gap:2px">
+    </div>
+    <div class="t-toolbar">
+      <div class="t-meta">${esc(fmtDay(t.date))}${t.level ? ' · ' + levelPill(t.level) : ''}</div>
+      <div class="t-toolbar__actions">
         ${iconBtn(`data-cal="${t.id}"`, 'В календарь', ICON_CAL, 'var(--link)')}
         ${iconBtn(`data-del="${t.id}"`, 'Удалить', ICON_DEL)}
         ${iconBtn(`data-xfer="${t.id}"`, 'Передать', ICON_XFER, 'var(--link)')}
@@ -373,9 +373,11 @@ function historyRow(t) {
       </div>
       <div class="t-info">
         <div class="t-title">${esc(t.type)}</div>
-        <div class="t-meta">${esc(fmtDay(t.date))}${t.level ? ' · ' + levelPill(t.level) : ''}</div>
       </div>
-      <div style="display:flex;gap:2px">
+    </div>
+    <div class="t-toolbar">
+      <div class="t-meta">${esc(fmtDay(t.date))}${t.level ? ' · ' + levelPill(t.level) : ''}</div>
+      <div class="t-toolbar__actions">
         ${iconBtn(`data-cal="${t.id}"`, 'В календарь', ICON_CAL, 'var(--link)')}
         ${iconBtn(`data-del="${t.id}"`, 'В корзину', ICON_DEL)}
       </div>
@@ -734,8 +736,15 @@ async function loadApplications() {
   if (!IS_MANAGER) return;
   try {
     const data = await api('/api/coach/applications');
+    const section = document.getElementById('applications-section');
     const box = document.getElementById('applications-list');
-    box.innerHTML = data.applications.length ? data.applications.map(a => `
+    if (!data.applications.length) {
+      section.hidden = true;
+      box.innerHTML = '';
+      return;
+    }
+    section.hidden = false;
+    box.innerHTML = data.applications.map(a => `
       <div class="p-row" data-atid="${a.telegram_id}">
         ${avatarHtml(a.first_name, a.avatar_url, true)}
         <div style="flex:1;min-width:0">
@@ -747,7 +756,7 @@ async function loadApplications() {
           <button class="btn btn--primary btn--sm" data-approve="${a.telegram_id}">Одобрить</button>
           <button class="btn btn--danger btn--sm" data-reject="${a.telegram_id}">Отклонить</button>
         </div>
-      </div>`).join('') : '<div class="hint" style="padding:4px 0">Новых заявок нет.</div>';
+      </div>`).join('');
   } catch (e) { toast(e.message); }
 }
 document.getElementById('applications-list').addEventListener('click', async (ev) => {
@@ -770,7 +779,7 @@ function coachRow(c) {
   const mgr = c.is_manager && !c.is_owner ? ' <span class="badge badge--level">менеджер</span>' : '';
   const mgrToggle = (IS_OWNER && !c.is_owner)
     ? `<label class="switch" style="transform:scale(.8);transform-origin:right center">
-         <input type="checkbox" data-mgr="${c.telegram_id}" ${c.is_manager ? 'checked' : ''}><span></span></label>`
+         <input type="checkbox" data-mgr="${c.telegram_id}" aria-label="Права менеджера" ${c.is_manager ? 'checked' : ''}><span></span></label>`
     : '';
   const remove = c.is_owner ? ''
     : `<button class="btn btn--danger btn--sm" data-cremove="${c.telegram_id}">Снять</button>`;
@@ -857,9 +866,8 @@ function whenVisible(id, fn) {
     whenVisible('players-section', loadPlayers);
     whenVisible('profile-section', loadProfile);
     if (IS_MANAGER) {
-      document.getElementById('applications-section').hidden = false;
+      loadApplications();
       document.getElementById('coaches-section').hidden = false;
-      whenVisible('applications-section', loadApplications);
       whenVisible('coaches-section', loadCoaches);
     }
   } else {

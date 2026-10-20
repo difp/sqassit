@@ -3,6 +3,8 @@
 Telegram Mini App для сквош-клуба: расписание, запись в один тап, лист ожидания
 и CRM тренера — без отдельного мобильного приложения.
 
+Python 3.11+ · FastAPI · aiogram 3 · SQLite
+
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.146-009688?logo=fastapi&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
@@ -17,7 +19,7 @@ Telegram Mini App для сквош-клуба: расписание, запис
 - запись на тренировки, лист ожидания FIFO, напоминания и `.ics`;
 - несколько тренеров, роли, заявки и передача занятий;
 - CRM, заметки и личные сообщения через бота;
-- приватность: имя/фото или животное, username только по согласию, без ID в чатах;
+- приватность: имя и фото можно скрыть под животным, username виден только по согласию, Telegram ID не показываются в чатах;
 - история, корзина, экспорт и удаление персональных данных.
 
 ## Быстрый старт
@@ -40,7 +42,7 @@ COACH_TELEGRAM_ID=...
 WEBHOOK_BASE_URL=https://...
 ```
 
-Telegram Web App работает только по HTTPS. Production-деплой:
+Telegram Web App работает только по HTTPS. Продакшен:
 `make install-prod` + systemd + reverse-proxy — см. [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 ## Документация

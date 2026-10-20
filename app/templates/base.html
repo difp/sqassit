@@ -2,10 +2,18 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Сквош-тренировки</title>
   <!-- Локальная копия: telegram.org часто недоступен напрямую из РФ. -->
   <script src="/static/telegram-web-app.js"></script>
+  <script>
+    // Тема нужна до отрисовки, чтобы цвета уровней и подсказок не мигали.
+    try {
+      document.documentElement.dataset.theme =
+        (window.Telegram && Telegram.WebApp && Telegram.WebApp.colorScheme) ||
+        (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    } catch (e) { document.documentElement.dataset.theme = 'light'; }
+  </script>
   <style>
     /* ===== Тема из Telegram (автоматически светлая/тёмная) ===== */
     :root {
@@ -30,10 +38,13 @@
     }
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     html, body { margin: 0; padding: 0; }
+    html { scroll-padding-top: 64px; }
+    [data-theme="light"] { --hint: #6b6b70; }
+    [data-theme="dark"] { --hint: #8b99a8; }
     body {
       background: var(--bg); color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      font-size: 16px; line-height: 1.38;
+      font-size: 1rem; line-height: 1.45;
       -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
       overscroll-behavior-y: none;
     }
@@ -47,7 +58,7 @@
       border-bottom: 1px solid var(--separator);
       display: flex; align-items: center; justify-content: space-between; gap: 12px;
     }
-    .app-title { font-size: 19px; font-weight: 700; letter-spacing: -.35px; }
+    .app-title { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -.02em; }
     .app-header__right { display: flex; align-items: center; gap: 8px; }
 
     /* ===== Контент ===== */
@@ -78,9 +89,9 @@
       min-height: 46px; padding: 0 18px; border: 1px solid transparent; border-radius: 12px;
       font: inherit; font-size: 15px; font-weight: 600; cursor: pointer;
       background: var(--secondary); color: var(--link);
-      transition: transform .06s ease, opacity .15s ease, background .15s ease;
+      transition: transform .15s ease-out, opacity .15s ease, background .15s ease;
     }
-    .btn:active { transform: scale(.978); }
+    .btn:active { transform: scale(.96); }
     .btn:disabled { opacity: .5; pointer-events: none; }
     .btn--primary { background: var(--accent); color: var(--accent-text); box-shadow: 0 2px 8px rgba(46,166,255,.22); }
     .btn--danger { background: rgba(255,59,48,.13); color: var(--destructive); }
@@ -88,8 +99,12 @@
     .btn--sm { min-height: 36px; font-size: 13px; border-radius: 9px; padding: 0 11px; }
     .btn > svg { width: 19px; height: 19px; flex: none; }
     .btn:focus-visible, .input:focus-visible, .chip:focus-visible, .tab:focus-visible,
-    .header-action:focus-visible, .icon-btn:focus-visible {
-      outline: 2px solid var(--accent); outline-offset: 2px;
+    .segmented button:focus-visible, .header-action:focus-visible,
+    .icon-btn:focus-visible, summary:focus-visible {
+      outline: 2px solid var(--text); outline-offset: 2px;
+    }
+    .switch input:focus-visible + span {
+      outline: 2px solid var(--text); outline-offset: 2px;
     }
 
     .icon-btn {
@@ -105,9 +120,9 @@
       background: var(--accent); color: var(--accent-text);
       display: flex; align-items: center; justify-content: center; cursor: pointer;
       box-shadow: 0 4px 12px rgba(46,166,255,.28);
-      transition: transform .08s ease, opacity .15s ease;
+      transition: transform .15s ease-out, opacity .15s ease;
     }
-    .header-action:active { transform: scale(.93); }
+    .header-action:active { transform: scale(.96); }
     .header-action svg { width: 21px; height: 21px; }
 
     /* ===== Переключатель ===== */
@@ -148,17 +163,20 @@
     /* ===== Тренировка ===== */
     .t-top { display: flex; gap: 12px; align-items: flex-start; }
     .t-when { flex: none; min-width: 58px; }
-    .t-time { font-size: 22px; font-weight: 800; letter-spacing: -.5px; line-height: 1.1; font-variant-numeric: tabular-nums; }
-    .t-duration { font-size: 11.5px; color: var(--hint); line-height: 1.25; margin-top: 3px; white-space: nowrap; }
+    .t-time { font-size: 22px; font-weight: 800; letter-spacing: -.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+    .t-duration { font-size: 12px; color: var(--hint); line-height: 1.25; margin-top: 3px; white-space: nowrap; }
     .t-info { flex: 1; min-width: 0; }
     .t-title {
-      font-weight: 600; font-size: 15.5px; line-height: 1.28;
-      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+      font-weight: 600; font-size: 15px; line-height: 1.3;
+      overflow-wrap: break-word;
     }
     .t-meta { font-size: 12.5px; color: var(--hint); margin-top: 3px; }
+    .t-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
+    .t-toolbar .t-meta { margin-top: 0; min-width: 0; }
+    .t-toolbar__actions { display: flex; gap: 2px; flex: none; }
     .t-occ { text-align: right; flex: none; font-variant-numeric: tabular-nums; }
     .t-occ b { font-size: 18px; }
-    .t-occ .lbl { display: block; font-size: 11px; color: var(--hint); }
+    .t-occ .lbl { display: block; font-size: 11.5px; color: var(--hint); }
     .t-people { display: flex; align-items: center; gap: 10px; margin-top: 12px; min-width: 0; }
     .t-names { font-size: 13px; color: var(--hint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .t-actions { margin-top: 12px; display: flex; gap: 8px; }
@@ -189,6 +207,7 @@
       transition: border-color .15s ease, box-shadow .15s ease;
     }
     .input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .input:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
     textarea.input { min-height: 86px; padding: 12px 14px; resize: vertical; line-height: 1.4; }
     select.input { padding-right: 34px; }
     .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -224,10 +243,17 @@
 
     /* ===== Уровни игры: только цвет текста, без заливки ===== */
     .level { font-weight: 700; white-space: nowrap; }
-    .level--orange { color: #ff9f0a; color: color-mix(in srgb, #ff9f0a 78%, var(--text)); }
-    .level--green { color: #30d158; color: color-mix(in srgb, #30d158 78%, var(--text)); }
+    .level--orange { color: #ff9f0a; }
+    .level--green { color: #30d158; }
     .level--white { color: var(--text); }
     .level--muted { color: var(--hint); }
+    [data-theme="light"] .level--orange { color: #a84e00; }
+    [data-theme="light"] .level--green { color: #137a33; }
+    [data-theme="light"] .level--white { color: #111111; }
+    [data-theme="dark"] .badge--success { color: #5ee27f; }
+    [data-theme="dark"] .badge--warn { color: #ffb340; }
+    [data-theme="light"] .badge--success { color: #1f7a3a; }
+    [data-theme="light"] .badge--warn { color: #8a4f00; }
 
     /* ===== Блок тренера в карточке (тап -> написать) ===== */
     .t-coach {
@@ -363,6 +389,11 @@
     @keyframes sk { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
     [hidden] { display: none !important; }
 
+    @media (max-width: 420px) {
+      .reminder-offset { align-items: flex-start; flex-wrap: wrap; }
+      .reminder-offset > .hint { flex: 1 0 100%; }
+      .reminder-offset .hm { margin-left: 0; }
+    }
     @media (max-width: 360px) {
       .row2 { grid-template-columns: 1fr; gap: 0; }
       .app-header { padding-left: 14px; padding-right: 14px; }
@@ -371,13 +402,14 @@
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+      .btn:active, .header-action:active, .chip:active { transform: none; }
     }
   </style>
 </head>
 <body>
   <div class="app">
     <header class="app-header">
-      <div class="app-title">{% block header %}Сквош{% endblock %}</div>
+      <h1 class="app-title">{% block header %}Сквош{% endblock %}</h1>
       <div class="app-header__right">{% block header_right %}{% endblock %}</div>
     </header>
     <main class="app-main">{% block content %}{% endblock %}</main>
@@ -399,7 +431,7 @@
     </a>
   </nav>
 
-  <div id="toast" class="toast"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <!-- Bottom sheet: добавление в календарь (общий для страниц) -->
   <div class="sheet" id="cal-sheet">
@@ -423,6 +455,14 @@
         tg.enableClosingConfirmation && tg.enableClosingConfirmation();
       } catch (e) { /* старые версии клиента */ }
     }
+
+    function syncTheme() {
+      const scheme = (tg && tg.colorScheme) ||
+        (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.dataset.theme = scheme;
+    }
+    syncTheme();
+    try { tg && tg.onEvent && tg.onEvent('themeChanged', syncTheme); } catch (e) {}
 
     // initData строго из Telegram Web App.
     const fromTg = tg ? (tg.initData || '') : '';

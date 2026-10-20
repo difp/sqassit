@@ -11,7 +11,7 @@
     <div class="profile-card__about" id="me-about" hidden></div>
   </div>
   <label class="switch">
-    <input id="notif-toggle" type="checkbox" disabled>
+    <input id="notif-toggle" type="checkbox" aria-label="Push-уведомления о тренировках" disabled>
     <span></span>
   </label>
 </section>
@@ -44,6 +44,7 @@
     <h2 class="sheet__title">Сообщение тренеру</h2>
     <p class="hint form-note">Уйдёт тренеру в чат с ботом — ответ придёт вам сюда же.</p>
     <textarea class="input" id="msg-text" rows="4" maxlength="1000"
+              aria-label="Сообщение тренеру"
               placeholder="Например: не смогу прийти в субботу, можно перенести?"></textarea>
     <button class="btn btn--primary btn--block" id="msg-send" style="margin-top:12px">Отправить</button>
   </div>
@@ -69,7 +70,7 @@
         <div class="hint">По умолчанию скрыт. Включайте, только если хотите, чтобы тренер видел ваш username.</div>
       </div>
       <label class="switch">
-        <input id="profile-username" type="checkbox">
+        <input id="profile-username" type="checkbox" aria-label="Показывать @username">
         <span></span>
       </label>
     </div>
