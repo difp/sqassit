@@ -108,6 +108,11 @@ def test_database_helpers_and_queue_branches(tmp_path):
             await db.add_message(1, 123, "Привет")
             inbox = await db.list_inbox(123)
             assert inbox and inbox[0]["text"] == "Привет"
+
+            await db.add_feedback(1, "bug", "Не работает кнопка", "Матч")
+            feedback = await db.list_user_feedback(1)
+            assert feedback and feedback[0]["kind"] == "bug"
+            assert feedback[0]["page"] == "Матч"
             assert await db.notification_targets(training_id) == []
             assert await db.list_match_feed_recipients() == []
             with pytest.raises(ValueError, match="категория"):

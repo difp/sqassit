@@ -64,6 +64,7 @@ def client(monkeypatch):
     mainmod._booking_limiter.clear()
     mainmod._match_create_limiter.clear()
     mainmod._match_join_limiter.clear()
+    mainmod._feedback_limiter.clear()
     # Не поднимаем реальные polling/reminder во время интеграционных тестов.
     monkeypatch.setattr(botmod, "polling_context", _fake_polling)
     monkeypatch.setattr(botmod, "reminder_loop", _fake_loop)
@@ -2463,3 +2464,111 @@ def test_suppressed_event_notifications(monkeypatch):
     asyncio.run(mainmod._notify_training_transferred(777, training))
     asyncio.run(mainmod._notify_managers_about_application(555, "Иван"))
     assert calls == []
+
+
+def test_feedback_submission_export_and_validation(client):
+    response = client.post(
+        "/api/feedback",
+        headers=PLAYER,
+        json={"kind": "bug", "text": "Не работает кнопка записи", "page": "Матч"},
+    )
+    assert response.status_code == 200
+    assert response.json()["message"] == "Спасибо! Сообщение отправлено."
+
+    exported = client.get("/api/me/export", headers=PLAYER).json()
+    assert len(exported["feedback"]) == 1
+    assert exported["feedback"][0]["kind"] == "bug"
+    assert exported["feedback"][0]["page"] == "Матч"
+
+    # Неизвестная страница нормализуется, чтобы в сообщении не было мусора.
+    response = client.post(
+        "/api/feedback",
+        headers=PLAYER,
+        json={"kind": "idea", "text": "Добавьте тёмную тему", "page": "unknown"},
+    )
+    assert response.status_code == 200
+    exported = client.get("/api/me/export", headers=PLAYER).json()
+    assert [item["page"] for item in exported["feedback"]] == ["Матч", "Приложение"]
+
+    assert client.post(
+        "/api/feedback",
+        headers=PLAYER,
+        json={"kind": "bug", "text": "  "},
+    ).status_code == 422
+    assert client.post(
+        "/api/feedback",
+        headers=PLAYER,
+        json={"kind": "other", "text": "Текст"},
+    ).status_code == 422
+
+
+def test_feedback_database_error(client, monkeypatch):
+    async def broken(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "add_feedback", broken)
+    response = client.post(
+        "/api/feedback",
+        headers=PLAYER,
+        json={"kind": "bug", "text": "Ошибка базы"},
+    )
+    assert response.status_code == 500
+
+
+def test_feedback_rate_limit(client):
+    for index in range(3):
+        assert client.post(
+            "/api/feedback",
+            headers=PLAYER,
+            json={"kind": "idea", "text": f"Идея {index}"},
+        ).status_code == 200
+    response = client.post(
+        "/api/feedback",
+        headers=PLAYER,
+        json={"kind": "idea", "text": "Идея 4"},
+    )
+    assert response.status_code == 429
+    assert response.headers["Retry-After"]
+
+
+def test_feedback_notification_hides_id_and_supports_reply(monkeypatch):
+    sent = {}
+
+    async def fake_send(chat_id, text, reply_markup=None):
+        sent["chat_id"] = chat_id
+        sent["text"] = text
+        sent["reply_markup"] = reply_markup
+
+    monkeypatch.setattr(mainmod.app.state, "bot", SimpleNamespace(send_message=fake_send))
+    user = {
+        "telegram_id": 555,
+        "first_name": "Иван",
+        "display_mode": "name",
+    }
+    asyncio.run(
+        mainmod._notify_feedback(user, "bug", "<b>Не работает</b>", "Тренировки")
+    )
+
+    assert sent["chat_id"] == 123
+    assert "Проблема" in sent["text"]
+    assert "Иван" in sent["text"]
+    assert "Тренировки" in sent["text"]
+    assert "&lt;b&gt;Не работает&lt;/b&gt;" in sent["text"]
+    assert "555" not in sent["text"]
+    assert sent["reply_markup"].inline_keyboard[0][0].callback_data == "reply:555"
+
+    # В режиме «животное» имя скрыто и в обратной связи.
+    animal_user = {
+        "telegram_id": 555,
+        "first_name": "Иван",
+        "display_mode": "animal",
+    }
+    asyncio.run(mainmod._notify_feedback(animal_user, "idea", "Идея", ""))
+    assert "Иван" not in sent["text"]
+    assert "Предложение" in sent["text"]
+
+    async def failing_send(*args, **kwargs):
+        raise RuntimeError("telegram")
+
+    monkeypatch.setattr(mainmod.app.state, "bot", SimpleNamespace(send_message=failing_send))
+    asyncio.run(mainmod._notify_feedback(user, "idea", "Идея", ""))

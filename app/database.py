@@ -98,6 +98,15 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS feedback (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    kind        TEXT NOT NULL,             -- bug | idea
+    text        TEXT NOT NULL,
+    page        TEXT NOT NULL DEFAULT '',  -- откуда отправлено
+    created_at  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS matches (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     title         TEXT NOT NULL DEFAULT 'Матч',
@@ -599,6 +608,25 @@ async def list_user_messages(telegram_id: int) -> list[aiosqlite.Row]:
     )
 
 
+async def add_feedback(user_id: int, kind: str, text: str, page: str) -> int:
+    """Сохраняет сообщение о проблеме или предложение."""
+    return await _execute(
+        "INSERT INTO feedback (user_id, kind, text, page, created_at) VALUES (?, ?, ?, ?, ?)",
+        (user_id, kind, text, page, int(time.time())),
+    )
+
+
+async def list_user_feedback(telegram_id: int) -> list[aiosqlite.Row]:
+    """Обращения пользователя (для экспорта персональных данных)."""
+    return await _fetchall(
+        """
+        SELECT id, kind, text, page, created_at FROM feedback
+         WHERE user_id = ? ORDER BY created_at ASC
+        """,
+        (telegram_id,),
+    )
+
+
 async def delete_user_data(telegram_id: int) -> None:
     """
     Удаляет профиль и связанные персональные данные.
@@ -613,6 +641,7 @@ async def delete_user_data(telegram_id: int) -> None:
     await _execute(
         "DELETE FROM coach_applications WHERE telegram_id = ?", (telegram_id,)
     )
+    await _execute("DELETE FROM feedback WHERE user_id = ?", (telegram_id,))
     # Активные записи уже отменены вызывающим кодом; удаляем и историю, чтобы
     # в БД не оставался telegram_id удалённого пользователя.
     await _execute("DELETE FROM bookings WHERE user_id = ?", (telegram_id,))

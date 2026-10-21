@@ -672,6 +672,15 @@
             <path d="M21 3v5h-5"/>
           </svg>
         </button>
+        <button class="header-action header-action--ghost" id="feedback-btn"
+                type="button" aria-label="Сообщить о проблеме или предложить улучшение"
+                title="Обратная связь">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20.5 15.5a2.5 2.5 0 0 1-2.5 2.5H8.8L4 21v-14.5A2.5 2.5 0 0 1 6.5 4H18a2.5 2.5 0 0 1 2.5 2.5v9Z"/>
+            <path d="M12 8.2v4.2"/><path d="M12 15.5h.01"/>
+          </svg>
+        </button>
         {% block header_right %}{% endblock %}
       </div>
     </header>
@@ -711,6 +720,29 @@
       <div class="hint" id="cal-when" style="margin:-6px 0 16px"></div>
       <button class="btn btn--primary btn--block" id="cal-ics" style="margin-bottom:10px">Скачать .ics (Apple / Android)</button>
       <button class="btn btn--block" id="cal-google">Google Календарь</button>
+    </div>
+  </div>
+
+  <!-- Bottom sheet: обратная связь -->
+  <div class="sheet" id="feedback-sheet">
+    <div class="sheet__backdrop" data-feedback-close></div>
+    <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="feedback-title">
+      <div class="sheet__handle"></div>
+      <h2 class="sheet__title" id="feedback-title" tabindex="-1">Обратная связь</h2>
+      <p class="hint" style="margin:-8px 0 16px">Нашли баг или есть идея? Напишите — сообщение увидит администратор клуба.</p>
+      <span class="label">Тип сообщения</span>
+      <div class="segmented" id="feedback-kind" role="group" aria-label="Тип сообщения">
+        <button type="button" data-feedback-kind="bug" class="is-active" aria-pressed="true">Проблема</button>
+        <button type="button" data-feedback-kind="idea" aria-pressed="false">Предложение</button>
+      </div>
+      <label class="field">
+        <span class="label">Что случилось или что улучшить</span>
+        <textarea class="input" id="feedback-text" rows="5" maxlength="1500"
+                  placeholder="Опишите, что произошло или что стоит изменить"></textarea>
+        <span class="hint hint--tight" id="feedback-count">0 / 1500</span>
+      </label>
+      <p class="hint hint--tight form-note">Telegram ID в сообщении не передаётся.</p>
+      <button class="btn btn--primary btn--block" id="feedback-send" type="button">Отправить</button>
     </div>
   </div>
 
@@ -1079,6 +1111,82 @@
         details: 'Запись через Telegram-бота сквош-тренировок',
       });
       openExternal('https://calendar.google.com/calendar/render?' + params.toString());
+    });
+
+    // ===== Обратная связь =====
+    const feedbackSheet = document.getElementById('feedback-sheet');
+    const feedbackText = document.getElementById('feedback-text');
+    const feedbackCount = document.getElementById('feedback-count');
+    const feedbackSend = document.getElementById('feedback-send');
+    let feedbackKind = 'bug';
+
+    function feedbackPageLabel() {
+      const path = location.pathname.replace(/\/+$/, '') || '/';
+      if (path === '/match') return 'Матч';
+      if (path === '/coach') return 'Тренер';
+      return 'Тренировки';
+    }
+
+    function updateFeedbackCount() {
+      feedbackCount.textContent = `${feedbackText.value.length} / 1500`;
+    }
+
+    function setFeedbackKind(kind) {
+      feedbackKind = kind;
+      document.querySelectorAll('[data-feedback-kind]').forEach(btn => {
+        const active = btn.dataset.feedbackKind === kind;
+        btn.classList.toggle('is-active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+    }
+
+    function openFeedback() {
+      feedbackSheet.classList.add('is-open');
+      haptic('light');
+      setTimeout(() => document.getElementById('feedback-title').focus(), 150);
+    }
+
+    function closeFeedback() {
+      feedbackSheet.classList.remove('is-open');
+    }
+
+    document.getElementById('feedback-btn').addEventListener('click', openFeedback);
+    document.querySelector('[data-feedback-close]').addEventListener('click', closeFeedback);
+    document.querySelectorAll('[data-feedback-kind]').forEach(btn => {
+      btn.addEventListener('click', () => setFeedbackKind(btn.dataset.feedbackKind));
+    });
+    feedbackText.addEventListener('input', updateFeedbackCount);
+    feedbackSend.addEventListener('click', async () => {
+      const text = feedbackText.value.trim();
+      if (text.length < 3) {
+        toast('Опишите проблему или предложение чуть подробнее');
+        feedbackText.focus();
+        return;
+      }
+      feedbackSend.disabled = true;
+      try {
+        const result = await api('/api/feedback', 'POST', {
+          kind: feedbackKind,
+          text,
+          page: feedbackPageLabel(),
+        });
+        feedbackText.value = '';
+        updateFeedbackCount();
+        setFeedbackKind('bug');
+        closeFeedback();
+        hapticNotify('success');
+        toast(result.message || 'Спасибо! Сообщение отправлено.');
+      } catch (e) {
+        hapticNotify('error');
+        toast(e.message);
+      } finally {
+        feedbackSend.disabled = false;
+      }
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && feedbackSheet.classList.contains('is-open')) {
+        closeFeedback();
+      }
     });
 
     // Подсветка активной вкладки.

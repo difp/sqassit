@@ -17,7 +17,7 @@ import time
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 from urllib.parse import urlencode
 
 import aiosqlite
@@ -84,6 +84,7 @@ _apply_limiter = RateLimiter(5, 300)        # заявки в тренеры
 _booking_limiter = RateLimiter(60, 60)      # book/cancel
 _match_create_limiter = RateLimiter(3, 600) # публикация матчей
 _match_join_limiter = RateLimiter(30, 60)   # вход/выход из матчей
+_feedback_limiter = RateLimiter(3, 600)     # баги и предложения
 
 
 async def _bot_is_ready() -> bool:
@@ -467,6 +468,12 @@ class NotificationsIn(BaseModel):
     notify_messages: bool | None = None
 
 
+class FeedbackIn(BaseModel):
+    kind: Literal["bug", "idea"]
+    text: str = Field(max_length=1500)
+    page: str = Field(default="", max_length=40)
+
+
 class TrainerProfileIn(BaseModel):
     bio: str = Field(default="", max_length=450)
 
@@ -794,6 +801,26 @@ async def api_set_notifications(
     }
 
 
+@app.post("/api/feedback")
+async def api_feedback(
+    payload: FeedbackIn,
+    user: Annotated[dict, Depends(current_user)],
+):
+    """Принимает сообщение о проблеме или предложение и уведомляет тренера."""
+    _feedback_limiter.check(str(user["telegram_id"]))
+    text = payload.text.strip()
+    if len(text) < 3:
+        return error_json("Опишите проблему или предложение чуть подробнее.", 422)
+    page = payload.page if payload.page in {"Тренировки", "Матч", "Тренер"} else "Приложение"
+    try:
+        await db.add_feedback(user["telegram_id"], payload.kind, text, page)
+        _spawn(_notify_feedback(user, payload.kind, text, page))
+        return {"ok": True, "message": "Спасибо! Сообщение отправлено."}
+    except Exception:
+        logger.exception("Ошибка сохранения обратной связи")
+        return error_json("Не удалось отправить сообщение", 500)
+
+
 @app.get("/api/me/export")
 async def api_export_me(user: Annotated[dict, Depends(current_user)]):
     """Экспорт собственных данных пользователя (profile/bookings/messages)."""
@@ -816,6 +843,7 @@ async def api_export_me(user: Annotated[dict, Depends(current_user)]):
         },
         "bookings": [dict(row) for row in await db.list_user_bookings(user["telegram_id"])],
         "messages": [dict(row) for row in await db.list_user_messages(user["telegram_id"])],
+        "feedback": [dict(row) for row in await db.list_user_feedback(user["telegram_id"])],
         "application": dict(application) if application is not None else None,
     }
 
@@ -1561,6 +1589,35 @@ async def api_message_coach(payload: MessageIn, user: Annotated[dict, Depends(cu
     )
     _spawn(_deliver_to_coach(coach_id, user["telegram_id"], sender_name, text))
     return {"ok": True}
+
+
+async def _notify_feedback(
+    user: dict[str, Any], kind: str, text: str, page: str
+) -> None:
+    """Отправляет обратную связь администратору с кнопкой ответа."""
+    label = "🐞 <b>Проблема</b>" if kind == "bug" else "💡 <b>Предложение</b>"
+    name = html.escape(
+        participant_identity(cast(aiosqlite.Row, user))["first_name"] or "Игрок"
+    )
+    lines = [label, f"👤 {name}"]
+    if page:
+        lines.append(f"📍 {html.escape(page)}")
+    lines.extend(["", html.escape(text)])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(
+                text="✍️ Ответить", callback_data=f"reply:{user['telegram_id']}"
+            )
+        ]]
+    )
+    try:
+        await app.state.bot.send_message(
+            settings.coach_telegram_id,
+            "\n".join(lines),
+            reply_markup=keyboard,
+        )
+    except Exception:
+        logger.warning("Не удалось доставить обратную связь", exc_info=True)
 
 
 async def _deliver_to_coach(coach_id: int, sender_id: int, sender_name: str, text: str) -> None:
