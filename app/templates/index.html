@@ -44,6 +44,12 @@
 
 <div id="schedule"></div>
 
+<section class="quote-card" aria-label="Цитата профессионального игрока">
+  <div class="quote-card__label">Цитата</div>
+  <blockquote id="training-quote"></blockquote>
+  <cite id="training-quote-author"></cite>
+</section>
+
 <!-- Bottom sheet: личное сообщение тренеру -->
 <div class="sheet" id="msg-sheet">
   <div class="sheet__backdrop" data-msg-close></div>
@@ -482,6 +488,43 @@ document.getElementById('profile-save').addEventListener('click', async () => {
     btn.disabled = false;
   }
 });
+
+// Проверенные цитаты профессиональных сквош-игроков.
+// Nicol David — Commonwealth Sport:
+// https://www.commonwealthsport.com/news/4419908/where-are-they-now-nicol-david
+// Ramy Ashour — Squash Player:
+// https://squashplayermagazine.tumblr.com/post/64939226175/ramy-ashour-exclusive-egyptian-at-heart-of
+// Ali Farag — World Squash:
+// https://www.worldsquash.sport/squash-has-got-everything-world-no-1-ali-farag-on-squashs-olympic-inclusion/
+// Mohamed ElShorbagy — SquashMad:
+// https://squashmad.com/interviews/mohamed-elshorbagy-i-still-have-hunger-to-compete-with-squash-top-order/
+const TRAINING_QUOTES = [
+  {
+    text: 'The Games gave me the belief that I could represent my country at the highest level. I hope to pass that feeling on to young athletes.',
+    author: 'Nicol David · Commonwealth Sport',
+  },
+  {
+    text: 'I want to show the squash world that you can be creative.',
+    author: 'Ramy Ashour · Squash Player',
+  },
+  {
+    text: "Squash has got everything. It's got all the skill sets you need. The stamina, the endurance, the technical ability, the mental challenge.",
+    author: 'Ali Farag · World Squash',
+  },
+  {
+    text: 'I still have hunger to compete with squash top order.',
+    author: 'Mohamed ElShorbagy · SquashMad',
+  },
+];
+let trainingQuoteIndex = Math.floor(Math.random() * TRAINING_QUOTES.length);
+function paintTrainingQuote() {
+  const quote = TRAINING_QUOTES[trainingQuoteIndex % TRAINING_QUOTES.length];
+  document.getElementById('training-quote').textContent = '«' + quote.text + '»';
+  document.getElementById('training-quote-author').textContent = '— ' + quote.author;
+  trainingQuoteIndex++;
+}
+paintTrainingQuote();
+setInterval(paintTrainingQuote, 10000);
 
 window.PAGE_REFRESH = async () => {
   await APP.refresh();

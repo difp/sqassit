@@ -9,26 +9,12 @@ Python 3.11+ · FastAPI · aiogram 3 · SQLite
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.146-009688?logo=fastapi&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-<table width="100%">
-<tr>
-<td width="48%" align="center" valign="top">
-  <a href="docs/screenshots/player.png"><img src="docs/screenshots/player.png" alt="Игрок · расписание и запись" width="100%"></a>
-</td>
-<td width="4%"></td>
-<td width="48%" align="center" valign="top">
-  <a href="docs/screenshots/match.png"><img src="docs/screenshots/match.png" alt="Матч · свои игровые встречи" width="100%"></a>
-</td>
-</tr>
-<tr>
-<td width="48%" align="center" valign="top">
-  <a href="docs/screenshots/profile.png"><img src="docs/screenshots/profile.png" alt="Профиль · публичная карточка игрока" width="100%"></a>
-</td>
-<td width="4%"></td>
-<td width="48%" align="center" valign="top">
-  <a href="docs/screenshots/coach.png"><img src="docs/screenshots/coach.png" alt="Тренер · занятия и участники" width="100%"></a>
-</td>
-</tr>
-</table>
+<p align="center">
+  <a href="docs/screenshots/player-match.png"><img src="docs/screenshots/player-match.png" alt="Игрок · расписание и запись; Матч · свои игровые встречи" width="100%"></a>
+</p>
+<p align="center">
+  <a href="docs/screenshots/profile-coach.png"><img src="docs/screenshots/profile-coach.png" alt="Профиль · публичная карточка игрока; Тренер · занятия и участники" width="100%"></a>
+</p>
 
 ## Что умеет
 

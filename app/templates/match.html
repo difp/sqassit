@@ -58,8 +58,11 @@
           <input class="input" name="max_players" type="number" min="2" max="20" value="4" required></label>
       </div>
       <label class="field"><span class="label">Место</span>
-        <input class="input" name="location" type="text" maxlength="120"
-               placeholder="Например: корт №2, клуб «Сквош»"></label>
+        <select class="input" name="location">
+          <option value="">Не указано</option>
+          <option value="Парк">Парк</option>
+          <option value="Авакс">Авакс</option>
+        </select></label>
       <label class="field"><span class="label">Уровень игры</span>
         <select class="input" name="level" id="match-level">
           <option value="">Не указан</option>

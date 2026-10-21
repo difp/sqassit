@@ -1074,8 +1074,10 @@ def test_refresh_and_responsive_ui_contract(client):
         assert "squash-loader__ball" in page.text
         assert 'id="app-loader"' in page.text
         assert "hideAppLoader" in page.text
-        assert "SQUASH_QUOTES" in page.text
-        assert "Nicol David" in page.text
+
+    assert "TRAINING_QUOTES" in player.text
+    assert "Nicol David" in player.text
+    assert 'id="training-quote"' in player.text
 
     # Обновление расписания должно убирать старые карточки и empty-state.
     assert "Object.keys(ITEMS).forEach" in player.text
@@ -2041,6 +2043,8 @@ def test_match_page_renders(client):
     assert "Создать матч" in page.text
     assert 'id="match-sheet"' in page.text
     assert 'href="/match"' in page.text
+    assert '<option value="Парк">Парк</option>' in page.text
+    assert '<option value="Авакс">Авакс</option>' in page.text
 
 
 def test_event_notification_edit_and_send_branches(client, monkeypatch):

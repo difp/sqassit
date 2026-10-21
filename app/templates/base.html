@@ -59,20 +59,8 @@
       transition: opacity .3s ease, visibility .3s ease;
     }
     .app-loader.is-done { opacity: 0; visibility: hidden; pointer-events: none; }
-    .app-loader__brand {
-      font-size: 13px; font-weight: 800; letter-spacing: .2em;
-      color: var(--hint); text-transform: uppercase;
-    }
-    .app-loader__title { font-size: 20px; font-weight: 700; letter-spacing: -.02em; }
-    .app-loader__hint { max-width: 290px; font-size: 13.5px; line-height: 1.45; color: var(--hint); }
-    .app-loader__quote {
-      max-width: 330px; margin-top: 10px; padding-top: 18px;
-      border-top: 1px solid var(--separator);
-      font-size: 13.5px; line-height: 1.5; color: var(--text);
-    }
-    .app-loader__quote-author {
-      display: block; margin-top: 8px;
-      font-size: 12px; font-weight: 600; color: var(--hint);
+    .app-loader__caption {
+      font-size: 13px; color: var(--hint); letter-spacing: .02em;
     }
 
     /* ===== Верхняя панель ===== */
@@ -448,6 +436,28 @@
       padding-top: 8px; border-top: 1px solid var(--separator);
       white-space: pre-wrap; overflow-wrap: anywhere;
     }
+    .quote-card {
+      position: relative; overflow: hidden; margin-top: 22px; padding: 18px;
+      border: 1px solid var(--line); border-radius: var(--radius);
+      background: linear-gradient(135deg, var(--surface), var(--secondary));
+    }
+    .quote-card::before {
+      content: "“"; position: absolute; top: -14px; right: 14px;
+      font-size: 86px; line-height: 1; font-weight: 700;
+      color: #ffd60a; opacity: .16; pointer-events: none;
+    }
+    .quote-card__label {
+      font-size: 11px; font-weight: 700; letter-spacing: .08em;
+      text-transform: uppercase; color: var(--hint); margin-bottom: 8px;
+    }
+    .quote-card blockquote {
+      position: relative; margin: 0; font-size: 15.5px; line-height: 1.5; font-weight: 500;
+    }
+    .quote-card cite {
+      display: block; margin-top: 10px; font-size: 12.5px;
+      font-style: normal; font-weight: 600; color: var(--hint);
+    }
+
     .public-profile { display: flex; align-items: flex-start; gap: 14px; }
     .public-profile > .avatar { width: 56px; height: 56px; font-size: 20px; }
     .public-profile__text { flex: 1; min-width: 0; }
@@ -572,6 +582,8 @@
       .tab svg { width: 21px; height: 21px; }
       .toast { font-size: 13px; }
       .onboarding-list li { font-size: 13px; }
+      .quote-card { padding: 14px; }
+      .quote-card blockquote { font-size: 13.5px; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
@@ -583,7 +595,6 @@
 </head>
 <body>
   <div class="app-loader" id="app-loader" role="status" aria-live="polite">
-    <div class="app-loader__brand">SQASSIT</div>
     <span class="squash-loader" aria-hidden="true">
       <svg class="squash-loader__ring" viewBox="0 0 44 44" fill="none">
         <circle cx="22" cy="22" r="18" stroke="currentColor" stroke-opacity=".16" stroke-width="2"/>
@@ -594,12 +605,7 @@
         <span class="squash-loader__dot"></span>
       </span>
     </span>
-    <div class="app-loader__title">Загружаем данные…</div>
-    <div class="app-loader__hint">Расписание, профиль и матчи — всё уже рядом.</div>
-    <div class="app-loader__quote" id="app-loader-quote" aria-live="polite">
-      <span id="app-loader-quote-text"></span>
-      <span class="app-loader__quote-author" id="app-loader-quote-author"></span>
-    </div>
+    <div class="app-loader__caption">Загружаем…</div>
   </div>
   <div class="app">
     <header class="app-header">
@@ -1031,55 +1037,13 @@
       });
     })();
 
-    // Проверенные короткие цитаты профессиональных игроков.
-    // Nicol David — Commonwealth Sport:
-    // https://www.commonwealthsport.com/news/4419908/where-are-they-now-nicol-david
-    // Ramy Ashour — Squash Player:
-    // https://squashplayermagazine.tumblr.com/post/64939226175/ramy-ashour-exclusive-egyptian-at-heart-of
-    // Ali Farag — World Squash:
-    // https://www.worldsquash.sport/squash-has-got-everything-world-no-1-ali-farag-on-squashs-olympic-inclusion/
-    // Mohamed ElShorbagy — SquashMad:
-    // https://squashmad.com/interviews/mohamed-elshorbagy-i-still-have-hunger-to-compete-with-squash-top-order/
-    const SQUASH_QUOTES = [
-      {
-        text: 'The Games gave me the belief that I could represent my country at the highest level. I hope to pass that feeling on to young athletes.',
-        author: 'Nicol David · Commonwealth Sport',
-      },
-      {
-        text: 'I want to show the squash world that you can be creative.',
-        author: 'Ramy Ashour · Squash Player',
-      },
-      {
-        text: "Squash has got everything. It's got all the skill sets you need. The stamina, the endurance, the technical ability, the mental challenge.",
-        author: 'Ali Farag · World Squash',
-      },
-      {
-        text: 'I still have hunger to compete with squash top order.',
-        author: 'Mohamed ElShorbagy · SquashMad',
-      },
-    ];
-    let quoteTimer = null;
-    let quoteIndex = Math.floor(Math.random() * SQUASH_QUOTES.length);
-    function showLoaderQuote() {
-      const text = document.getElementById('app-loader-quote-text');
-      const author = document.getElementById('app-loader-quote-author');
-      if (!text || !author) return;
-      const quote = SQUASH_QUOTES[quoteIndex % SQUASH_QUOTES.length];
-      text.textContent = '«' + quote.text + '»';
-      author.textContent = '— ' + quote.author;
-      quoteIndex++;
-    }
-    showLoaderQuote();
-    quoteTimer = setInterval(showLoaderQuote, 6500);
-
     // Стартовый экран: прячем после первичной загрузки данных страницы.
     const appLoaderStartedAt = Date.now();
     function hideAppLoader() {
       const loader = document.getElementById('app-loader');
       if (!loader || loader.classList.contains('is-done')) return;
-      const delay = Math.max(0, 800 - (Date.now() - appLoaderStartedAt));
+      const delay = Math.max(0, 300 - (Date.now() - appLoaderStartedAt));
       setTimeout(() => {
-        if (quoteTimer) clearInterval(quoteTimer);
         loader.classList.add('is-done');
         setTimeout(() => loader.remove(), 350);
       }, delay);
