@@ -53,7 +53,7 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-WEB_APP_VERSION = "5"
+WEB_APP_VERSION = "6"
 
 
 def _web_app_url() -> str:
@@ -214,6 +214,9 @@ async def cb_apply(callback: CallbackQuery) -> None:
             await callback.answer()
             return
         _, action, applicant_raw = parts
+        if action not in {"ok", "no"}:
+            await callback.answer()
+            return
         applicant = int(applicant_raw)
 
         application = await db.get_application(applicant)

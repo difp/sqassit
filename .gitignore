@@ -18,3 +18,5 @@ __pycache__/
 venv/
 .mypy_cache/
 .pytest_cache/
+.coverage
+.coverage.*

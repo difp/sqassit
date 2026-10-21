@@ -506,6 +506,7 @@
       *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
       .btn:active, .header-action:active, .chip:active { transform: none; }
       .squash-loader__ring { animation: none; }
+      .header-action.is-loading svg { animation: none; }
     }
   </style>
 </head>
@@ -705,13 +706,15 @@
     }
 
     // Аватар: цветной круг с инициалом; картинка грузится поверх, при ошибке удаляется.
-    // Для анонимного режима передаётся emoji животного.
-    function avatarHtml(name, url, small, emoji) {
+    // Для анонимного режима передаётся emoji животного. id нужен, чтобы
+    // повторное обновление профиля не теряло контейнер.
+    function avatarHtml(name, url, small, emoji, id) {
+      const idAttr = id ? ` id="${esc(id)}"` : '';
       if (emoji) {
-        return `<span class="avatar avatar--animal ${small ? 'avatar--sm' : ''}" aria-label="${esc(name)}">${esc(emoji)}</span>`;
+        return `<span${idAttr} class="avatar avatar--animal ${small ? 'avatar--sm' : ''}" aria-label="${esc(name)}">${esc(emoji)}</span>`;
       }
       const initial = esc((name || '?').trim().charAt(0).toUpperCase());
-      return `<span class="avatar ${small ? 'avatar--sm' : ''}">${initial}` +
+      return `<span${idAttr} class="avatar ${small ? 'avatar--sm' : ''}">${initial}` +
              `<img src="${esc(url)}" alt="" loading="lazy" decoding="async" onerror="this.remove()"></span>`;
     }
 
@@ -816,12 +819,21 @@
     })();
 
     // Общий профиль. Вкладка «Тренер» видна всем: игрок может оставить заявку.
-    const APP = { me: null, ready: (async () => {
-      try {
+    const APP = {
+      me: null,
+      ready: (async () => {
+        try {
+          const data = await api('/api/me');
+          APP.me = data.user;
+        } catch (e) { /* 401/403 — профиль недоступен */ }
+      })(),
+      async refresh() {
+        await APP.ready;
         const data = await api('/api/me');
         APP.me = data.user;
-      } catch (e) { /* 401/403 — профиль недоступен */ }
-    })() };
+        return APP.me;
+      },
+    };
   </script>
   {% block scripts %}{% endblock %}
 </body>

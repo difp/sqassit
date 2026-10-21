@@ -192,8 +192,11 @@ async def _execute(sql: str, params: tuple[Any, ...] = ()) -> int:
     db = _db()
     async with _lock:
         cursor = await db.execute(sql, params)
-        await db.commit()
-        return int(cursor.lastrowid or 0)
+        try:
+            await db.commit()
+            return int(cursor.lastrowid or 0)
+        finally:
+            await cursor.close()
 
 
 async def _execute_rowcount(sql: str, params: tuple[Any, ...] = ()) -> int:
@@ -201,8 +204,11 @@ async def _execute_rowcount(sql: str, params: tuple[Any, ...] = ()) -> int:
     db = _db()
     async with _lock:
         cursor = await db.execute(sql, params)
-        await db.commit()
-        return int(cursor.rowcount or 0)
+        try:
+            await db.commit()
+            return int(cursor.rowcount or 0)
+        finally:
+            await cursor.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -380,7 +386,8 @@ async def list_applications(status: str = "pending") -> list[aiosqlite.Row]:
     return await _fetchall(
         """
         SELECT a.telegram_id, a.message, a.status, a.created_at,
-               u.first_name, u.username, u.show_username, u.avatar_file_id
+               u.first_name, u.username, u.show_username, u.avatar_file_id,
+               u.display_mode
           FROM coach_applications a
           LEFT JOIN users u ON u.telegram_id = a.telegram_id
          WHERE a.status = ?

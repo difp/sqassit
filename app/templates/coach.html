@@ -672,8 +672,10 @@ function renderProfileCard(p) {
     </div>`;
 }
 async function loadProfile() {
+  if (!APP.me || !APP.me.is_coach) return;
   try {
     const data = await api('/api/coach/profile');
+    if (!APP.me.is_coach) return;
     PROFILE = data.profile || { bio: '' };
     renderProfileCard(PROFILE);
     PROFILE_LOADED = true;
@@ -724,8 +726,10 @@ function playerRow(p) {
   </div>`;
 }
 async function loadPlayers() {
+  if (!APP.me || !APP.me.is_coach) return;
   try {
     const data = await api('/api/coach/players');
+    if (!APP.me.is_coach) return;
     document.getElementById('players').innerHTML = data.players.length
       ? data.players.map(playerRow).join('')
       : '<div class="empty empty--inline"><div>Игроков пока нет.</div></div>';
@@ -747,6 +751,7 @@ async function loadApplications() {
   if (!IS_MANAGER) return;
   try {
     const data = await api('/api/coach/applications');
+    if (!IS_MANAGER) return;
     const section = document.getElementById('applications-section');
     const box = document.getElementById('applications-list');
     if (!data.applications.length) {
@@ -757,7 +762,7 @@ async function loadApplications() {
     section.hidden = false;
     box.innerHTML = data.applications.map(a => `
       <div class="p-row" data-atid="${a.telegram_id}">
-        ${avatarHtml(a.first_name, a.avatar_url, true)}
+        ${avatarHtml(a.first_name, a.avatar_url, true, a.avatar_emoji)}
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;font-size:14px">${esc(a.first_name)}</div>
           <div class="hint">${a.username ? '@' + esc(a.username) : (a.username_visible ? 'без username' : 'username скрыт')}</div>
@@ -780,7 +785,10 @@ document.getElementById('applications-list').addEventListener('click', async (ev
     hapticNotify('success');
     toast(ok ? 'Тренер одобрен' : 'Заявка отклонена');
     loadApplications();
-    if (ok) loadCoaches();
+    if (ok) {
+      loadCoaches();
+      loadPlayers();
+    }
   } catch (e) { hapticNotify('error'); toast(e.message); }
 });
 
@@ -808,6 +816,7 @@ async function loadCoaches() {
   if (!IS_MANAGER) return;
   try {
     const data = await api('/api/coach/coaches');
+    if (!IS_MANAGER) return;
     document.getElementById('coaches-list').innerHTML = data.coaches.map(coachRow).join('');
   } catch (e) { toast(e.message); }
 }
@@ -821,6 +830,7 @@ document.getElementById('coach-add').addEventListener('click', async () => {
     toast(r.created ? 'Тренер добавлен' : 'Уже является тренером');
     document.getElementById('coach-input').value = '';
     loadCoaches();
+    loadPlayers();
   } catch (e) { hapticNotify('error'); toast(e.message); }
 });
 document.getElementById('coaches-list').addEventListener('click', async (ev) => {
@@ -832,6 +842,7 @@ document.getElementById('coaches-list').addEventListener('click', async (ev) => 
     hapticNotify('success');
     toast('Роль снята');
     loadCoaches();
+    loadPlayers();
   } catch (e) { hapticNotify('error'); toast(e.message); }
 });
 document.getElementById('coaches-list').addEventListener('change', async (ev) => {
@@ -862,14 +873,39 @@ function whenVisible(id, fn) {
   observer.observe(el);
 }
 
-// ===== Обновление данных без перезагрузки страницы =====
+// ===== Роль и обновление без перезагрузки страницы =====
+function applyRoleUi(me) {
+  IS_OWNER = !!me.is_owner;
+  IS_MANAGER = !!me.is_manager;
+  document.getElementById('coach-content').hidden = !me.is_coach;
+  document.getElementById('fab-add').hidden = !me.is_coach;
+  document.getElementById('apply-section').hidden = !!me.is_coach;
+  if (!IS_MANAGER) {
+    // При снятии прав менеджера не оставляем в DOM устаревшие разделы.
+    document.getElementById('applications-section').hidden = true;
+    document.getElementById('coaches-section').hidden = true;
+  }
+}
+
 window.PAGE_REFRESH = async () => {
-  if (!APP.me || !APP.me.is_coach) {
+  // Перечитываем /api/me: роль могли выдать или снять, пока страница открыта.
+  const me = await APP.refresh();
+  if (!me) {
     await loadApplyStatus();
     return;
   }
+  applyRoleUi(me);
+
+  if (!me.is_coach) {
+    await loadApplyStatus();
+    return;
+  }
+
   const jobs = [loadView(), loadPlayers(), loadProfile()];
-  if (IS_MANAGER) jobs.push(loadApplications(), loadCoaches());
+  if (IS_MANAGER) {
+    document.getElementById('coaches-section').hidden = false;
+    jobs.push(loadApplications(), loadCoaches());
+  }
   await Promise.all(jobs);
 };
 
@@ -878,12 +914,9 @@ window.PAGE_REFRESH = async () => {
   await APP.ready;
   const me = APP.me;
   if (!me) return;
-  IS_OWNER = !!me.is_owner;
-  IS_MANAGER = !!me.is_manager;
+  applyRoleUi(me);
 
   if (me.is_coach) {
-    document.getElementById('coach-content').hidden = false;
-    document.getElementById('fab-add').hidden = false;
     loadView();
     whenVisible('players-section', loadPlayers);
     whenVisible('profile-section', loadProfile);
@@ -893,7 +926,6 @@ window.PAGE_REFRESH = async () => {
       whenVisible('coaches-section', loadCoaches);
     }
   } else {
-    document.getElementById('apply-section').hidden = false;
     loadApplyStatus();
   }
 })();

@@ -732,6 +732,19 @@ def test_player_privacy_about_and_animal_participant(client):
     assert coach_participant["anonymous"] is True
     assert coach_participant["avatar_url"] == ""
 
+    # Отдельный endpoint участников (его использует панель тренера) тоже
+    # не должен раскрывать реальное имя/фото в режиме животного.
+    participant_endpoint = client.get(
+        f"/api/coach/trainings/{tid}/participants", headers=COACH
+    ).json()["participants"]
+    endpoint_player = next(
+        p for p in participant_endpoint if p["telegram_id"] == 555
+    )
+    assert endpoint_player["first_name"] == animal["name"]
+    assert endpoint_player["avatar_emoji"] == animal["emoji"]
+    assert endpoint_player["avatar_url"] == ""
+    assert endpoint_player["anonymous"] is True
+
     # В обычном режиме тренер снова видит реальное имя и аватарку.
     assert client.put(
         "/api/me/profile",
@@ -863,3 +876,115 @@ def test_inbox_uses_animal_name_in_anonymous_mode(monkeypatch):
     assert "Иван" not in text
     assert "555" not in text
     assert markup.inline_keyboard[0][0].callback_data == "reply:555"
+
+
+def test_application_privacy_hides_animal_from_managers(client, monkeypatch):
+    headers = {
+        "X-Init-Data": _init({
+            "id": 888,
+            "first_name": "Заявитель",
+            "username": "applicant",
+        })
+    }
+    assert client.get("/api/me", headers=headers).status_code == 200
+    assert client.put(
+        "/api/me/profile",
+        headers=headers,
+        json={
+            "about": "Хочу тренировать",
+            "display_mode": "animal",
+            "show_username": True,
+        },
+    ).status_code == 200
+
+    sent: list[tuple[int, str]] = []
+
+    async def fake_send(chat_id, text, **kwargs):
+        sent.append((chat_id, text))
+
+    monkeypatch.setattr(mainmod.app.state.bot, "send_message", fake_send)
+    assert client.post(
+        "/api/coach/apply", headers=headers, json={"message": "Заявка"}
+    ).json()["ok"] is True
+
+    animal = botmod.animal_identity(888)
+    for _ in range(30):
+        if sent:
+            break
+        time.sleep(0.05)
+    assert sent
+    assert animal["name"] in sent[0][1]
+    assert "Заявитель" not in sent[0][1]
+    assert "888" not in sent[0][1]
+
+    applications = client.get(
+        "/api/coach/applications", headers=COACH
+    ).json()["applications"]
+    application = next(a for a in applications if a["telegram_id"] == 888)
+    assert application["first_name"] == animal["name"]
+    assert application["avatar_emoji"] == animal["emoji"]
+    assert application["avatar_url"] == ""
+    assert application["anonymous"] is True
+    assert application["username"] == "applicant"
+    assert application["username_visible"] is True  # username виден только по согласию
+
+
+def test_message_to_coach_uses_animal_name(client, monkeypatch):
+    headers = {"X-Init-Data": _init({"id": 555, "first_name": "Иван"})}
+    assert client.get("/api/me", headers=headers).status_code == 200
+    assert client.put(
+        "/api/me/profile",
+        headers=headers,
+        json={"about": "", "display_mode": "animal", "show_username": False},
+    ).status_code == 200
+    tid = _create_training(client, day=21, time_str="11:00")
+
+    sent: list[tuple[int, str]] = []
+
+    async def fake_send(chat_id, text, **kwargs):
+        sent.append((chat_id, text))
+
+    monkeypatch.setattr(mainmod.app.state.bot, "send_message", fake_send)
+    assert client.post(
+        "/api/messages/coach",
+        headers=headers,
+        json={"text": "Не смогу прийти", "training_id": tid},
+    ).json()["ok"] is True
+
+    animal = botmod.animal_identity(555)
+    for _ in range(30):
+        if sent:
+            break
+        time.sleep(0.05)
+    assert sent
+    assert animal["name"] in sent[0][1]
+    assert "Иван" not in sent[0][1]
+    assert "555" not in sent[0][1]
+
+
+def test_refresh_and_responsive_ui_contract(client):
+    player = client.get("/")
+    coach = client.get("/coach")
+    assert player.status_code == 200 and coach.status_code == 200
+
+    for page in (player, coach):
+        assert 'id="refresh-btn"' in page.text
+        assert 'aria-label="Обновить данные"' in page.text
+        assert 'window.PAGE_REFRESH' in page.text
+        assert "APP.refresh()" in page.text
+        assert "maximum-scale" not in page.text  # зум не блокируем
+        assert "max-width: 340px" in page.text
+        assert "max-width: 220px" in page.text
+        assert "prefers-reduced-motion" in page.text
+        assert "squash-loader__ball" in page.text
+
+    # Обновление расписания должно убирать старые карточки и empty-state.
+    assert "Object.keys(ITEMS).forEach" in player.text
+    assert "schedule.innerHTML = ''" in player.text
+    assert "empty.hidden = true" in player.text
+    # Контейнер аватара сохраняет id после повторного рендера.
+    assert "'me-avatar'" in player.text
+    # Обновление панели тренера перечитывает роль.
+    assert "applyRoleUi" in coach.text
+    # Заявки в режиме животного показывают emoji, а не инициал.
+    assert "avatarHtml(a.first_name, a.avatar_url, true, a.avatar_emoji)" in coach.text

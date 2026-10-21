@@ -179,15 +179,23 @@ function trainingCard(t) {
 function renderSchedule(trainings) {
   const loading = document.getElementById('loading');
   loading.hidden = true;
+  const schedule = document.getElementById('schedule');
+  const empty = document.getElementById('empty');
 
+  // Старые карточки и ITEMS не должны оставаться после обновления:
+  // иначе удалённая тренировка всё ещё открывается из кэша.
+  Object.keys(ITEMS).forEach(key => delete ITEMS[key]);
   if (!trainings.length) {
-    document.getElementById('empty').hidden = false;
+    schedule.innerHTML = '';
+    empty.hidden = false;
     return;
   }
+  empty.hidden = true;
+
   const groups = {};
   trainings.forEach(t => { ITEMS[t.id] = t; (groups[t.date] = groups[t.date] || []).push(t); });
 
-  document.getElementById('schedule').innerHTML = Object.keys(groups).sort().map(date => `
+  schedule.innerHTML = Object.keys(groups).sort().map(date => `
     <section class="day">
       <div class="day-label"><span>${esc(fmtDay(date))}</span></div>
       ${groups[date].map(trainingCard).join('')}
@@ -208,7 +216,12 @@ async function loadProfile() {
   await APP.ready;
   if (!APP.me) return;
   document.getElementById('me-name').textContent = APP.me.first_name || 'Игрок';
-  document.getElementById('me-avatar').outerHTML = avatarHtml(APP.me.first_name, APP.me.avatar_url);
+  const avatar = document.getElementById('me-avatar');
+  if (avatar) {
+    avatar.outerHTML = avatarHtml(
+      APP.me.first_name, APP.me.avatar_url, false, '', 'me-avatar'
+    );
+  }
   const toggle = document.getElementById('notif-toggle');
   toggle.checked = !!APP.me.notifications_enabled;
   toggle.disabled = false;
@@ -359,6 +372,7 @@ document.getElementById('profile-save').addEventListener('click', async () => {
 });
 
 window.PAGE_REFRESH = async () => {
+  await APP.refresh();
   await Promise.all([loadProfile(), loadSchedule()]);
 };
 

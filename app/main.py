@@ -1367,8 +1367,13 @@ async def api_apply(payload: ApplyIn, user: Annotated[dict, Depends(current_user
     if user.get("is_coach"):
         return error_json("Вы уже тренер.", 400)
     await db.apply_for_coach(user["telegram_id"], (payload.message or "").strip()[:1000])
+    applicant_name = (
+        animal_identity(user["telegram_id"])["name"]
+        if user.get("display_mode") == "animal"
+        else (user["first_name"] or "Пользователь")
+    )
     asyncio.create_task(
-        _notify_managers_about_application(user["telegram_id"], user["first_name"] or "Пользователь")
+        _notify_managers_about_application(user["telegram_id"], applicant_name)
     )
     return {"ok": True}
 
@@ -1395,10 +1400,9 @@ async def api_applications(manager: Annotated[dict, Depends(require_manager)]):
         "applications": [
             {
                 "telegram_id": r["telegram_id"],
-                "first_name": r["first_name"] or "Пользователь",
+                **participant_identity(r),
                 "username": r["username"] if r["show_username"] else None,
                 "username_visible": bool(r["show_username"]),
-                "avatar_url": _avatar_url(r["telegram_id"], real=True),
                 "message": r["message"],
                 "created_at": r["created_at"],
             }
