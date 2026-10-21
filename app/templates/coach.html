@@ -862,6 +862,17 @@ function whenVisible(id, fn) {
   observer.observe(el);
 }
 
+// ===== Обновление данных без перезагрузки страницы =====
+window.PAGE_REFRESH = async () => {
+  if (!APP.me || !APP.me.is_coach) {
+    await loadApplyStatus();
+    return;
+  }
+  const jobs = [loadView(), loadPlayers(), loadProfile()];
+  if (IS_MANAGER) jobs.push(loadApplications(), loadCoaches());
+  await Promise.all(jobs);
+};
+
 // ===== Инициализация по роли =====
 (async () => {
   await APP.ready;

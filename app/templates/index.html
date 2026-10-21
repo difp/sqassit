@@ -358,6 +358,10 @@ document.getElementById('profile-save').addEventListener('click', async () => {
   }
 });
 
+window.PAGE_REFRESH = async () => {
+  await Promise.all([loadProfile(), loadSchedule()]);
+};
+
 loadProfile();
 loadSchedule();
 </script>

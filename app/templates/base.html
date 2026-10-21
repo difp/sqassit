@@ -123,6 +123,13 @@
     }
     .header-action:active { transform: scale(.96); }
     .header-action svg { width: 21px; height: 21px; }
+    .header-action--ghost {
+      border: 1px solid var(--line); background: transparent;
+      color: var(--text); box-shadow: none;
+    }
+    .header-action--ghost:active { background: rgba(120,120,128,.16); }
+    .header-action.is-loading svg { animation: refresh-spin .9s linear infinite; }
+    @keyframes refresh-spin { to { transform: rotate(360deg); } }
 
     /* ===== Переключатель ===== */
     .switch { position: relative; display: inline-block; width: 51px; height: 31px; flex: none; }
@@ -469,8 +476,10 @@
     @media (max-width: 220px) {
       .app-main { padding: 8px 6px calc(var(--tabbar-h) + 16px + env(safe-area-inset-bottom)); }
       .card { padding: 10px; border-radius: 12px; }
-      .app-title { font-size: 15px; }
-      .header-action { width: 30px; height: 30px; }
+      .app-header { gap: 4px; padding-left: 8px; padding-right: 8px; }
+      .app-header__right { gap: 4px; }
+      .app-title { font-size: 14px; }
+      .header-action { width: 28px; height: 28px; }
       .section-title { font-size: 11px; }
       .segmented { padding: 2px; gap: 2px; }
       .segmented button { min-height: 32px; font-size: 11px; }
@@ -504,7 +513,17 @@
   <div class="app">
     <header class="app-header">
       <h1 class="app-title">{% block header %}Сквош{% endblock %}</h1>
-      <div class="app-header__right">{% block header_right %}{% endblock %}</div>
+      <div class="app-header__right">
+        <button class="header-action header-action--ghost" id="refresh-btn"
+                type="button" aria-label="Обновить данные" title="Обновить">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 11a8 8 0 1 1-2.3 6.6"/>
+            <path d="M20 4v6h-6"/>
+          </svg>
+        </button>
+        {% block header_right %}{% endblock %}
+      </div>
     </header>
     <main class="app-main">{% block content %}{% endblock %}</main>
   </div>
@@ -602,6 +621,31 @@
       el.classList.add('is-show');
       clearTimeout(el._t);
       el._t = setTimeout(() => el.classList.remove('is-show'), action ? 5200 : 2600);
+    }
+
+    // Обновление данных без перезагрузки WebView (страница сама решает, что тянуть).
+    const refreshButton = document.getElementById('refresh-btn');
+    if (refreshButton) {
+      refreshButton.addEventListener('click', async () => {
+        if (refreshButton.classList.contains('is-loading')) return;
+        refreshButton.classList.add('is-loading');
+        refreshButton.setAttribute('aria-busy', 'true');
+        haptic('light');
+        try {
+          if (typeof window.PAGE_REFRESH === 'function') {
+            await window.PAGE_REFRESH();
+          } else {
+            location.reload();
+            return;
+          }
+        } catch (e) {
+          hapticNotify('error');
+          toast(e.message || 'Не удалось обновить данные');
+        } finally {
+          refreshButton.classList.remove('is-loading');
+          refreshButton.removeAttribute('aria-busy');
+        }
+      });
     }
 
     async function api(path, method = 'GET', body = null) {
