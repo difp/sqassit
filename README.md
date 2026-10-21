@@ -10,8 +10,9 @@ Python 3.11+ · FastAPI · aiogram 3 · SQLite
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 <p align="center">
-  <img src="docs/screenshots/hero.png" alt="Squash-Bot: расписание игрока и панель тренера" width="100%">
+  <img src="docs/screenshots/hero.png" alt="SQASSIT: расписание, матчи, профиль игрока и панель тренера" width="100%">
 </p>
+<p align="center"><sub>Расписание · Матчи · Публичный профиль · Панель тренера</sub></p>
 
 ## Что умеет
 
