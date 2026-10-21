@@ -384,6 +384,19 @@ class TrainingIn(BaseModel):
     force: bool = False  # подтверждение при возможном дубле
 
 
+class TrainingBatchIn(BaseModel):
+    period_start: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    period_end: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    weekdays: list[int] = Field(min_length=1, max_length=7)
+    time: str = Field(pattern=r"^\d{2}:\d{2}$")
+    training_type: str = Field(default="Тренировка", min_length=1, max_length=100)
+    capacity: int = Field(default=4, ge=1, le=100)
+    duration_min: int = Field(default=DEFAULT_TRAINING_DURATION_MINUTES, ge=15, le=600)
+    level: str = Field(default="", max_length=60)
+    reminder_enabled: bool = True
+    reminder_offset_min: int = Field(default=DEFAULT_REMINDER_OFFSET_MINUTES, ge=0, le=2880)
+
+
 class ReminderIn(BaseModel):
     enabled: bool
     offset_min: int = Field(default=DEFAULT_REMINDER_OFFSET_MINUTES, ge=0, le=2880)
@@ -423,6 +436,10 @@ class ApplyIn(BaseModel):
 class MessageIn(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
     training_id: int | None = None
+
+
+_TRAINING_BATCH_MAX_DAYS = 92
+_TRAINING_BATCH_MAX_COUNT = 100
 
 
 def _parse_local_epoch(date_str: str, time_str: str) -> int:
@@ -930,6 +947,91 @@ async def api_create_training(payload: TrainingIn, coach: Annotated[dict, Depend
         raise
     except Exception:
         logger.exception("Ошибка создания тренировки")
+        return error_json("Внутренняя ошибка сервера", 500)
+
+
+@app.post("/api/coach/trainings/batch")
+async def api_create_training_batch(
+    payload: TrainingBatchIn, coach: Annotated[dict, Depends(require_coach)]
+):
+    """Создаёт занятия по выбранным дням недели в заданном периоде."""
+    try:
+        try:
+            start_day = datetime.strptime(payload.period_start, "%Y-%m-%d").date()
+            end_day = datetime.strptime(payload.period_end, "%Y-%m-%d").date()
+            start_time = datetime.strptime(payload.time, "%H:%M").time()
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail="Некорректная дата или время."
+            ) from exc
+
+        if end_day < start_day:
+            return error_json("Дата окончания раньше начала", 422)
+        if (end_day - start_day).days > _TRAINING_BATCH_MAX_DAYS:
+            return error_json("Период слишком длинный: максимум 92 дня", 422)
+
+        weekdays = sorted(set(payload.weekdays))
+        if not weekdays or any(day < 0 or day > 6 for day in weekdays):
+            return error_json("Некорректные дни недели", 422)
+
+        level = (payload.level or "").strip()
+        if level and level not in TRAINING_LEVELS:
+            return error_json("Неизвестный уровень игры", 422)
+
+        dates = []
+        cursor = start_day
+        while cursor <= end_day:
+            if cursor.weekday() in weekdays:
+                dates.append(cursor)
+            cursor += timedelta(days=1)
+        if not dates:
+            return error_json("В выбранном периоде нет таких дней недели", 422)
+        if len(dates) > _TRAINING_BATCH_MAX_COUNT:
+            return error_json("Слишком много тренировок: максимум 100", 422)
+
+        created: list[int] = []
+        skipped: list[dict[str, str]] = []
+        now = int(time.time())
+        for day in dates:
+            start_at = int(
+                datetime.combine(day, start_time)
+                .replace(tzinfo=settings.timezone)
+                .timestamp()
+            )
+            date_str = day.isoformat()
+            if start_at <= now:
+                skipped.append({"date": date_str, "reason": "past"})
+                continue
+            duplicate = await db.find_duplicate_training(
+                start_at, payload.training_type, coach["telegram_id"]
+            )
+            if duplicate is not None:
+                skipped.append({"date": date_str, "reason": "duplicate"})
+                continue
+            training_id = await db.create_training(
+                title=payload.training_type,
+                training_type=payload.training_type,
+                start_at=start_at,
+                capacity=payload.capacity,
+                duration_min=payload.duration_min,
+                reminder_offset_min=payload.reminder_offset_min,
+                reminder_enabled=payload.reminder_enabled,
+                created_by=coach["telegram_id"],
+                level=level,
+            )
+            created.append(training_id)
+
+        return {
+            "ok": True,
+            "created": created,
+            "created_count": len(created),
+            "skipped": skipped,
+            "skipped_count": len(skipped),
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Ошибка массового создания тренировок")
         return error_json("Внутренняя ошибка сервера", 500)
 
 

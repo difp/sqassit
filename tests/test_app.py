@@ -192,6 +192,79 @@ def test_create_duplicate_and_booking(client):
     assert card["coach"] and "links" not in card["coach"]
 
 
+def test_create_trainings_by_weekdays(client):
+    start = (datetime.now(settings.timezone) + timedelta(days=7)).date()
+    end = start + timedelta(days=6)
+    payload = {
+        "period_start": start.isoformat(),
+        "period_end": end.isoformat(),
+        "weekdays": [0, 2, 4],  # Пн / Ср / Пт
+        "time": "19:00",
+        "training_type": "Пакет Пн-Ср-Пт",
+        "capacity": 2,
+    }
+    response = client.post(
+        "/api/coach/trainings/batch", headers=COACH, json=payload
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["created_count"] == 3
+    assert data["skipped_count"] == 0
+    assert len(set(data["created"])) == 3
+
+    expected_dates = {
+        (start + timedelta(days=offset)).isoformat()
+        for offset in range(7)
+        if (start + timedelta(days=offset)).weekday() in {0, 2, 4}
+    }
+    trainings = client.get("/api/coach/trainings", headers=COACH).json()["trainings"]
+    created = [
+        t for t in trainings
+        if t["id"] in data["created"] and t["type"] == payload["training_type"]
+    ]
+    assert {t["date"] for t in created} == expected_dates
+    assert all(t["time"] == "19:00" for t in created)
+
+    # Повторный запуск идемпотентен: существующие даты пропускаются.
+    again = client.post(
+        "/api/coach/trainings/batch", headers=COACH, json=payload
+    ).json()
+    assert again["created_count"] == 0
+    assert again["skipped_count"] == 3
+    assert {item["date"] for item in again["skipped"]} == expected_dates
+
+    # Игрок не может создавать пакет.
+    assert client.post(
+        "/api/coach/trainings/batch", headers=PLAYER, json=payload
+    ).status_code == 403
+
+
+def test_create_trainings_batch_validation(client):
+    start = (datetime.now(settings.timezone) + timedelta(days=7)).date()
+    base = {
+        "period_start": start.isoformat(),
+        "period_end": (start + timedelta(days=6)).isoformat(),
+        "weekdays": [0],
+        "time": "19:00",
+        "training_type": "Пакет",
+    }
+    assert client.post(
+        "/api/coach/trainings/batch",
+        headers=COACH,
+        json={**base, "weekdays": [7]},
+    ).status_code == 422
+    assert client.post(
+        "/api/coach/trainings/batch",
+        headers=COACH,
+        json={**base, "period_end": (start - timedelta(days=1)).isoformat()},
+    ).status_code == 422
+    assert client.post(
+        "/api/coach/trainings/batch",
+        headers=COACH,
+        json={**base, "period_end": (start + timedelta(days=100)).isoformat()},
+    ).status_code == 422
+
+
 def test_cancel_rule(client):
     # ближе 4.5 ч — отмена запрещена
     soon = datetime.now(settings.timezone) + timedelta(hours=1)
@@ -845,6 +918,17 @@ def test_inbox_hides_player_id(monkeypatch):
     assert "555" not in text
     assert "/reply" not in text
     assert markup.inline_keyboard[0][0].callback_data == "reply:555"
+
+
+def test_recurring_training_ui(client):
+    page = client.get("/coach")
+    assert page.status_code == 200
+    assert 'id="create-mode"' in page.text
+    assert 'name="period_start"' in page.text
+    assert 'name="period_end"' in page.text
+    assert 'data-weekday="0"' in page.text
+    assert "api('/api/coach/trainings/batch'" in page.text
+    assert "Выбрано: ${count} ${trainingWord(count)}" in page.text
 
 
 def test_training_time_uses_24_hour_input(client):

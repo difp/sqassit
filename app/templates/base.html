@@ -245,6 +245,8 @@
       color: var(--link); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
     }
     .chip:active { transform: scale(.96); }
+    .chip.is-active,
+    .chip[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); }
     .deleted-card { opacity: .72; }
 
     /* ===== Бейдж «менеджер» ===== */

@@ -92,8 +92,12 @@
     <div class="sheet__handle"></div>
     <h2 class="sheet__title">Новая тренировка</h2>
     <form id="create-form">
+      <div class="segmented" id="create-mode">
+        <button type="button" data-create-mode="single" class="is-active" aria-pressed="true">Одна</button>
+        <button type="button" data-create-mode="repeat" aria-pressed="false">По дням</button>
+      </div>
       <div class="row2">
-        <label class="field"><span class="label">Дата</span>
+        <label class="field" id="single-date-field"><span class="label">Дата</span>
           <input class="input" name="date" type="date" required></label>
         <label class="field"><span class="label">Время · 24 ч</span>
           <input class="input" id="training-time" name="time" type="text"
@@ -101,6 +105,27 @@
                  maxlength="5" value="19:00" placeholder="19:00"
                  title="24-часовой формат, например 19:30"
                  autocomplete="off" required></label>
+      </div>
+      <div id="repeat-fields" hidden>
+        <div class="row2">
+          <label class="field"><span class="label">Период с</span>
+            <input class="input" name="period_start" type="date"></label>
+          <label class="field"><span class="label">по</span>
+            <input class="input" name="period_end" type="date"></label>
+        </div>
+        <div class="field">
+          <span class="label">Дни недели</span>
+          <div class="chips" id="weekday-picker" role="group" aria-label="Дни недели">
+            <button type="button" class="chip" data-weekday="0" aria-pressed="false">Пн</button>
+            <button type="button" class="chip" data-weekday="1" aria-pressed="false">Вт</button>
+            <button type="button" class="chip" data-weekday="2" aria-pressed="false">Ср</button>
+            <button type="button" class="chip" data-weekday="3" aria-pressed="false">Чт</button>
+            <button type="button" class="chip" data-weekday="4" aria-pressed="false">Пт</button>
+            <button type="button" class="chip" data-weekday="5" aria-pressed="false">Сб</button>
+            <button type="button" class="chip" data-weekday="6" aria-pressed="false">Вс</button>
+          </div>
+          <p class="hint hint--tight" id="repeat-summary" aria-live="polite">Выберите дни недели.</p>
+        </div>
       </div>
       <label class="field"><span class="label">Тип тренировки</span>
         <input class="input" name="training_type" type="text" value="Тренировка" maxlength="100" required></label>
@@ -170,18 +195,130 @@ let TRAININGS = [];
 let IS_OWNER = false;
 let IS_MANAGER = false;
 let XFER_TID = null;
+let CREATE_MODE = 'single';
+
+const WEEKDAY_NAMES = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
 // ===== Bottom sheets =====
 const sheet = document.getElementById('create-sheet');
 const profileSheet = document.getElementById('profile-sheet');
 const transferSheet = document.getElementById('transfer-sheet');
+const dateInput = sheet.querySelector('[name="date"]');
+const timeField = dateInput.closest('.row2').querySelectorAll('.field')[1];
+const periodStart = sheet.querySelector('[name="period_start"]');
+const periodEnd = sheet.querySelector('[name="period_end"]');
+const singleDateField = document.getElementById('single-date-field');
+const repeatFields = document.getElementById('repeat-fields');
+const repeatSummary = document.getElementById('repeat-summary');
+const weekdayPicker = document.getElementById('weekday-picker');
+
+function isoLocal(date) {
+  return date.getFullYear() + '-' +
+    String(date.getMonth() + 1).padStart(2, '0') + '-' +
+    String(date.getDate()).padStart(2, '0');
+}
+function localIsoDate(days = 0) {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return isoLocal(d);
+}
+function addDaysIso(iso, days) {
+  const d = new Date(iso + 'T12:00:00');
+  d.setDate(d.getDate() + days);
+  return isoLocal(d);
+}
+function selectedWeekdays() {
+  return Array.from(weekdayPicker.querySelectorAll('[data-weekday]'))
+    .filter(btn => btn.getAttribute('aria-pressed') === 'true')
+    .map(btn => parseInt(btn.dataset.weekday, 10));
+}
+function trainingWord(count) {
+  const n = Math.abs(count) % 100;
+  const last = n % 10;
+  if (n >= 11 && n <= 14) return 'тренировок';
+  if (last === 1) return 'тренировка';
+  if (last >= 2 && last <= 4) return 'тренировки';
+  return 'тренировок';
+}
+function repeatDateCount() {
+  const days = selectedWeekdays();
+  const startValue = periodStart.value;
+  const endValue = periodEnd.value;
+  if (!days.length || !startValue || !endValue || endValue < startValue) return 0;
+  const start = new Date(startValue + 'T12:00:00');
+  const end = new Date(endValue + 'T12:00:00');
+  let count = 0;
+  // Не даём случайному огромному периоду подвесить WebView.
+  for (let d = new Date(start); d <= end && count < 366; d.setDate(d.getDate() + 1)) {
+    if (days.includes((d.getDay() + 6) % 7)) count++;
+  }
+  return count;
+}
+function updateRepeatSummary() {
+  const days = selectedWeekdays();
+  if (!days.length) {
+    repeatSummary.textContent = 'Выберите дни недели.';
+    return;
+  }
+  if (!periodStart.value || !periodEnd.value) {
+    repeatSummary.textContent = 'Укажите период.';
+    return;
+  }
+  if (periodEnd.value < periodStart.value) {
+    repeatSummary.textContent = 'Дата окончания раньше начала.';
+    return;
+  }
+  const count = repeatDateCount();
+  const names = days.map(day => WEEKDAY_NAMES[day]).join(', ');
+  repeatSummary.textContent = `Выбрано: ${count} ${trainingWord(count)} · ${names}`;
+}
+
+function setCreateMode(mode) {
+  CREATE_MODE = mode === 'repeat' ? 'repeat' : 'single';
+  document.querySelectorAll('#create-mode [data-create-mode]').forEach(btn => {
+    const active = btn.dataset.createMode === CREATE_MODE;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-pressed', String(active));
+  });
+  const repeat = CREATE_MODE === 'repeat';
+  singleDateField.hidden = repeat;
+  timeField.style.gridColumn = repeat ? '1 / -1' : '';
+  repeatFields.hidden = !repeat;
+  dateInput.required = !repeat;
+  periodStart.required = repeat;
+  periodEnd.required = repeat;
+  const submit = document.getElementById('create-form').querySelector('button[type="submit"]');
+  submit.textContent = repeat ? 'Создать тренировки' : 'Создать тренировку';
+  if (repeat) {
+    const local = localIsoDate(0);
+    const start = dateInput.value || local;
+    periodStart.value = periodStart.value || start;
+    if (periodStart.value < local) periodStart.value = local;
+    periodStart.min = local;
+    periodEnd.min = periodStart.value;
+    periodEnd.max = addDaysIso(periodStart.value, 92);
+    if (!periodEnd.value || periodEnd.value < periodStart.value) {
+      periodEnd.value = addDaysIso(periodStart.value, 28);
+    }
+    if (periodEnd.value > periodEnd.max) periodEnd.value = periodEnd.max;
+    updateRepeatSummary();
+  }
+}
 
 function openSheet() {
-  const d = new Date();
-  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-  const dateInput = sheet.querySelector('[name="date"]');
-  if (!dateInput.value) dateInput.value = local;
+  const local = localIsoDate(0);
+  dateInput.min = local;
+  if (!dateInput.value || dateInput.value < local) dateInput.value = local;
+  periodStart.min = local;
+  if (!periodStart.value || periodStart.value < local) periodStart.value = dateInput.value;
+  periodEnd.min = periodStart.value;
+  periodEnd.max = addDaysIso(periodStart.value, 92);
+  if (!periodEnd.value || periodEnd.value < periodStart.value) {
+    periodEnd.value = addDaysIso(periodStart.value, 28);
+  }
+  if (periodEnd.value > periodEnd.max) periodEnd.value = periodEnd.max;
   ensureLevels();
+  setCreateMode(CREATE_MODE);
   sheet.classList.add('is-open');
   haptic('light');
   try { tg && tg.BackButton && tg.BackButton.show(); } catch (e) {}
@@ -194,6 +331,39 @@ document.getElementById('fab-add').addEventListener('click', openSheet);
 sheet.querySelector('[data-close]').addEventListener('click', closeSheet);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSheet(); });
 if (tg && tg.BackButton) tg.BackButton.onClick(closeSheet);
+
+document.getElementById('create-mode').addEventListener('click', ev => {
+  const btn = ev.target.closest('[data-create-mode]');
+  if (btn) setCreateMode(btn.dataset.createMode);
+});
+weekdayPicker.addEventListener('click', ev => {
+  const btn = ev.target.closest('[data-weekday]');
+  if (!btn) return;
+  const pressed = btn.getAttribute('aria-pressed') === 'true';
+  btn.setAttribute('aria-pressed', String(!pressed));
+  btn.classList.toggle('is-active', !pressed);
+  haptic('light');
+  updateRepeatSummary();
+});
+periodStart.addEventListener('change', () => {
+  periodEnd.min = periodStart.value;
+  periodEnd.max = addDaysIso(periodStart.value, 92);
+  if (!periodEnd.value || periodEnd.value < periodStart.value) {
+    periodEnd.value = addDaysIso(periodStart.value, 28);
+  }
+  if (periodEnd.value > periodEnd.max) periodEnd.value = periodEnd.max;
+  updateRepeatSummary();
+});
+periodEnd.addEventListener('change', updateRepeatSummary);
+dateInput.addEventListener('change', () => {
+  if (CREATE_MODE === 'single' && dateInput.value) {
+    periodStart.value = dateInput.value;
+    periodEnd.min = dateInput.value;
+    periodEnd.max = addDaysIso(dateInput.value, 92);
+    periodEnd.value = addDaysIso(dateInput.value, 28);
+  }
+  updateRepeatSummary();
+});
 
 // Время всегда в 24-часовом формате: 1930 -> 19:30, 07:00 и т.п.
 const trainingTime = document.getElementById('training-time');
@@ -250,18 +420,79 @@ async function submitCreate(payload, btn) {
     btn.disabled = false;
   }
 }
+async function submitRepeat(payload, btn) {
+  try {
+    const data = await api('/api/coach/trainings/batch', 'POST', payload);
+    const created = Number(data.created_count) || 0;
+    const skipped = Number(data.skipped_count) || 0;
+    if (!created) {
+      hapticNotify('warning');
+      toast(skipped
+        ? 'Все выбранные даты уже есть в расписании или прошли'
+        : 'Тренировки не созданы');
+      return;
+    }
+    hapticNotify('success');
+    toast(`Создано: ${created} ${trainingWord(created)}` +
+      (skipped ? `, пропущено: ${skipped}` : ''));
+    closeSheet();
+    setView('active');
+  } catch (e) {
+    hapticNotify('error');
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 document.getElementById('create-form').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const f = ev.target;
+  const btn = f.querySelector('button[type="submit"]');
   let offset = (parseInt(f.rem_hours.value, 10) || 0) * 60 + (parseInt(f.rem_minutes.value, 10) || 0);
   offset = Math.max(0, Math.min(2880, offset));
+
+  if (CREATE_MODE === 'repeat') {
+    const days = selectedWeekdays();
+    if (!days.length) {
+      toast('Выберите хотя бы один день недели');
+      return;
+    }
+    if (!f.period_start.value || !f.period_end.value) {
+      toast('Укажите начало и конец периода');
+      return;
+    }
+    if (f.period_end.value < f.period_start.value) {
+      toast('Дата окончания раньше начала');
+      return;
+    }
+    if (repeatDateCount() === 0) {
+      toast('В выбранном периоде нет таких дней недели');
+      return;
+    }
+    const batch = {
+      period_start: f.period_start.value,
+      period_end: f.period_end.value,
+      weekdays: days,
+      time: f.time.value,
+      training_type: f.training_type.value,
+      level: f.level.value,
+      capacity: parseInt(f.capacity.value, 10),
+      duration_min: parseInt(f.duration_min.value, 10),
+      reminder_enabled: f.reminder_enabled.checked,
+      reminder_offset_min: offset,
+    };
+    btn.disabled = true;
+    await submitRepeat(batch, btn);
+    return;
+  }
+
   const payload = {
     date: f.date.value, time: f.time.value, training_type: f.training_type.value,
     level: f.level.value, capacity: parseInt(f.capacity.value, 10),
     duration_min: parseInt(f.duration_min.value, 10),
     reminder_enabled: f.reminder_enabled.checked, reminder_offset_min: offset,
   };
-  const btn = f.querySelector('button[type="submit"]');
   btn.disabled = true;
   await submitCreate(payload, btn);
 });
