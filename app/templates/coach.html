@@ -169,8 +169,9 @@
     <div class="sheet__handle"></div>
     <h2 class="sheet__title">Профиль тренера</h2>
     <label class="field"><span class="label">Кратко о себе</span>
-      <textarea class="input" id="profile-bio" maxlength="300" rows="3"
-                placeholder="Например: тренер с 10-летним опытом, работаю над техникой и подачей"></textarea></label>
+      <textarea class="input" id="profile-bio" maxlength="450" rows="4"
+                placeholder="Например: тренер с 10-летним опытом, работаю над техникой и подачей"></textarea>
+      <span class="hint hint--tight" id="profile-bio-count">0 / 450</span></label>
     <p class="hint hint--tight form-note">Игроки увидят это в карточке тренировки и смогут написать вам личное сообщение через бота.</p>
     <button class="btn btn--primary btn--block" id="save-profile" style="margin-top:6px">Сохранить</button>
   </div>
@@ -894,6 +895,13 @@ function ensureLevels() {
 // ===== Профиль тренера =====
 let PROFILE = { bio: '' };
 let PROFILE_LOADED = false;
+const profileBio = document.getElementById('profile-bio');
+const profileBioCount = document.getElementById('profile-bio-count');
+
+function updateProfileBioCount() {
+  profileBioCount.textContent = `${profileBio.value.length} / 450`;
+}
+profileBio.addEventListener('input', updateProfileBioCount);
 function renderProfileCard(p) {
   document.getElementById('profile-head').innerHTML = `
     ${avatarHtml(p.first_name, p.avatar_url)}
@@ -917,7 +925,8 @@ async function ensureProfile() {
 }
 document.getElementById('profile-edit').addEventListener('click', async () => {
   await ensureProfile();
-  document.getElementById('profile-bio').value = PROFILE.bio || '';
+  profileBio.value = PROFILE.bio || '';
+  updateProfileBioCount();
   profileSheet.classList.add('is-open');
   haptic('light');
 });

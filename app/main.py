@@ -291,7 +291,7 @@ def serialize_coach(row: aiosqlite.Row | None) -> dict[str, Any] | None:
 
 def sanitize_bio(value: str) -> str:
     """Обрезает текст профиля (био тренера или «о себе» игрока)."""
-    return (value or "").strip()[:300]
+    return (value or "").strip()[:450]
 
 
 def _escape_ics(value: str) -> str:
@@ -411,11 +411,11 @@ class NotificationsIn(BaseModel):
 
 
 class TrainerProfileIn(BaseModel):
-    bio: str = Field(default="", max_length=300)
+    bio: str = Field(default="", max_length=450)
 
 
 class PlayerProfileIn(BaseModel):
-    about: str = Field(default="", max_length=300)
+    about: str = Field(default="", max_length=450)
     display_mode: Literal["name", "animal"] = "name"
     show_username: bool = False
 

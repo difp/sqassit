@@ -1832,3 +1832,38 @@ def test_avatar_not_found_cache_and_download(client, monkeypatch):
         "/api/avatar/555", params={"token": token}
     ).status_code == 502
     mainmod._avatar_cache.pop(555, None)
+
+
+def test_profile_descriptions_allow_450_characters(client):
+    text = "я" * 450
+    assert client.put(
+        "/api/me/profile",
+        headers=PLAYER,
+        json={"about": text, "display_mode": "name", "show_username": False},
+    ).status_code == 200
+    assert client.get("/api/me", headers=PLAYER).json()["user"]["about"] == text
+
+    assert client.put(
+        "/api/coach/profile", headers=COACH, json={"bio": text}
+    ).status_code == 200
+    assert client.get("/api/coach/profile", headers=COACH).json()["profile"]["bio"] == text
+
+    assert client.put(
+        "/api/me/profile",
+        headers=PLAYER,
+        json={"about": text + "я", "display_mode": "name", "show_username": False},
+    ).status_code == 422
+    assert client.put(
+        "/api/coach/profile", headers=COACH, json={"bio": text + "я"}
+    ).status_code == 422
+
+
+def test_description_textareas_and_full_display(client):
+    player = client.get("/")
+    coach = client.get("/coach")
+    assert 'id="profile-about" rows="4" maxlength="450"' in player.text
+    assert 'id="profile-about-count"' in player.text
+    assert 'id="profile-bio" maxlength="450" rows="4"' in coach.text
+    assert 'id="profile-bio-count"' in coach.text
+    # В карточках больше нет двухстрочного обрезания описания.
+    assert "-webkit-line-clamp" not in player.text

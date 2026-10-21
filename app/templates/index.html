@@ -65,8 +65,9 @@
     <div class="sheet__handle"></div>
     <h2 class="sheet__title">Профиль игрока</h2>
     <label class="field"><span class="label">О себе</span>
-      <textarea class="input" id="profile-about" rows="3" maxlength="300"
-                placeholder="Например: играю два года, хочу подтянуть подачу"></textarea></label>
+      <textarea class="input" id="profile-about" rows="4" maxlength="450"
+                placeholder="Например: играю два года, хочу подтянуть подачу"></textarea>
+      <span class="hint hint--tight" id="profile-about-count">0 / 450</span></label>
     <label class="field"><span class="label">Как показываться в списке участников</span>
       <select class="input" id="profile-display">
         <option value="name">Имя и фото из Telegram</option>
@@ -344,8 +345,14 @@ document.getElementById('msg-send').addEventListener('click', async () => {
 // ===== Профиль и приватность =====
 const profileSheet = document.getElementById('profile-sheet');
 const profileAbout = document.getElementById('profile-about');
+const profileAboutCount = document.getElementById('profile-about-count');
 const profileDisplay = document.getElementById('profile-display');
 const profileUsername = document.getElementById('profile-username');
+
+function updateProfileAboutCount() {
+  profileAboutCount.textContent = `${profileAbout.value.length} / 450`;
+}
+profileAbout.addEventListener('input', updateProfileAboutCount);
 
 // ===== Памятка первого запуска =====
 const onboardingSheet = document.getElementById('onboarding-sheet');
@@ -424,6 +431,7 @@ function updateProfilePreview() {
 function openProfile() {
   if (!APP.me) return;
   profileAbout.value = APP.me.about || '';
+  updateProfileAboutCount();
   profileDisplay.value = APP.me.display_mode || 'name';
   profileUsername.checked = !!APP.me.show_username;
   updateProfilePreview();
