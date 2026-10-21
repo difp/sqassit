@@ -14,7 +14,7 @@ import hmac
 import html
 import logging
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -63,11 +63,27 @@ _AVATAR_CACHE_MAX_ENTRIES = 256
 
 _bot_check_cache: tuple[float, bool] = (0.0, False)
 _BOT_CHECK_TTL_SECONDS = 60
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> None:
+    """Фоновая задача с гашением ошибок и отменой при остановке приложения."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+
+    def _finished(done: asyncio.Task) -> None:
+        _background_tasks.discard(done)
+        with suppress(asyncio.CancelledError, Exception):
+            done.exception()
+
+    task.add_done_callback(_finished)
 
 # Защита от спама/перебора. Лимиты подобраны для небольшого клуба.
 _message_limiter = RateLimiter(20, 60)      # личные сообщения тренеру
 _apply_limiter = RateLimiter(5, 300)        # заявки в тренеры
 _booking_limiter = RateLimiter(60, 60)      # book/cancel
+_match_create_limiter = RateLimiter(3, 600) # публикация матчей
+_match_join_limiter = RateLimiter(30, 60)   # вход/выход из матчей
 
 
 async def _bot_is_ready() -> bool:
@@ -261,12 +277,18 @@ def participant_identity(row: aiosqlite.Row) -> dict[str, Any]:
             "avatar_url": "",
             "avatar_emoji": animal["emoji"],
             "anonymous": True,
+            "profile_token": issue_scoped_token(
+                settings.bot_token, "profile", 0, row["telegram_id"], ttl_seconds=86400
+            ),
         }
     return {
         "first_name": row["first_name"] or "Игрок",
         "avatar_url": _avatar_url(row["telegram_id"]),
         "avatar_emoji": "",
         "anonymous": False,
+        "profile_token": issue_scoped_token(
+            settings.bot_token, "profile", 0, row["telegram_id"], ttl_seconds=86400
+        ),
     }
 
 
@@ -275,6 +297,38 @@ def serialize_participant(row: aiosqlite.Row) -> dict[str, Any]:
     data = participant_identity(row)
     data["status"] = row["status"]
     return data
+
+
+def serialize_match(
+    row: aiosqlite.Row,
+    participants: list[aiosqlite.Row],
+    creator_row: aiosqlite.Row | None,
+    viewer_id: int,
+) -> dict[str, Any]:
+    """Публичная карточка матча без Telegram ID участников."""
+    start = _local_time(row["start_at"])
+    participant_data = [
+        {**participant_identity(p), "joined_at": p["created_at"]}
+        for p in participants
+    ]
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "description": row["description"] or "",
+        "location": row["location"] or "",
+        "start_at": row["start_at"],
+        "date": start.strftime("%Y-%m-%d"),
+        "time": start.strftime("%H:%M"),
+        "datetime_local": start.strftime("%d.%m.%Y %H:%M"),
+        "duration_min": row["duration_min"],
+        "max_players": row["max_players"],
+        "players_count": int(row["players_count"] or 0),
+        "level": row["level"] or "",
+        "is_joined": any(p["telegram_id"] == viewer_id for p in participants),
+        "is_creator": row["created_by"] == viewer_id,
+        "creator": participant_identity(creator_row) if creator_row else None,
+        "participants": participant_data,
+    }
 
 
 def serialize_coach(row: aiosqlite.Row | None) -> dict[str, Any] | None:
@@ -438,6 +492,17 @@ class MessageIn(BaseModel):
     training_id: int | None = None
 
 
+class MatchIn(BaseModel):
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    time: str = Field(pattern=r"^\d{2}:\d{2}$")
+    title: str = Field(default="Матч", min_length=1, max_length=100)
+    description: str = Field(default="", max_length=450)
+    location: str = Field(default="", max_length=120)
+    duration_min: int = Field(default=60, ge=15, le=600)
+    max_players: int = Field(default=4, ge=2, le=20)
+    level: str = Field(default="", max_length=60)
+
+
 _TRAINING_BATCH_MAX_DAYS = 92
 _TRAINING_BATCH_MAX_COUNT = 100
 
@@ -501,6 +566,12 @@ async def lifespan(app: FastAPI):
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        background = list(_background_tasks)
+        for task in background:
+            task.cancel()
+        if background:
+            await asyncio.gather(*background, return_exceptions=True)
+        _background_tasks.clear()
         if polling_ctx is not None:
             await polling_ctx.__aexit__(None, None, None)
         await tg_bot.session.close()
@@ -566,6 +637,13 @@ async def page_coach(request: Request):
     )
 
 
+@app.get("/match", response_class=HTMLResponse)
+async def page_match(request: Request):
+    return templates.TemplateResponse(
+        request, "match.html", {"allow_dev_init_data": settings.allow_dev_init_data}
+    )
+
+
 @app.get("/healthz")
 async def healthz():
     """Liveness: процесс жив и отвечает на HTTP."""
@@ -603,6 +681,29 @@ async def api_me(user: Annotated[dict, Depends(current_user)]):
             "show_username": bool(user["show_username"]),
             "onboarding_seen": bool(user["onboarding_seen"]),
             "animal": animal_identity(user["telegram_id"]),
+        },
+    }
+
+
+@app.get("/api/players/{token}")
+async def api_player_profile(
+    token: str, user: Annotated[dict, Depends(current_user)]
+):
+    """Публичный профиль игрока по узкому токену (без Telegram ID)."""
+    target_id = verify_scoped_token(settings.bot_token, token, "profile", 0)
+    if target_id is None:
+        raise HTTPException(status_code=401, detail="Ссылка на профиль недействительна.")
+    row = await db.get_user(target_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Профиль не найден.")
+    identity = participant_identity(row)
+    return {
+        "ok": True,
+        "profile": {
+            **identity,
+            "about": row["about"] or "",
+            "username": row["username"] if row["show_username"] else None,
+            "username_visible": bool(row["show_username"]),
         },
     }
 
@@ -707,7 +808,7 @@ async def api_delete_me(
             booking["training_id"], user["telegram_id"]
         )
         if training is not None and promoted:
-            asyncio.create_task(_notify_promoted(int(promoted), training))
+            _spawn(_notify_promoted(int(promoted), training))
 
     await db.delete_user_data(user["telegram_id"])
     _avatar_cache.pop(user["telegram_id"], None)
@@ -770,6 +871,7 @@ async def api_book(training_id: int, user: Annotated[dict, Depends(current_user)
             return error_json("Тренировка уже началась", 400)
 
         status = await db.book_training(training_id, user["telegram_id"], training["capacity"])
+        _spawn(_notify_training_event(training, user["telegram_id"], status))
         msg = "Вы записаны!" if status == "booked" else "Мест нет — вы в листе ожидания."
         return {"ok": True, "status": status, "message": msg}
     except Exception:
@@ -799,8 +901,9 @@ async def api_cancel(training_id: int, user: Annotated[dict, Depends(current_use
             )
 
         promoted = await db.cancel_booking(training_id, user["telegram_id"])
+        _spawn(_notify_training_event(training, user["telegram_id"], "cancelled"))
         if promoted:
-            asyncio.create_task(_notify_promoted(int(promoted), training))
+            _spawn(_notify_promoted(int(promoted), training))
         return {"ok": True, "promoted": promoted or None}
     except Exception:
         logger.exception("Ошибка отмены записи")
@@ -853,6 +956,136 @@ async def api_calendar(
         media_type="text/calendar; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="squash-{training_id}.ics"'},
     )
+
+
+# --------------------------------------------------------------------------- #
+# API: матчи игроков
+# --------------------------------------------------------------------------- #
+
+@app.get("/api/matches")
+async def api_matches(user: Annotated[dict, Depends(current_user)], days: int = 30):
+    days = max(1, min(days, 90))
+    now = int(time.time())
+    until = int((datetime.now(tz=settings.timezone) + timedelta(days=days)).timestamp())
+    rows = await db.list_upcoming_matches(now, until)
+    participants = await db.get_match_players_for_matches([r["id"] for r in rows])
+    creator_cache: dict[Any, aiosqlite.Row | None] = {}
+    result = []
+    for row in rows:
+        creator_id = row["created_by"]
+        if creator_id not in creator_cache:
+            creator_cache[creator_id] = await db.get_user(creator_id)
+        result.append(
+            serialize_match(
+                row,
+                participants.get(row["id"], []),
+                creator_cache[creator_id],
+                user["telegram_id"],
+            )
+        )
+    return {"ok": True, "matches": result}
+
+
+@app.post("/api/matches")
+async def api_create_match(
+    payload: MatchIn, user: Annotated[dict, Depends(current_user)]
+):
+    _match_create_limiter.check(str(user["telegram_id"]))
+    try:
+        start_at = _parse_local_epoch(payload.date, payload.time)
+        if start_at <= int(time.time()):
+            return error_json("Нельзя создать матч в прошлом", 400)
+        level = (payload.level or "").strip()
+        if level and level not in TRAINING_LEVELS:
+            return error_json("Неизвестный уровень игры", 422)
+        match_id = await db.create_match(
+            title=payload.title.strip(),
+            description=sanitize_bio(payload.description),
+            location=(payload.location or "").strip(),
+            start_at=start_at,
+            duration_min=payload.duration_min,
+            max_players=payload.max_players,
+            level=level,
+            created_by=user["telegram_id"],
+        )
+        await db.join_match(match_id, user["telegram_id"], payload.max_players)
+        created_match = await db.get_match(match_id)
+        if created_match is not None:
+            _spawn(_notify_match_event(created_match, user["telegram_id"], "joined"))
+        _spawn(_notify_match_feed(user["telegram_id"]))
+        return {"ok": True, "id": match_id}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Ошибка создания матча")
+        return error_json("Внутренняя ошибка сервера", 500)
+
+
+@app.post("/api/matches/{match_id}/join")
+async def api_join_match(
+    match_id: int, user: Annotated[dict, Depends(current_user)]
+):
+    _match_join_limiter.check(str(user["telegram_id"]))
+    try:
+        match = await db.get_match(match_id)
+        if match is None or match["deleted_at"]:
+            return error_json("Матч не найден", 404)
+        if match["start_at"] <= int(time.time()):
+            return error_json("Матч уже начался", 400)
+        status = await db.join_match(
+            match_id, user["telegram_id"], match["max_players"]
+        )
+        if status == "full":
+            return error_json("Мест нет", 409)
+        _spawn(_notify_match_event(match, user["telegram_id"], "joined"))
+        return {"ok": True, "status": status}
+    except Exception:
+        logger.exception("Ошибка входа в матч")
+        return error_json("Внутренняя ошибка сервера", 500)
+
+
+@app.post("/api/matches/{match_id}/leave")
+async def api_leave_match(
+    match_id: int, user: Annotated[dict, Depends(current_user)]
+):
+    _match_join_limiter.check(str(user["telegram_id"]))
+    try:
+        match = await db.get_match(match_id)
+        if match is None or match["deleted_at"]:
+            return error_json("Матч не найден", 404)
+        if match["start_at"] <= int(time.time()):
+            return error_json("Матч уже начался", 400)
+        removed = await db.leave_match(match_id, user["telegram_id"])
+        if not removed:
+            return error_json("Вы не участвуете в этом матче", 400)
+        _spawn(_notify_match_event(match, user["telegram_id"], "left"))
+        return {"ok": True}
+    except Exception:
+        logger.exception("Ошибка выхода из матча")
+        return error_json("Внутренняя ошибка сервера", 500)
+
+
+@app.delete("/api/matches/{match_id}")
+async def api_delete_match(
+    match_id: int, user: Annotated[dict, Depends(current_user)]
+):
+    try:
+        match = await db.get_match(match_id)
+        if (
+            match is None
+            or match["deleted_at"]
+            or match["created_by"] != user["telegram_id"]
+        ):
+            return error_json("Матч не найден", 404)
+        await db.delete_match(match_id)
+        deleted_match = await db.get_match(match_id)
+        if deleted_match is not None:
+            _spawn(_notify_match_deleted(deleted_match))
+        _spawn(_notify_match_feed(user["telegram_id"]))
+        return {"ok": True}
+    except Exception:
+        logger.exception("Ошибка удаления матча")
+        return error_json("Внутренняя ошибка сервера", 500)
 
 
 # --------------------------------------------------------------------------- #
@@ -1050,7 +1283,7 @@ async def api_delete_training(training_id: int, coach: Annotated[dict, Depends(r
         ):
             return error_json("Тренировка не найдена", 404)
         await db.soft_delete_training(training_id, coach["telegram_id"])
-        asyncio.create_task(_notify_training_deleted(training))
+        _spawn(_notify_training_deleted(training))
         return {"ok": True, "restorable": True}
     except Exception:
         logger.exception("Ошибка удаления тренировки")
@@ -1134,9 +1367,9 @@ async def api_coach_cancel_participant(
         if booking is None or booking["status"] not in {"booked", "waitlist"}:
             return error_json("Записи не существует", 404)
         promoted = await db.cancel_booking(training_id, user_id)
-        asyncio.create_task(_notify_participant_removed(user_id, training))
+        _spawn(_notify_participant_removed(user_id, training))
         if promoted:
-            asyncio.create_task(_notify_promoted(int(promoted), training))
+            _spawn(_notify_promoted(int(promoted), training))
         return {"ok": True, "promoted": promoted or None}
     except Exception:
         logger.exception("Ошибка снятия игрока")
@@ -1162,7 +1395,7 @@ async def api_coach_restore_participant(
         if booking is None or booking["status"] != "cancelled":
             return error_json("Можно вернуть только снятого игрока", 400)
         status = await db.restore_booking(training_id, user_id, training["capacity"])
-        asyncio.create_task(_notify_participant_restored(user_id, training, status))
+        _spawn(_notify_participant_restored(user_id, training, status))
         return {"ok": True, "status": status}
     except Exception:
         logger.exception("Ошибка возврата игрока")
@@ -1285,9 +1518,7 @@ async def api_message_coach(payload: MessageIn, user: Annotated[dict, Depends(cu
         if user.get("display_mode") == "animal"
         else (user["first_name"] or "Игрок")
     )
-    asyncio.create_task(
-        _deliver_to_coach(coach_id, user["telegram_id"], sender_name, text)
-    )
+    _spawn(_deliver_to_coach(coach_id, user["telegram_id"], sender_name, text))
     return {"ok": True}
 
 
@@ -1324,39 +1555,254 @@ async def _send_user_message(telegram_id: int, text: str) -> None:
         logger.info("Не удалось отправить уведомление %s", telegram_id, exc_info=True)
 
 
-async def _notify_promoted(user_id: int, training: aiosqlite.Row) -> None:
-    await _send_user_message(
-        user_id,
-        "🎉 Освободилось место — вы записаны!\n\n"
-        f"🏸 {_training_brief(training)}",
+async def _send_event_notification(
+    kind: str, entity_id: int, chat_id: int, user_id: int, text: str
+) -> None:
+    """
+    Одно обновляемое сообщение на событие и чат.
+
+    Сначала пытаемся отредактировать ранее отправленное сообщение, чтобы
+    у тренера/организатора и игрока не росла лента одинаковых уведомлений.
+    """
+    try:
+        record = await db.get_event_notification(kind, entity_id, chat_id, user_id)
+        message_id = int(record["message_id"] or 0) if record is not None else 0
+        if message_id and record is not None and record["text"] == text:
+            return
+        if message_id:
+            try:
+                await app.state.bot.edit_message_text(
+                    text=text, chat_id=chat_id, message_id=message_id
+                )
+                await db.save_event_notification(
+                    kind, entity_id, chat_id, user_id, message_id, text
+                )
+                return
+            except Exception as exc:
+                if "message is not modified" in str(exc).lower():
+                    await db.save_event_notification(
+                        kind, entity_id, chat_id, user_id, message_id, text
+                    )
+                    return
+                logger.info("Не удалось обновить сообщение %s", chat_id, exc_info=True)
+        sent = await app.state.bot.send_message(chat_id, text)
+        new_id = int(getattr(sent, "message_id", 0) or 0)
+        await db.save_event_notification(
+            kind, entity_id, chat_id, user_id, new_id, text
+        )
+    except Exception:
+        logger.info("Не удалось отправить уведомление %s", chat_id, exc_info=True)
+
+
+def _training_participants_text(training: aiosqlite.Row, participants: list[aiosqlite.Row]) -> str:
+    booked = [p for p in participants if p["status"] == "booked"]
+    waitlist = [p for p in participants if p["status"] == "waitlist"]
+    names = ", ".join(
+        html.escape(participant_identity(p)["first_name"]) for p in booked[:25]
     )
+    if len(booked) > 25:
+        names += "…"
+    lines = [
+        f"🏸 <b>{html.escape(training['training_type'] or 'Тренировка')}</b>",
+        f"📅 {_local_time(training['start_at']).strftime('%d.%m.%Y в %H:%M')}",
+        f"👥 Записаны: {len(booked)}/{training['capacity']}",
+    ]
+    if names:
+        lines.append(names)
+    if waitlist:
+        lines.append(f"⏳ В очереди: {len(waitlist)}")
+    if training["deleted_at"]:
+        lines.append("❌ Тренировка отменена")
+    return "\n".join(lines)
+
+
+def _training_personal_text(training: aiosqlite.Row, status: str) -> str:
+    header = (
+        f"🏸 <b>{html.escape(training['training_type'] or 'Тренировка')}</b>\n"
+        f"📅 {_local_time(training['start_at']).strftime('%d.%m.%Y в %H:%M')}"
+    )
+    if status == "promoted":
+        return "🎉 Освободилось место — вы записаны!\n\n" + header
+    if status == "cancelled":
+        return "Тренер снял вас с тренировки.\n\n" + header
+    if status == "deleted":
+        return "Тренировка отменена.\n\n" + header
+    if status == "waitlist":
+        return "⏳ Вы в листе ожидания.\n\n" + header
+    return "✅ Вы записаны.\n\n" + header
+
+
+async def _notify_training_event(
+    training: aiosqlite.Row, user_id: int | None = None, status: str = ""
+) -> None:
+    participants = await db.get_participants(training["id"])
+    if training["created_by"]:
+        await _send_event_notification(
+            "training",
+            training["id"],
+            training["created_by"],
+            0,
+            _training_participants_text(training, participants),
+        )
+    if user_id is not None:
+        if not status:
+            found = next(
+                (p["status"] for p in participants if p["telegram_id"] == user_id),
+                "cancelled",
+            )
+            status = found
+        await _send_event_notification(
+            "training",
+            training["id"],
+            user_id,
+            user_id,
+            _training_personal_text(training, status),
+        )
+
+
+async def _notify_promoted(user_id: int, training: aiosqlite.Row) -> None:
+    await _notify_training_event(training, user_id, "promoted")
 
 
 async def _notify_participant_removed(user_id: int, training: aiosqlite.Row) -> None:
-    await _send_user_message(
-        user_id,
-        "Тренер снял вас с тренировки.\n\n"
-        f"🏸 {_training_brief(training)}",
-    )
+    await _notify_training_event(training, user_id, "cancelled")
 
 
 async def _notify_participant_restored(
     user_id: int, training: aiosqlite.Row, status: str
 ) -> None:
-    if status == "booked":
-        text = "Тренер вернул вас на тренировку.\n\n"
-    else:
-        text = "Тренер вернул вас в лист ожидания.\n\n"
-    await _send_user_message(user_id, text + f"🏸 {_training_brief(training)}")
+    await _notify_training_event(training, user_id, status)
 
 
 async def _notify_training_deleted(training: aiosqlite.Row) -> None:
-    text = (
-        "Тренировка отменена тренером.\n\n"
-        f"🏸 {_training_brief(training)}"
+    fresh = await db.get_training(training["id"])
+    if fresh is not None:
+        training = fresh
+    participants = await db.get_participants(training["id"])
+    if training["created_by"]:
+        await _send_event_notification(
+            "training",
+            training["id"],
+            training["created_by"],
+            0,
+            _training_participants_text(training, participants),
+        )
+    for row in participants:
+        await _send_event_notification(
+            "training",
+            training["id"],
+            row["telegram_id"],
+            row["telegram_id"],
+            _training_personal_text(training, "deleted"),
+        )
+
+
+def _match_participants_text(match: aiosqlite.Row, players: list[aiosqlite.Row]) -> str:
+    names = ", ".join(
+        html.escape(participant_identity(p)["first_name"]) for p in players[:25]
     )
-    for row in await db.notification_targets(training["id"]):
-        await _send_user_message(row["telegram_id"], text)
+    if len(players) > 25:
+        names += "…"
+    start = _local_time(match["start_at"])
+    lines = [
+        f"🏸 <b>{html.escape(match['title'] or 'Матч')}</b>",
+        f"📅 {start.strftime('%d.%m.%Y в %H:%M')}",
+        f"👥 {len(players)}/{match['max_players']}",
+    ]
+    if match["location"]:
+        lines.append(f"📍 {html.escape(match['location'])}")
+    if names:
+        lines.append(names)
+    if match["deleted_at"]:
+        lines.append("❌ Матч отменён")
+    return "\n".join(lines)
+
+
+def _match_personal_text(match: aiosqlite.Row, status: str) -> str:
+    header = (
+        f"🏸 <b>{html.escape(match['title'] or 'Матч')}</b>\n"
+        f"📅 {_local_time(match['start_at']).strftime('%d.%m.%Y в %H:%M')}"
+    )
+    if status == "left":
+        return "Вы вышли из матча.\n\n" + header
+    if status == "deleted":
+        return "Матч отменён организатором.\n\n" + header
+    return "✅ Вы присоединились к матчу.\n\n" + header
+
+
+async def _notify_match_event(
+    match: aiosqlite.Row, user_id: int | None = None, status: str = "joined"
+) -> None:
+    players = await db.get_match_players(match["id"])
+    if match["created_by"]:
+        await _send_event_notification(
+            "match",
+            match["id"],
+            match["created_by"],
+            0,
+            _match_participants_text(match, players),
+        )
+    if user_id is not None and user_id != match["created_by"]:
+        await _send_event_notification(
+            "match",
+            match["id"],
+            user_id,
+            user_id,
+            _match_personal_text(match, status),
+        )
+
+
+def _match_feed_text(matches: list[aiosqlite.Row]) -> str:
+    if not matches:
+        return "🏸 Ближайших матчей пока нет."
+    lines = ["🏸 <b>Ближайшие матчи</b>"]
+    for match in matches[:10]:
+        start = _local_time(match["start_at"])
+        line = (
+            f"• {start.strftime('%d.%m в %H:%M')} — "
+            f"{html.escape(match['title'] or 'Матч')}"
+        )
+        if match["location"]:
+            line += f" · {html.escape(match['location'])}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+async def _notify_match_feed(exclude_user_id: int | None = None) -> None:
+    """Одна обновляемая лента матчей на каждого пользователя."""
+    now = int(time.time())
+    until = int((datetime.now(tz=settings.timezone) + timedelta(days=30)).timestamp())
+    matches = await db.list_upcoming_matches(now, until)
+    recipients = await db.list_match_feed_recipients()
+    text = _match_feed_text(matches)
+    for row in recipients:
+        user_id = row["telegram_id"]
+        if exclude_user_id is not None and user_id == exclude_user_id:
+            continue
+        await _send_event_notification(
+            "match_feed", 0, user_id, user_id, text
+        )
+
+
+async def _notify_match_deleted(match: aiosqlite.Row) -> None:
+    players = await db.get_match_players(match["id"])
+    if match["created_by"]:
+        await _send_event_notification(
+            "match",
+            match["id"],
+            match["created_by"],
+            0,
+            _match_participants_text(match, players),
+        )
+    for row in players:
+        if row["telegram_id"] != match["created_by"]:
+            await _send_event_notification(
+                "match",
+                match["id"],
+                row["telegram_id"],
+                row["telegram_id"],
+                _match_personal_text(match, "deleted"),
+            )
 
 
 async def _notify_training_transferred(new_coach_id: int, training: aiosqlite.Row) -> None:
@@ -1415,7 +1861,7 @@ async def api_add_coach(payload: CoachIn, manager: Annotated[dict, Depends(requi
         created = await db.add_coach(tg_id, manager["telegram_id"])
         if created:
             await db.decide_application(tg_id, "approved", manager["telegram_id"])
-            asyncio.create_task(_notify_new_coach(tg_id))
+            _spawn(_notify_new_coach(tg_id))
 
         return {"ok": True, "created": created, "telegram_id": tg_id}
     except Exception:
@@ -1483,9 +1929,7 @@ async def api_apply(payload: ApplyIn, user: Annotated[dict, Depends(current_user
         if user.get("display_mode") == "animal"
         else (user["first_name"] or "Пользователь")
     )
-    asyncio.create_task(
-        _notify_managers_about_application(user["telegram_id"], applicant_name)
-    )
+    _spawn(_notify_managers_about_application(user["telegram_id"], applicant_name))
     return {"ok": True}
 
 
@@ -1533,7 +1977,7 @@ async def api_approve_application(
         return error_json("Заявка уже рассмотрена", 409)
     await db.add_coach(telegram_id, manager["telegram_id"])
     await db.decide_application(telegram_id, "approved", manager["telegram_id"])
-    asyncio.create_task(_notify_new_coach(telegram_id))
+    _spawn(_notify_new_coach(telegram_id))
     return {"ok": True}
 
 
@@ -1547,7 +1991,7 @@ async def api_reject_application(
     if application["status"] != "pending":
         return error_json("Заявка уже рассмотрена", 409)
     await db.decide_application(telegram_id, "rejected", manager["telegram_id"])
-    asyncio.create_task(_notify_application_decision(telegram_id, approved=False))
+    _spawn(_notify_application_decision(telegram_id, approved=False))
     return {"ok": True}
 
 
@@ -1634,7 +2078,7 @@ async def api_transfer_training(
             return error_json("Занятие уже принадлежит этому тренеру.", 400)
 
         await db.set_training_owner(training_id, target)
-        asyncio.create_task(_notify_training_transferred(target, training))
+        _spawn(_notify_training_transferred(target, training))
         return {"ok": True, "telegram_id": target}
     except Exception:
         logger.exception("Ошибка передачи занятия")

@@ -62,6 +62,8 @@ def client(monkeypatch):
     mainmod._message_limiter.clear()
     mainmod._apply_limiter.clear()
     mainmod._booking_limiter.clear()
+    mainmod._match_create_limiter.clear()
+    mainmod._match_join_limiter.clear()
     # Не поднимаем реальные polling/reminder во время интеграционных тестов.
     monkeypatch.setattr(botmod, "polling_context", _fake_polling)
     monkeypatch.setattr(botmod, "reminder_loop", _fake_loop)
@@ -1533,6 +1535,8 @@ def test_message_training_not_found_and_notification_edges(client, monkeypatch):
         "start_at": int(time.time()) + 3600,
         "training_type": "Тренировка",
         "capacity": 2,
+        "created_by": 123,
+        "deleted_at": None,
     }
     asyncio.run(mainmod._notify_participant_restored(555, training, "booked"))
     asyncio.run(mainmod._notify_application_decision(555, approved=True))
@@ -1760,6 +1764,7 @@ def test_lifespan_webhook_startup(tmp_path, monkeypatch):
     async def scenario():
         async with mainmod.lifespan(fake_app):
             assert fake_app.state.bot is fake_bot
+            mainmod._spawn(asyncio.sleep(3600))
 
     asyncio.run(scenario())
     assert set_webhook_calls == [
@@ -1867,3 +1872,395 @@ def test_description_textareas_and_full_display(client):
     assert 'id="profile-bio-count"' in coach.text
     # В карточках больше нет двухстрочного обрезания описания.
     assert "-webkit-line-clamp" not in player.text
+
+
+def test_public_player_profile_by_token(client):
+    assert client.get("/api/me", headers=PLAYER2).status_code == 200
+    tid = _create_training(client, day=29, time_str="10:00")
+    assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER).status_code == 200
+    card = next(
+        t for t in client.get("/api/trainings?days=31", headers=PLAYER2).json()["trainings"]
+        if t["id"] == tid
+    )
+    participant = card["participants"][0]
+    token = participant["profile_token"]
+    profile = client.get(f"/api/players/{token}", headers=PLAYER2)
+    assert profile.status_code == 200
+    assert profile.json()["profile"]["first_name"] == "Иван"
+    assert profile.json()["profile"]["about"] == ""
+    assert "telegram_id" not in profile.json()["profile"]
+
+    assert client.get(
+        "/api/players/bad-token", headers=PLAYER2
+    ).status_code == 401
+    missing = issue_scoped_token(settings.bot_token, "profile", 0, 999)
+    assert client.get(
+        f"/api/players/{missing}", headers=PLAYER2
+    ).status_code == 404
+
+
+def test_public_player_profile_animal_mode(client):
+    headers = {"X-Init-Data": _init({"id": 558, "first_name": "Скрытый"})}
+    assert client.get("/api/me", headers=headers).status_code == 200
+    assert client.put(
+        "/api/me/profile",
+        headers=headers,
+        json={"about": "Люблю игру", "display_mode": "animal", "show_username": False},
+    ).status_code == 200
+    tid = _create_training(client, day=30, time_str="10:00")
+    assert client.post(f"/api/trainings/{tid}/book", headers=headers).status_code == 200
+    card = next(
+        t for t in client.get("/api/trainings?days=31", headers=PLAYER2).json()["trainings"]
+        if t["id"] == tid
+    )
+    participant = next(
+        p for p in card["participants"] if p["first_name"] != "Иван"
+    )
+    profile = client.get(
+        f"/api/players/{participant['profile_token']}", headers=PLAYER2
+    ).json()["profile"]
+    assert profile["anonymous"] is True
+    assert profile["avatar_url"] == ""
+    assert profile["avatar_emoji"]
+    assert profile["about"] == "Люблю игру"
+    assert "telegram_id" not in profile
+
+
+def test_match_create_list_join_leave_and_delete(client, monkeypatch):
+    assert client.get("/api/matches", headers=PLAYER).json()["matches"] == []
+    body = {
+        **_future(29, "19:00"),
+        "title": "Вечерний матч",
+        "description": "Ищем игрока",
+        "location": "Корт 2",
+        "duration_min": 60,
+        "max_players": 2,
+        "level": TRAINING_LEVELS[0],
+    }
+    created = client.post("/api/matches", headers=PLAYER, json=body)
+    assert created.status_code == 200, created.text
+    match_id = created.json()["id"]
+
+    listing = client.get("/api/matches", headers=PLAYER2).json()["matches"]
+    match = next(m for m in listing if m["id"] == match_id)
+    assert match["title"] == "Вечерний матч"
+    assert match["players_count"] == 1
+    assert match["participants"][0]["profile_token"]
+    assert "telegram_id" not in match["participants"][0]
+    assert match["creator"]["first_name"] == "Иван"
+
+    assert client.post(
+        f"/api/matches/{match_id}/join", headers=PLAYER2
+    ).json()["status"] == "joined"
+    assert client.post(
+        f"/api/matches/{match_id}/join", headers=PLAYER2
+    ).json()["status"] == "joined"
+
+    third = {"X-Init-Data": _init({"id": 559, "first_name": "Третий"})}
+    assert client.get("/api/me", headers=third).status_code == 200
+    assert client.post(
+        f"/api/matches/{match_id}/join", headers=third
+    ).status_code == 409
+
+    assert client.post(
+        f"/api/matches/{match_id}/leave", headers=PLAYER2
+    ).status_code == 200
+    assert client.post(
+        f"/api/matches/{match_id}/leave", headers=PLAYER2
+    ).status_code == 400
+
+    assert client.delete(
+        f"/api/matches/{match_id}", headers=PLAYER2
+    ).status_code == 404
+    assert client.delete(
+        f"/api/matches/{match_id}", headers=PLAYER
+    ).status_code == 200
+    assert client.get(
+        f"/api/matches/{match_id}/join", headers=PLAYER2
+    ).status_code == 405
+    assert client.post(
+        f"/api/matches/{match_id}/join", headers=PLAYER2
+    ).status_code == 404
+
+
+def test_match_validation_and_error_branches(client, monkeypatch):
+    assert client.post(
+        "/api/matches",
+        headers=PLAYER,
+        json={**_future(-1, "10:00"), "title": "Прошлый"},
+    ).status_code == 400
+    assert client.post(
+        "/api/matches",
+        headers=PLAYER,
+        json={**_future(31, "10:00"), "level": "Неизвестный"},
+    ).status_code == 422
+
+    async def broken_create(**kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "create_match", broken_create)
+    assert client.post(
+        "/api/matches",
+        headers=PLAYER,
+        json={**_future(31, "11:00"), "title": "Сломанный"},
+    ).status_code == 500
+    monkeypatch.undo()
+    mainmod._match_create_limiter.clear()
+
+    match_id = client.post(
+        "/api/matches",
+        headers=PLAYER,
+        json={**_future(31, "12:00"), "title": "Ошибки"},
+    ).json()["id"]
+    assert client.post("/api/matches/999/join", headers=PLAYER2).status_code == 404
+    assert client.post("/api/matches/999/leave", headers=PLAYER2).status_code == 404
+    assert client.delete("/api/matches/999", headers=PLAYER).status_code == 404
+
+    async def broken_match(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "get_match", broken_match)
+    assert client.post(
+        f"/api/matches/{match_id}/join", headers=PLAYER2
+    ).status_code == 500
+    assert client.post(
+        f"/api/matches/{match_id}/leave", headers=PLAYER2
+    ).status_code == 500
+    assert client.delete(
+        f"/api/matches/{match_id}", headers=PLAYER
+    ).status_code == 500
+
+
+def test_match_page_renders(client):
+    page = client.get("/match")
+    assert page.status_code == 200
+    assert "Создать матч" in page.text
+    assert 'id="match-sheet"' in page.text
+    assert 'href="/match"' in page.text
+
+
+def test_event_notification_edit_and_send_branches(client, monkeypatch):
+    sent = []
+    edited = []
+    saves = []
+
+    class FakeBot:
+        async def send_message(self, chat_id, text, **kwargs):
+            sent.append((chat_id, text))
+            return SimpleNamespace(message_id=101)
+
+        async def edit_message_text(self, **kwargs):
+            edited.append(kwargs)
+
+    monkeypatch.setattr(mainmod.app.state, "bot", FakeBot())
+
+    async def fake_save(*args):
+        saves.append(args)
+
+    async def no_record(*args):
+        return None
+
+    monkeypatch.setattr(mainmod.db, "save_event_notification", fake_save)
+    monkeypatch.setattr(mainmod.db, "get_event_notification", no_record)
+    asyncio.run(mainmod._send_event_notification("training", 1, 123, 0, "one"))
+    assert sent == [(123, "one")]
+    assert saves[-1][4] == 101
+
+    async def same_record(*args):
+        return {"message_id": 101, "text": "one"}
+
+    monkeypatch.setattr(mainmod.db, "get_event_notification", same_record)
+    asyncio.run(mainmod._send_event_notification("training", 1, 123, 0, "one"))
+    assert len(sent) == 1
+
+    async def changed_record(*args):
+        return {"message_id": 101, "text": "old"}
+
+    monkeypatch.setattr(mainmod.db, "get_event_notification", changed_record)
+    asyncio.run(mainmod._send_event_notification("training", 1, 123, 0, "new"))
+    assert edited and edited[-1]["text"] == "new"
+
+    class NotModifiedBot(FakeBot):
+        async def edit_message_text(self, **kwargs):
+            raise RuntimeError("message is not modified")
+
+    monkeypatch.setattr(mainmod.app.state, "bot", NotModifiedBot())
+    asyncio.run(mainmod._send_event_notification("training", 1, 123, 0, "same?"))
+    assert len(sent) == 1
+
+    class BrokenEditBot(FakeBot):
+        async def edit_message_text(self, **kwargs):
+            raise RuntimeError("message deleted")
+
+    monkeypatch.setattr(mainmod.app.state, "bot", BrokenEditBot())
+    asyncio.run(mainmod._send_event_notification("training", 1, 123, 0, "resend"))
+    assert len(sent) == 2
+
+    class BrokenSendBot(FakeBot):
+        async def send_message(self, *args, **kwargs):
+            raise RuntimeError("telegram")
+
+    monkeypatch.setattr(mainmod.db, "get_event_notification", no_record)
+    monkeypatch.setattr(mainmod.app.state, "bot", BrokenSendBot())
+    asyncio.run(mainmod._send_event_notification("training", 1, 123, 0, "fail"))
+
+
+def test_training_notification_texts_and_targets(monkeypatch):
+    now = int(time.time()) + 3600
+    training = {
+        "id": 1,
+        "training_type": "Тренировка",
+        "start_at": now,
+        "capacity": 30,
+        "created_by": 123,
+        "deleted_at": None,
+    }
+    people = [
+        {
+            "status": "booked" if i < 26 else "waitlist",
+            "telegram_id": 500 + i,
+            "first_name": f"Игрок{i}",
+            "display_mode": "name",
+            "avatar_file_id": None,
+        }
+        for i in range(27)
+    ]
+    summary = mainmod._training_participants_text(training, people)
+    assert "…" in summary
+    assert "В очереди" in summary
+    for status in ("promoted", "cancelled", "deleted", "waitlist", "booked"):
+        assert mainmod._training_personal_text(training, status)
+
+    deleted = {**training, "deleted_at": 1}
+    assert "Тренировка отменена" in mainmod._training_participants_text(deleted, people)
+
+    calls = []
+
+    async def fake_participants(training_id):
+        return people
+
+    async def fake_send(kind, entity_id, chat_id, user_id, text):
+        calls.append((kind, entity_id, chat_id, user_id, text))
+
+    monkeypatch.setattr(mainmod.db, "get_participants", fake_participants)
+    monkeypatch.setattr(mainmod, "_send_event_notification", fake_send)
+    asyncio.run(mainmod._notify_training_event(training, 555))
+    assert any(call[2] == 123 and call[3] == 0 for call in calls)
+    assert any(call[2] == 555 and call[3] == 555 for call in calls)
+
+    async def fake_training(training_id):
+        return deleted
+
+    monkeypatch.setattr(mainmod.db, "get_training", fake_training)
+    calls.clear()
+    asyncio.run(mainmod._notify_training_deleted(training))
+    assert len(calls) >= 27
+
+
+def test_match_notification_texts_and_targets(monkeypatch):
+    match = {
+        "id": 2,
+        "title": "Матч",
+        "start_at": int(time.time()) + 3600,
+        "max_players": 30,
+        "location": "Корт",
+        "created_by": 123,
+        "deleted_at": None,
+    }
+    players = [
+        {
+            "telegram_id": 500 + i,
+            "first_name": f"Игрок{i}",
+            "display_mode": "name",
+            "avatar_file_id": None,
+            "created_at": 1,
+        }
+        for i in range(27)
+    ]
+    summary = mainmod._match_participants_text(match, players)
+    assert "…" in summary and "Корт" in summary
+    for status in ("joined", "left", "deleted"):
+        assert mainmod._match_personal_text(match, status)
+    deleted = {**match, "deleted_at": 1}
+    assert "Матч отменён" in mainmod._match_participants_text(deleted, players)
+
+    calls = []
+
+    async def fake_players(match_id):
+        return players
+
+    async def fake_send(kind, entity_id, chat_id, user_id, text):
+        calls.append((kind, entity_id, chat_id, user_id, text))
+
+    monkeypatch.setattr(mainmod.db, "get_match_players", fake_players)
+    monkeypatch.setattr(mainmod, "_send_event_notification", fake_send)
+    asyncio.run(mainmod._notify_match_event(match, 555, "joined"))
+    assert any(call[3] == 0 for call in calls)
+    assert any(call[2] == 555 for call in calls)
+    calls.clear()
+    asyncio.run(mainmod._notify_match_deleted(deleted))
+    assert len(calls) >= 27
+
+
+def test_match_invalid_date_and_started(client, monkeypatch):
+    assert client.post(
+        "/api/matches",
+        headers=PLAYER,
+        json={**_future(1, "10:00"), "date": "2026-02-31"},
+    ).status_code == 422
+
+    async def past_match(match_id):
+        return {
+            "id": match_id,
+            "deleted_at": None,
+            "start_at": 0,
+            "max_players": 4,
+            "created_by": 555,
+        }
+
+    monkeypatch.setattr(mainmod.db, "get_match", past_match)
+    assert client.post("/api/matches/1/join", headers=PLAYER2).status_code == 400
+    assert client.post("/api/matches/1/leave", headers=PLAYER2).status_code == 400
+
+
+def test_match_feed_text_and_recipients(monkeypatch):
+    assert "пока нет" in mainmod._match_feed_text([])
+    match = {
+        "title": "Матч",
+        "start_at": int(time.time()) + 3600,
+        "location": "Корт",
+    }
+    text = mainmod._match_feed_text([match])
+    assert "Матч" in text and "Корт" in text
+
+    calls = []
+
+    async def fake_matches(now, until):
+        return [match]
+
+    async def fake_recipients():
+        return [{"telegram_id": 1}, {"telegram_id": 2}]
+
+    async def fake_send(kind, entity_id, chat_id, user_id, text):
+        calls.append((kind, entity_id, chat_id, user_id, text))
+
+    monkeypatch.setattr(mainmod.db, "list_upcoming_matches", fake_matches)
+    monkeypatch.setattr(mainmod.db, "list_match_feed_recipients", fake_recipients)
+    monkeypatch.setattr(mainmod, "_send_event_notification", fake_send)
+    asyncio.run(mainmod._notify_match_feed(exclude_user_id=1))
+    assert calls == [("match_feed", 0, 2, 2, text)]
+
+
+def test_match_creation_rate_limit(client):
+    for day in (28, 29, 30):
+        response = client.post(
+            "/api/matches",
+            headers=PLAYER,
+            json={**_future(day, "10:00"), "title": f"Матч {day}"},
+        )
+        assert response.status_code == 200
+    assert client.post(
+        "/api/matches",
+        headers=PLAYER,
+        json={**_future(31, "10:00"), "title": "Лишний"},
+    ).status_code == 429

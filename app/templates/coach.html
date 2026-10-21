@@ -522,7 +522,7 @@ async function loadView() {
     renderList();
   } catch (e) {
     hapticNotify('error');
-    toast(e.message);
+    toast(e.message, { label: 'Повторить', onClick: loadView });
     list.innerHTML = '';
   }
 }
@@ -706,11 +706,13 @@ function participantRow(tid, p, own) {
       : `<button class="btn btn--danger btn--sm" data-premove="${p.telegram_id}">Снять</button>`;
   return `
   <div class="p-row" data-ptid="${tid}" data-uid="${p.telegram_id}">
-    ${avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)}
-    <div style="flex:1;min-width:0">
-      <div style="font-weight:600;font-size:14px">${esc(p.first_name)}</div>
-      ${badge}
-    </div>
+    <button type="button" class="participant-open" data-profile-token="${esc(p.profile_token || '')}" aria-label="Профиль: ${esc(p.first_name)}">
+      ${avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)}
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:14px">${esc(p.first_name)}</div>
+        ${badge}
+      </div>
+    </button>
     ${action}
   </div>`;
 }
@@ -723,6 +725,8 @@ document.getElementById('list').addEventListener('toggle', ev => {
 
 // ===== Действия по карточкам =====
 document.getElementById('list').addEventListener('click', async (ev) => {
+  const profileToken = ev.target.closest('[data-profile-token]')?.getAttribute('data-profile-token');
+  if (profileToken) { openPlayerProfile(profileToken); return; }
   const del = ev.target.closest('[data-del]')?.getAttribute('data-del');
   const restore = ev.target.closest('[data-restore]')?.getAttribute('data-restore');
   const purge = ev.target.closest('[data-purge]')?.getAttribute('data-purge');
@@ -950,13 +954,13 @@ function playerRow(p) {
     : 'username скрыт';
   return `
   <div class="card">
-    <div style="display:flex;align-items:center;gap:12px">
+    <button type="button" class="player-open" data-profile-token="${esc(p.profile_token || '')}" aria-label="Профиль: ${esc(p.first_name || 'Игрок')}">
       ${avatarHtml(p.first_name, p.avatar_url, false, p.avatar_emoji)}
       <div style="flex:1;min-width:0">
         <div style="font-weight:600">${esc(p.first_name || 'Игрок')}</div>
         <div style="font-size:12px;color:var(--hint)">${handle} · уведомления: ${notif}</div>
       </div>
-    </div>
+    </button>
     ${p.about ? `<div class="player-about">${esc(p.about)}</div>` : ''}
     <details style="margin-top:12px">
       <summary style="font-size:13px;font-weight:600;color:var(--link);cursor:pointer">Заметки тренера</summary>
@@ -976,14 +980,28 @@ async function loadPlayers() {
   } catch (e) { toast(e.message); }
 }
 document.getElementById('players').addEventListener('click', async (ev) => {
-  const id = ev.target.closest('[data-save]')?.getAttribute('data-save');
+  const profileToken = ev.target.closest('[data-profile-token]')?.getAttribute('data-profile-token');
+  if (profileToken) { openPlayerProfile(profileToken); return; }
+  const btn = ev.target.closest('[data-save]');
+  const id = btn?.getAttribute('data-save');
   if (!id) return;
   const notes = document.querySelector(`[data-notes="${id}"]`).value;
   try {
     await api(`/api/coach/players/${id}/notes`, 'PUT', { notes });
     hapticNotify('success');
     toast('Заметка сохранена');
+    btn.disabled = true;
+    btn.textContent = 'Сохранено';
   } catch (e) { hapticNotify('error'); toast(e.message); }
+});
+document.getElementById('players').addEventListener('input', (ev) => {
+  const id = ev.target.dataset.notes;
+  if (!id) return;
+  const btn = document.querySelector(`[data-save="${id}"]`);
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = 'Сохранить';
+  }
 });
 
 // ===== Заявки (администратор/менеджер) =====

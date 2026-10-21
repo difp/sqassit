@@ -95,13 +95,53 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS matches (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    title         TEXT NOT NULL DEFAULT 'Матч',
+    description   TEXT NOT NULL DEFAULT '',
+    location      TEXT NOT NULL DEFAULT '',
+    start_at      INTEGER NOT NULL,
+    duration_min  INTEGER NOT NULL DEFAULT 60,
+    max_players   INTEGER NOT NULL DEFAULT 4,
+    level         TEXT NOT NULL DEFAULT '',
+    created_by    INTEGER NOT NULL,
+    created_at    INTEGER NOT NULL,
+    deleted_at    INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS match_players (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id    INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL,
+    UNIQUE (match_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS event_notifications (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT NOT NULL,             -- training | match
+    entity_id   INTEGER NOT NULL,
+    chat_id     INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL DEFAULT 0, -- 0 = сводка организатору
+    message_id  INTEGER NOT NULL DEFAULT 0,
+    text        TEXT NOT NULL DEFAULT '',
+    updated_at  INTEGER NOT NULL,
+    UNIQUE (kind, entity_id, chat_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_matches_start ON matches(start_at);
+CREATE INDEX IF NOT EXISTS idx_match_players_match ON match_players(match_id);
+
 CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_user, created_at);
 """
 
 
 async def connect(db_path: str) -> None:
     """Открывает соединение и создаёт схему, если её ещё нет."""
-    global _conn
+    global _conn, _lock
+    # Lock привязан к event loop: создаём его заново вместе с соединением,
+    # иначе повторный запуск приложения/тестов в другом loop падает.
+    _lock = asyncio.Lock()
     _conn = await aiosqlite.connect(db_path)
     _conn.row_factory = aiosqlite.Row
     await _conn.execute("PRAGMA journal_mode=WAL;")
@@ -1018,3 +1058,180 @@ async def list_inbox(to_user: int, limit: int = 20) -> list[aiosqlite.Row]:
         (to_user, limit),
     )
 
+
+
+# --------------------------------------------------------------------------- #
+# Матчи: отдельные игровые встречи, которые создают сами игроки
+# --------------------------------------------------------------------------- #
+
+async def create_match(
+    *,
+    title: str,
+    description: str,
+    location: str,
+    start_at: int,
+    duration_min: int,
+    max_players: int,
+    level: str,
+    created_by: int,
+) -> int:
+    return await _execute(
+        """
+        INSERT INTO matches (title, description, location, start_at, duration_min,
+                             max_players, level, created_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            title, description, location, start_at, duration_min,
+            max_players, level, created_by, int(time.time()),
+        ),
+    )
+
+
+async def list_upcoming_matches(now: int, until: int) -> list[aiosqlite.Row]:
+    return await _fetchall(
+        """
+        SELECT m.*,
+               (SELECT COUNT(*) FROM match_players mp
+                 WHERE mp.match_id = m.id) AS players_count
+          FROM matches m
+         WHERE m.start_at >= ? AND m.start_at <= ? AND m.deleted_at IS NULL
+         ORDER BY m.start_at ASC
+        """,
+        (now, until),
+    )
+
+
+async def get_match(match_id: int) -> aiosqlite.Row | None:
+    return await _fetchone(
+        """
+        SELECT m.*,
+               (SELECT COUNT(*) FROM match_players mp
+                 WHERE mp.match_id = m.id) AS players_count
+          FROM matches m
+         WHERE m.id = ?
+        """,
+        (match_id,),
+    )
+
+
+async def get_match_players(match_id: int) -> list[aiosqlite.Row]:
+    return await _fetchall(
+        """
+        SELECT mp.created_at, u.telegram_id, u.first_name, u.username,
+               u.show_username, u.avatar_file_id, u.about, u.display_mode
+          FROM match_players mp
+          JOIN users u ON u.telegram_id = mp.user_id
+         WHERE mp.match_id = ?
+         ORDER BY mp.created_at ASC
+        """,
+        (match_id,),
+    )
+
+
+async def get_match_players_for_matches(
+    match_ids: list[int],
+) -> dict[int, list[aiosqlite.Row]]:
+    if not match_ids:
+        return {}
+    rows = await _fetchall(
+        """
+        SELECT mp.match_id, mp.created_at, u.telegram_id, u.first_name,
+               u.username, u.show_username, u.avatar_file_id, u.about,
+               u.display_mode
+          FROM match_players mp
+          JOIN users u ON u.telegram_id = mp.user_id
+         WHERE mp.match_id IN (SELECT value FROM json_each(?))
+         ORDER BY mp.match_id, mp.created_at ASC
+        """,
+        (json.dumps(match_ids),),
+    )
+    grouped: dict[int, list[aiosqlite.Row]] = {mid: [] for mid in match_ids}
+    for row in rows:
+        grouped.setdefault(row["match_id"], []).append(row)
+    return grouped
+
+
+async def join_match(match_id: int, user_id: int, max_players: int) -> str:
+    """Возвращает joined либо full. Повторный вход идемпотентен."""
+    db = _db()
+    async with _lock:
+        async with db.execute(
+            "SELECT 1 FROM match_players WHERE match_id = ? AND user_id = ?",
+            (match_id, user_id),
+        ) as cur:
+            if await cur.fetchone() is not None:
+                return "joined"
+        async with db.execute(
+            "SELECT COUNT(*) FROM match_players WHERE match_id = ?", (match_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            count = int(row[0]) if row is not None else 0
+        if count >= max_players:
+            return "full"
+        await db.execute(
+            "INSERT INTO match_players (match_id, user_id, created_at) VALUES (?, ?, ?)",
+            (match_id, user_id, int(time.time())),
+        )
+        await db.commit()
+    return "joined"
+
+
+async def leave_match(match_id: int, user_id: int) -> bool:
+    removed = await _execute_rowcount(
+        "DELETE FROM match_players WHERE match_id = ? AND user_id = ?",
+        (match_id, user_id),
+    )
+    return bool(removed)
+
+
+async def delete_match(match_id: int) -> None:
+    await _execute(
+        "UPDATE matches SET deleted_at = ? WHERE id = ?",
+        (int(time.time()), match_id),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Одно обновляемое сообщение-уведомление на событие и чат
+# --------------------------------------------------------------------------- #
+
+async def get_event_notification(
+    kind: str, entity_id: int, chat_id: int, user_id: int = 0
+) -> aiosqlite.Row | None:
+    return await _fetchone(
+        """
+        SELECT * FROM event_notifications
+         WHERE kind = ? AND entity_id = ? AND chat_id = ? AND user_id = ?
+        """,
+        (kind, entity_id, chat_id, user_id),
+    )
+
+
+async def save_event_notification(
+    kind: str,
+    entity_id: int,
+    chat_id: int,
+    user_id: int,
+    message_id: int,
+    text: str,
+) -> None:
+    await _execute(
+        """
+        INSERT INTO event_notifications
+            (kind, entity_id, chat_id, user_id, message_id, text, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(kind, entity_id, chat_id, user_id) DO UPDATE SET
+            message_id = excluded.message_id,
+            text = excluded.text,
+            updated_at = excluded.updated_at
+        """,
+        (kind, entity_id, chat_id, user_id, message_id, text, int(time.time())),
+    )
+
+
+async def list_match_feed_recipients() -> list[aiosqlite.Row]:
+    """Кому отправлять обновляемую ленту опубликованных матчей."""
+    return await _fetchall(
+        "SELECT telegram_id FROM users WHERE notifications_enabled = 1"
+    )

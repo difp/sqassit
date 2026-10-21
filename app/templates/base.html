@@ -163,6 +163,19 @@
     .avatar-stack { display: flex; align-items: center; }
     .avatar-stack .avatar { margin-left: -11px; box-shadow: 0 0 0 2px var(--secondary); }
     .avatar-stack .avatar:first-child { margin-left: 0; }
+    .avatar-btn {
+      display: flex; border: 0; padding: 0; margin-left: -11px;
+      background: transparent; border-radius: 50%; cursor: pointer;
+    }
+    .avatar-btn:first-child { margin-left: 0; }
+    .avatar-btn .avatar { margin-left: 0; }
+    .avatar-btn:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+    .participant-name {
+      border: 0; padding: 0; background: transparent; color: inherit;
+      font: inherit; cursor: pointer;
+    }
+    .participant-name:active { opacity: .65; }
+    .participant-name:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
     .avatar--sm { width: 30px; height: 30px; font-size: 12.5px; }
     .avatar--animal { background: rgba(120,120,128,.18); font-size: 19px; }
 
@@ -237,6 +250,17 @@
     /* ===== Строка участника / подсказки ===== */
     .p-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-top: 1px solid var(--separator); }
     .p-row:first-child { border-top: 0; }
+    .participant-open,
+    .player-open {
+      display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0;
+      border: 0; padding: 0; background: transparent; color: inherit;
+      font: inherit; text-align: left; cursor: pointer;
+    }
+    .participant-open { gap: 10px; }
+    .participant-open:active,
+    .player-open:active { opacity: .72; }
+    .participant-open:focus-visible,
+    .player-open:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
     .hint { font-size: 14px; color: var(--hint); }
     .hm { display: flex; align-items: center; gap: 6px; color: var(--hint); font-size: 14px; }
     .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
@@ -398,6 +422,14 @@
       padding-top: 8px; border-top: 1px solid var(--separator);
       white-space: pre-wrap; overflow-wrap: anywhere;
     }
+    .public-profile { display: flex; align-items: flex-start; gap: 14px; }
+    .public-profile > .avatar { width: 56px; height: 56px; font-size: 20px; }
+    .public-profile__text { flex: 1; min-width: 0; }
+    .public-profile__name { font-size: 19px; font-weight: 700; }
+    .public-profile__about {
+      font-size: 14px; line-height: 1.45; margin-top: 10px;
+      white-space: pre-wrap; overflow-wrap: anywhere;
+    }
     .skeleton {
       height: 104px; border-radius: var(--radius);
       background: linear-gradient(90deg, var(--secondary) 25%, rgba(120,120,128,.12) 37%, var(--secondary) 63%);
@@ -550,6 +582,12 @@
       </svg>
       <span>Тренировки</span>
     </a>
+    <a class="tab" href="/match" data-tab="match" id="tab-match">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="8.5"/><path d="M7 17.5 17 6.5M8.5 6.5l7 11"/>
+      </svg>
+      <span>Матч</span>
+    </a>
     <a class="tab" href="/coach" data-tab="coach" id="tab-coach">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
         <rect x="5" y="3.5" width="14" height="17.5" rx="3"/><path d="M9.2 3.5h5.6M8.5 9h7M8.5 13h7M8.5 17h4.5"/>
@@ -569,6 +607,17 @@
       <div class="hint" id="cal-when" style="margin:-6px 0 16px"></div>
       <button class="btn btn--primary btn--block" id="cal-ics" style="margin-bottom:10px">Скачать .ics (Apple / Android)</button>
       <button class="btn btn--block" id="cal-google">Google Календарь</button>
+    </div>
+  </div>
+
+  <!-- Bottom sheet: публичный профиль игрока -->
+  <div class="sheet" id="public-profile-sheet">
+    <div class="sheet__backdrop" data-public-profile-close></div>
+    <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="public-profile-title">
+      <div class="sheet__handle"></div>
+      <h2 class="sheet__title" id="public-profile-title">Профиль игрока</h2>
+      <div id="public-profile-content"></div>
+      <button class="btn btn--block" id="public-profile-close" type="button" style="margin-top:16px">Закрыть</button>
     </div>
   </div>
 
@@ -662,21 +711,50 @@
       });
     }
 
-    async function api(path, method = 'GET', body = null) {
-      const res = await fetch(path, {
-        method,
-        headers: { 'Content-Type': 'application/json', 'X-Init-Data': INIT_DATA },
-        body: body ? JSON.stringify(body) : null,
-      });
-      let data = {};
-      try { data = await res.json(); } catch (e) {}
-      if (!res.ok) {
-        const err = new Error(data.error || data.detail || ('Ошибка ' + res.status));
-        err.status = res.status;
-        err.data = data;
-        throw err;
+    function currentInitData() {
+      return (tg && tg.initData) || INIT_DATA;
+    }
+
+    async function waitForInitData() {
+      if (currentInitData() || !tg) return;
+      // В Telegram WebView initData иногда появляется на мгновение позже
+      // первого тика скрипта. Не отправляем заведомо неавторизованные запросы.
+      for (let i = 0; i < 15 && !currentInitData(); i++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
-      return data;
+    }
+
+    async function api(path, method = 'GET', body = null) {
+      await waitForInitData();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15000);
+      try {
+        const res = await fetch(path, {
+          method,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Init-Data': currentInitData(),
+          },
+          body: body ? JSON.stringify(body) : null,
+          signal: controller.signal,
+        });
+        let data = {};
+        try { data = await res.json(); } catch (e) {}
+        if (!res.ok) {
+          const err = new Error(data.error || data.detail || ('Ошибка ' + res.status));
+          err.status = res.status;
+          err.data = data;
+          throw err;
+        }
+        return data;
+      } catch (e) {
+        if (e && e.name === 'AbortError') {
+          throw new Error('Превышено время ожидания. Нажмите «Обновить».');
+        }
+        throw e;
+      } finally {
+        clearTimeout(timer);
+      }
     }
 
     function esc(s) {
@@ -730,6 +808,43 @@
       return `<span${idAttr} class="avatar ${small ? 'avatar--sm' : ''}">${initial}` +
              `<img src="${esc(url)}" alt="" loading="lazy" decoding="async" onerror="this.remove()"></span>`;
     }
+
+    // Публичный профиль игрока: имя/животное, фото и «о себе».
+    const publicProfileSheet = document.getElementById('public-profile-sheet');
+    const publicProfileContent = document.getElementById('public-profile-content');
+
+    function closePlayerProfile() {
+      publicProfileSheet.classList.remove('is-open');
+    }
+
+    async function openPlayerProfile(token) {
+      if (!token) return;
+      publicProfileSheet.classList.add('is-open');
+      publicProfileContent.innerHTML = loaderHtml('Загружаем профиль…');
+      haptic('light');
+      try {
+        const data = await api('/api/players/' + encodeURIComponent(token));
+        const p = data.profile;
+        const username = p.username ? '<div class="hint">@' + esc(p.username) + '</div>' : '';
+        publicProfileContent.innerHTML = `
+          <div class="public-profile">
+            ${avatarHtml(p.first_name, p.avatar_url, false, p.avatar_emoji)}
+            <div class="public-profile__text">
+              <div class="public-profile__name">${esc(p.first_name)}</div>
+              ${username}
+              <div class="public-profile__about">${esc(p.about || 'Описание пока не заполнено.')}</div>
+            </div>
+          </div>`;
+      } catch (e) {
+        publicProfileContent.innerHTML = `<div class="hint" style="padding:12px 0">${esc(e.message)}</div>`;
+      }
+    }
+
+    document.querySelector('[data-public-profile-close]').addEventListener('click', closePlayerProfile);
+    document.getElementById('public-profile-close').addEventListener('click', closePlayerProfile);
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') closePlayerProfile();
+    });
 
     // Даты по-русски.
     const MONTHS = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];

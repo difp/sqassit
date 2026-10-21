@@ -132,8 +132,12 @@ const ITEMS = {};
 function participantsLine(list) {
   if (!list.length) return '<span class="t-names">Пока никто не записан</span>';
   const stack = '<div class="avatar-stack">' +
-    list.slice(0, 5).map(p => avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)).join('') + '</div>';
-  const names = list.map(p => esc(p.first_name)).join(', ');
+    list.slice(0, 5).map(p => p.profile_token
+      ? `<button type="button" class="avatar-btn" data-profile-token="${esc(p.profile_token)}" aria-label="Профиль: ${esc(p.first_name)}">${avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)}</button>`
+      : avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)).join('') + '</div>';
+  const names = list.map(p => p.profile_token
+    ? `<button type="button" class="participant-name" data-profile-token="${esc(p.profile_token)}">${esc(p.first_name)}</button>`
+    : esc(p.first_name)).join(', ');
   return stack + `<span class="t-names">${names}</span>`;
 }
 
@@ -245,7 +249,7 @@ async function loadSchedule() {
     renderSchedule(data.trainings);
   } catch (e) {
     document.getElementById('loading').hidden = true;
-    toast(e.message);
+    toast(e.message, { label: 'Повторить', onClick: loadSchedule });
   }
 }
 
@@ -279,6 +283,8 @@ document.getElementById('notif-toggle').addEventListener('change', async (ev) =>
 });
 
 document.getElementById('schedule').addEventListener('click', async (ev) => {
+  const profileToken = ev.target.closest('[data-profile-token]')?.getAttribute('data-profile-token');
+  if (profileToken) { openPlayerProfile(profileToken); return; }
   const bookId = ev.target.closest('[data-book]')?.getAttribute('data-book');
   const cancelId = ev.target.closest('[data-cancel]')?.getAttribute('data-cancel');
   const calId = ev.target.closest('[data-cal]')?.getAttribute('data-cal');

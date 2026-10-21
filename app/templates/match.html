@@ -1,0 +1,286 @@
+{% extends "base.html" %}
+{% block header %}Матч{% endblock %}
+
+{% block header_right %}
+<button class="header-action" id="match-add" type="button" aria-label="Создать матч" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+    <path d="M12 5v14M5 12h14"/>
+  </svg>
+</button>
+{% endblock %}
+
+{% block content %}
+<div id="matches-loading" class="loading-state" role="status" aria-live="polite">
+  <span class="squash-loader" aria-hidden="true">
+    <svg class="squash-loader__ring" viewBox="0 0 44 44" fill="none">
+      <circle cx="22" cy="22" r="18" stroke="currentColor" stroke-opacity=".16" stroke-width="2"/>
+      <circle cx="22" cy="22" r="18" stroke="#ffd60a" stroke-width="2" stroke-linecap="round" stroke-dasharray="24 89"/>
+    </svg>
+    <span class="squash-loader__ball">
+      <span class="squash-loader__dot"></span>
+      <span class="squash-loader__dot"></span>
+    </span>
+  </span>
+  <span>Загружаем матчи…</span>
+</div>
+
+<div id="matches-empty" class="empty" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="8.5"/><path d="M7 17.5 17 6.5M8.5 6.5l7 11"/>
+  </svg>
+  <div>Пока нет матчей. Создайте первый.</div>
+</div>
+
+<div id="matches"></div>
+
+<!-- Bottom sheet: создание матча -->
+<div class="sheet" id="match-sheet">
+  <div class="sheet__backdrop" data-match-close></div>
+  <div class="sheet__panel" role="dialog" aria-modal="true">
+    <div class="sheet__handle"></div>
+    <h2 class="sheet__title">Новый матч</h2>
+    <form id="match-form">
+      <div class="row2">
+        <label class="field"><span class="label">Дата</span>
+          <input class="input" name="date" type="date" required></label>
+        <label class="field"><span class="label">Время · 24 ч</span>
+          <input class="input" id="match-time" name="time" type="text"
+                 inputmode="numeric" pattern="(?:[01][0-9]|2[0-3]):[0-5][0-9]"
+                 maxlength="5" value="19:00" placeholder="19:00"
+                 autocomplete="off" required></label>
+      </div>
+      <label class="field"><span class="label">Название</span>
+        <input class="input" name="title" type="text" value="Матч" maxlength="100" required></label>
+      <div class="row2">
+        <label class="field"><span class="label">Длительность, мин</span>
+          <input class="input" name="duration_min" type="number" min="15" max="600" value="60"></label>
+        <label class="field"><span class="label">Игроков</span>
+          <input class="input" name="max_players" type="number" min="2" max="20" value="4" required></label>
+      </div>
+      <label class="field"><span class="label">Место</span>
+        <input class="input" name="location" type="text" maxlength="120"
+               placeholder="Например: корт №2, клуб «Сквош»"></label>
+      <label class="field"><span class="label">Уровень игры</span>
+        <select class="input" name="level" id="match-level">
+          <option value="">Не указан</option>
+        </select></label>
+      <label class="field"><span class="label">Описание</span>
+        <textarea class="input" name="description" rows="3" maxlength="450"
+                  placeholder="Например: ищем ещё одного игрока на завтра"></textarea></label>
+      <button type="submit" class="btn btn--primary btn--block" style="margin-top:6px">Создать матч</button>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const MATCHES = {};
+let MATCH_LEVELS_LOADED = false;
+const matchSheet = document.getElementById('match-sheet');
+const matchForm = document.getElementById('match-form');
+
+function matchIsoDate(days = 0) {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.getFullYear() + '-' +
+    String(d.getMonth() + 1).padStart(2, '0') + '-' +
+    String(d.getDate()).padStart(2, '0');
+}
+
+function matchParticipantsLine(list) {
+  if (!list.length) return '<span class="t-names">Пока никого нет</span>';
+  const stack = '<div class="avatar-stack">' + list.slice(0, 6).map(p =>
+    p.profile_token
+      ? `<button type="button" class="avatar-btn" data-profile-token="${esc(p.profile_token)}" aria-label="Профиль: ${esc(p.first_name)}">${avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)}</button>`
+      : avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)
+  ).join('') + '</div>';
+  const names = list.map(p => p.profile_token
+    ? `<button type="button" class="participant-name" data-profile-token="${esc(p.profile_token)}">${esc(p.first_name)}</button>`
+    : esc(p.first_name)).join(', ');
+  return stack + `<span class="t-names">${names}</span>`;
+}
+
+function matchCard(m) {
+  const free = Math.max(0, m.max_players - m.players_count);
+  const joined = m.is_joined;
+  let actions = '';
+  if (!joined) {
+    actions = free
+      ? `<button class="btn btn--primary btn--block" data-match-join="${m.id}">Присоединиться</button>`
+      : '<button class="btn btn--block" disabled>Мест нет</button>';
+  } else {
+    actions = `<button class="btn btn--danger btn--block" data-match-leave="${m.id}">Выйти из матча</button>`;
+  }
+  if (m.is_creator) {
+    actions += `<button class="btn btn--block" data-match-delete="${m.id}" style="margin-top:8px">Удалить матч</button>`;
+  }
+  const creator = m.creator
+    ? `<div class="t-coach" style="cursor:default">
+        <button type="button" class="participant-open" data-profile-token="${esc(m.creator.profile_token || '')}" aria-label="Профиль: ${esc(m.creator.first_name)}">
+          ${avatarHtml(m.creator.first_name, m.creator.avatar_url, true, m.creator.avatar_emoji)}
+          <div class="t-coach__text"><div class="t-coach__name">Организатор · ${esc(m.creator.first_name)}</div></div>
+        </button>
+      </div>`
+    : '';
+  return `
+  <div class="card">
+    <div class="t-top">
+      <div class="t-when">
+        <div class="t-time">${esc(m.time)}</div>
+        <div class="t-duration">${m.duration_min} мин</div>
+      </div>
+      <div class="t-info">
+        <div class="t-title">${esc(m.title)}</div>
+        <div class="t-meta">${dateAndLevel(m.date, m.level)}</div>
+      </div>
+      <div class="t-occ"><b>${free}</b><span style="color:var(--hint)">/${m.max_players}</span><span class="lbl">свободно</span></div>
+    </div>
+    ${m.location ? `<div class="t-meta" style="margin-top:8px">📍 ${esc(m.location)}</div>` : ''}
+    ${m.description ? `<div class="player-about">${esc(m.description)}</div>` : ''}
+    ${creator}
+    <div class="t-people" style="margin-top:10px">${matchParticipantsLine(m.participants)}</div>
+    <div class="t-actions-col" style="margin-top:12px">${actions}</div>
+  </div>`;
+}
+
+function renderMatches(matches) {
+  const loading = document.getElementById('matches-loading');
+  const empty = document.getElementById('matches-empty');
+  loading.hidden = true;
+  Object.keys(MATCHES).forEach(key => delete MATCHES[key]);
+  if (!matches.length) {
+    document.getElementById('matches').innerHTML = '';
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+  matches.forEach(m => { MATCHES[m.id] = m; });
+  document.getElementById('matches').innerHTML = matches.map(matchCard).join('');
+}
+
+async function loadMatches() {
+  const loading = document.getElementById('matches-loading');
+  loading.hidden = false;
+  try {
+    const data = await api('/api/matches?days=30');
+    renderMatches(data.matches);
+  } catch (e) {
+    loading.hidden = true;
+    toast(e.message, { label: 'Повторить', onClick: loadMatches });
+  }
+}
+
+async function loadMatchLevels() {
+  if (MATCH_LEVELS_LOADED) return;
+  try {
+    const data = await api('/api/levels');
+    document.getElementById('match-level').innerHTML =
+      '<option value="">Не указан</option>' +
+      data.levels.map(level => `<option value="${esc(level)}">${esc(level)}</option>`).join('');
+    MATCH_LEVELS_LOADED = true;
+  } catch (e) { /* не критично */ }
+}
+
+function openMatchSheet() {
+  const dateInput = matchForm.querySelector('[name="date"]');
+  const local = matchIsoDate(0);
+  if (!dateInput.value || dateInput.value < local) dateInput.value = local;
+  loadMatchLevels();
+  matchSheet.classList.add('is-open');
+  haptic('light');
+}
+
+function closeMatchSheet() {
+  matchSheet.classList.remove('is-open');
+}
+
+const matchTime = document.getElementById('match-time');
+matchTime.addEventListener('input', () => {
+  const raw = matchTime.value;
+  if (raw.includes(':')) {
+    const [h, m] = raw.split(':');
+    const hh = h.replace(/\D/g, '').slice(0, 2);
+    const mm = m.replace(/\D/g, '').slice(0, 2);
+    matchTime.value = (hh.length === 1 ? '0' + hh : hh) + ':' + mm;
+    return;
+  }
+  const digits = raw.replace(/\D/g, '').slice(0, 4);
+  matchTime.value = digits.length > 2
+    ? digits.slice(0, 2) + ':' + digits.slice(2)
+    : digits;
+});
+matchTime.addEventListener('blur', () => {
+  if (!matchTime.value.trim()) return;
+  const digits = matchTime.value.replace(/\D/g, '').padEnd(4, '0').slice(0, 4);
+  const h = Math.min(23, parseInt(digits.slice(0, 2), 10) || 0);
+  const m = Math.min(59, parseInt(digits.slice(2, 4), 10) || 0);
+  matchTime.value = String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+});
+
+document.getElementById('match-add').addEventListener('click', openMatchSheet);
+matchSheet.querySelector('[data-match-close]').addEventListener('click', closeMatchSheet);
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeMatchSheet();
+});
+
+document.getElementById('matches').addEventListener('click', async (ev) => {
+  const profileToken = ev.target.closest('[data-profile-token]')?.getAttribute('data-profile-token');
+  if (profileToken) { openPlayerProfile(profileToken); return; }
+  const join = ev.target.closest('[data-match-join]')?.getAttribute('data-match-join');
+  const leave = ev.target.closest('[data-match-leave]')?.getAttribute('data-match-leave');
+  const remove = ev.target.closest('[data-match-delete]')?.getAttribute('data-match-delete');
+  if (!join && !leave && !remove) return;
+  try {
+    if (join) await api(`/api/matches/${join}/join`, 'POST');
+    if (leave) await api(`/api/matches/${leave}/leave`, 'POST');
+    if (remove) {
+      if (!confirm('Удалить матч?')) return;
+      await api(`/api/matches/${remove}`, 'DELETE');
+    }
+    hapticNotify('success');
+    toast(remove ? 'Матч удалён' : (join ? 'Вы присоединились' : 'Вы вышли из матча'));
+    loadMatches();
+  } catch (e) { hapticNotify('error'); toast(e.message); }
+});
+
+matchForm.addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const form = ev.target;
+  const payload = {
+    date: form.date.value,
+    time: form.time.value,
+    title: form.title.value,
+    description: form.description.value,
+    location: form.location.value,
+    duration_min: parseInt(form.duration_min.value, 10),
+    max_players: parseInt(form.max_players.value, 10),
+    level: form.level.value,
+  };
+  const btn = form.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  try {
+    await api('/api/matches', 'POST', payload);
+    hapticNotify('success');
+    toast('Матч создан');
+    closeMatchSheet();
+    form.reset();
+    matchTime.value = '19:00';
+    loadMatches();
+  } catch (e) {
+    hapticNotify('error');
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+window.PAGE_REFRESH = loadMatches;
+(async () => {
+  await APP.ready;
+  if (!APP.me) return;
+  document.getElementById('match-add').hidden = false;
+  loadMatches();
+})();
+</script>
+{% endblock %}

@@ -99,6 +99,16 @@ def test_database_helpers_and_queue_branches(tmp_path):
             await db.add_message(1, 123, "Привет")
             inbox = await db.list_inbox(123)
             assert inbox and inbox[0]["text"] == "Привет"
+            assert await db.notification_targets(training_id) == []
+            assert await db.list_match_feed_recipients() == []
+
+            await db.save_event_notification("training", 1, 123, 0, 55, "text")
+            saved = await db.get_event_notification("training", 1, 123, 0)
+            assert saved is not None
+            assert saved["message_id"] == 55 and saved["text"] == "text"
+            await db.save_event_notification("training", 1, 123, 0, 56, "new")
+            saved = await db.get_event_notification("training", 1, 123, 0)
+            assert saved is not None and saved["message_id"] == 56
 
             await db.purge_training(training_id)
             assert await db.get_training(training_id) is None
