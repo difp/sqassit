@@ -79,7 +79,7 @@ def test_web_app_url_keeps_existing_query(monkeypatch):
         "settings",
         replace(settings, webhook_base_url="https://example.test/app?x=1"),
     )
-    assert botmod._web_app_url() == "https://example.test/app?x=1&v=6"
+    assert botmod._web_app_url() == "https://example.test/app?x=1&v=7"
 
 
 def test_web_app_url_falls_back_to_telegram(monkeypatch):
@@ -126,7 +126,7 @@ def test_cmd_start_escapes_name_and_hides_id(monkeypatch):
     assert "&lt;Иван&gt;" in text
     assert "<Иван>" not in text
     assert "1001" not in text
-    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=6")
+    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=7")
     assert calls["user"]["telegram_id"] == 1001
 
 
@@ -313,7 +313,7 @@ def test_fallback_opens_web_app(monkeypatch):
     asyncio.run(botmod.fallback(message))
     text, markup = answers[0]
     assert "Открой приложение" in text
-    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=6")
+    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=7")
 
 
 def test_cache_avatar_uses_largest_photo(monkeypatch):
