@@ -389,49 +389,28 @@
     .skeleton--row + .skeleton--row { margin-top: 8px; }
     .coach-row .skeleton { flex: 1; }
 
-    /* ===== Загрузка: сквош-мяч с двумя жёлтыми точками ===== */
+    /* ===== Загрузка в духе loading.dev: тонкая дуга + мяч с двумя точками ===== */
     .loading-state {
       display: flex; flex-direction: column; align-items: center; justify-content: center;
-      gap: 12px; padding: 42px 16px; color: var(--hint);
+      gap: 14px; padding: 42px 16px; color: var(--hint);
       font-size: 14px; text-align: center;
     }
     .squash-loader {
-      position: relative; width: 46px; height: 58px; display: block;
-      filter: drop-shadow(0 5px 8px rgba(0,0,0,.18));
+      position: relative; width: 44px; height: 44px; display: block; color: currentColor;
+    }
+    .squash-loader__ring {
+      width: 44px; height: 44px; display: block; overflow: visible;
+      animation: squash-arc 1.15s linear infinite;
     }
     .squash-loader__ball {
-      position: absolute; left: 2px; top: 1px; width: 42px; height: 42px;
-      border-radius: 50%;
-      background: radial-gradient(circle at 34% 28%, #4a5058 0%, #20252c 42%, #0d1117 100%);
-      box-shadow: inset 0 0 0 1px rgba(255,255,255,.14), inset -4px -6px 10px rgba(0,0,0,.45);
-      animation: squash-roll 1.15s cubic-bezier(.45,.05,.55,.95) infinite;
+      position: absolute; left: 14px; top: 14px; width: 16px; height: 16px;
+      border: 1.5px solid currentColor; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center; gap: 2px;
     }
     .squash-loader__dot {
-      position: absolute; top: 13px; width: 6px; height: 6px; border-radius: 50%;
-      background: #ffd60a; box-shadow: 0 0 5px rgba(255,214,10,.75);
+      width: 4px; height: 4px; border-radius: 50%; background: #ffd60a;
     }
-    .squash-loader__dot:first-child { left: 14px; }
-    .squash-loader__dot:last-child { left: 23px; }
-    .squash-loader__shine {
-      position: absolute; width: 9px; height: 5px; left: 9px; top: 8px;
-      border-radius: 50%; background: rgba(255,255,255,.22); transform: rotate(-32deg);
-    }
-    .squash-loader__shadow {
-      position: absolute; left: 6px; bottom: 2px; width: 34px; height: 8px;
-      border-radius: 50%; background: rgba(0,0,0,.22);
-      animation: squash-shadow 1.15s cubic-bezier(.45,.05,.55,.95) infinite;
-    }
-    @keyframes squash-roll {
-      0%   { transform: translateY(0) rotate(0deg); }
-      25%  { transform: translateY(-4px) rotate(90deg); }
-      50%  { transform: translateY(0) rotate(180deg); }
-      75%  { transform: translateY(-3px) rotate(270deg); }
-      100% { transform: translateY(0) rotate(360deg); }
-    }
-    @keyframes squash-shadow {
-      0%, 50%, 100% { transform: scaleX(1); opacity: .7; }
-      25%, 75% { transform: scaleX(.82); opacity: .45; }
-    }
+    @keyframes squash-arc { to { transform: rotate(360deg); } }
     @keyframes sk { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
     [hidden] { display: none !important; }
 
@@ -517,7 +496,7 @@
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
       .btn:active, .header-action:active, .chip:active { transform: none; }
-      .squash-loader__ball, .squash-loader__shadow { animation: none; }
+      .squash-loader__ring { animation: none; }
     }
   </style>
 </head>
@@ -652,12 +631,14 @@
     function loaderHtml(text) {
       return `<div class="loading-state" role="status" aria-live="polite">
         <span class="squash-loader" aria-hidden="true">
+          <svg class="squash-loader__ring" viewBox="0 0 44 44" fill="none">
+            <circle cx="22" cy="22" r="18" stroke="currentColor" stroke-opacity=".16" stroke-width="2"/>
+            <circle cx="22" cy="22" r="18" stroke="#ffd60a" stroke-width="2" stroke-linecap="round" stroke-dasharray="24 89"/>
+          </svg>
           <span class="squash-loader__ball">
-            <span class="squash-loader__shine"></span>
             <span class="squash-loader__dot"></span>
             <span class="squash-loader__dot"></span>
           </span>
-          <span class="squash-loader__shadow"></span>
         </span>
         <span>${esc(text || 'Загрузка…')}</span>
       </div>`;
