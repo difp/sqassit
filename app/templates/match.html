@@ -155,11 +155,13 @@ function renderMatches(matches) {
   if (!matches.length) {
     document.getElementById('matches').innerHTML = '';
     empty.hidden = false;
+    hideAppLoader();
     return;
   }
   empty.hidden = true;
   matches.forEach(m => { MATCHES[m.id] = m; });
   document.getElementById('matches').innerHTML = matches.map(matchCard).join('');
+  hideAppLoader();
 }
 
 async function loadMatches() {
@@ -284,6 +286,9 @@ matchForm.addEventListener('submit', async (ev) => {
 });
 
 window.PAGE_REFRESH = loadMatches;
+// Матчи не зависят от профиля: запрашиваем их сразу, а роль проверяем
+// параллельно. Это убирает лишнее ожидание при открытии вкладки.
+const matchesJob = loadMatches();
 (async () => {
   await APP.ready;
   if (!APP.me) {
@@ -291,11 +296,8 @@ window.PAGE_REFRESH = loadMatches;
     return;
   }
   document.getElementById('match-add').hidden = false;
-  try {
-    await loadMatches();
-  } finally {
-    hideAppLoader();
-  }
+  await matchesJob;
+  hideAppLoader();
 })();
 </script>
 {% endblock %}

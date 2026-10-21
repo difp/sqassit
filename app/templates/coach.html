@@ -598,12 +598,14 @@ function renderList() {
         : VIEW === 'history' ? 'История пуста.'
           : VIEW === 'deleted' ? 'Корзина пуста.'
             : 'У других тренеров занятий нет.');
+    hideAppLoader();
     return;
   }
   const render = VIEW === 'active' ? activeRow
     : VIEW === 'history' ? historyRow
       : VIEW === 'deleted' ? deletedRow : clubRow;
   list.innerHTML = TRAININGS.map(render).join('');
+  hideAppLoader();
 }
 
 // ---------- Своё занятие ----------
@@ -1283,7 +1285,7 @@ window.PAGE_REFRESH = async () => {
   try {
     if (me.is_coach) {
       // Сначала показываем главное — список занятий. Остальные секции
-      // догружаем в фоне, чтобы вкладка тренера открывалась сразу.
+      // догружаем в фоне, не задерживая открытие вкладки.
       await loadView();
       hideAppLoader();
       const background = [loadPlayers(), loadProfile()];

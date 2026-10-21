@@ -298,6 +298,7 @@ function renderSchedule(trainings) {
   if (!trainings.length) {
     schedule.innerHTML = '';
     empty.hidden = false;
+    hideAppLoader();
     return;
   }
   empty.hidden = true;
@@ -310,6 +311,7 @@ function renderSchedule(trainings) {
       <div class="day-label"><span>${esc(fmtDay(date))}</span></div>
       ${groups[date].map(trainingCard).join('')}
     </section>`).join('');
+  hideAppLoader();
 }
 
 async function loadSchedule() {
