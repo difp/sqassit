@@ -1594,7 +1594,7 @@ async def api_message_coach(payload: MessageIn, user: Annotated[dict, Depends(cu
 async def _notify_feedback(
     user: dict[str, Any], kind: str, text: str, page: str
 ) -> None:
-    """Отправляет обратную связь администратору с кнопкой ответа."""
+    """Отправляет обратную связь в чат тренера с кнопкой ответа."""
     label = "🐞 <b>Проблема</b>" if kind == "bug" else "💡 <b>Предложение</b>"
     name = html.escape(
         participant_identity(cast(aiosqlite.Row, user))["first_name"] or "Игрок"
