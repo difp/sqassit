@@ -488,7 +488,9 @@ window.PAGE_REFRESH = async () => {
   await Promise.all([loadProfile(), loadSchedule()]);
 };
 
-loadProfile().then(maybeShowOnboarding);
-loadSchedule();
+Promise.allSettled([loadProfile(), loadSchedule()]).then(() => {
+  hideAppLoader();
+  setTimeout(maybeShowOnboarding, 350);
+});
 </script>
 {% endblock %}

@@ -1187,22 +1187,26 @@ window.PAGE_REFRESH = async () => {
 (async () => {
   await APP.ready;
   const me = APP.me;
-  if (!me) return;
+  if (!me) {
+    hideAppLoader();
+    return;
+  }
   applyRoleUi(me);
 
-  if (me.is_coach) {
-    loadView();
-    whenVisible('players-section', loadPlayers);
-    whenVisible('profile-section', loadProfile);
-    if (IS_MANAGER) {
-      // Реестр тренеров — маленький запрос. Грузим его сразу, а не ждём
-      // пересечения с viewport: иначе раздел выглядит пустым при скролле.
-      loadApplications();
-      document.getElementById('coaches-section').hidden = false;
-      loadCoaches();
+  try {
+    if (me.is_coach) {
+      const jobs = [loadView(), loadPlayers(), loadProfile()];
+      if (IS_MANAGER) {
+        // Реестр тренеров грузим сразу, не дожидаясь скролла.
+        document.getElementById('coaches-section').hidden = false;
+        jobs.push(loadApplications(), loadCoaches());
+      }
+      await Promise.allSettled(jobs);
+    } else {
+      await loadApplyStatus();
     }
-  } else {
-    loadApplyStatus();
+  } finally {
+    hideAppLoader();
   }
 })();
 </script>

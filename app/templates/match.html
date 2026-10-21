@@ -283,9 +283,16 @@ matchForm.addEventListener('submit', async (ev) => {
 window.PAGE_REFRESH = loadMatches;
 (async () => {
   await APP.ready;
-  if (!APP.me) return;
+  if (!APP.me) {
+    hideAppLoader();
+    return;
+  }
   document.getElementById('match-add').hidden = false;
-  loadMatches();
+  try {
+    await loadMatches();
+  } finally {
+    hideAppLoader();
+  }
 })();
 </script>
 {% endblock %}

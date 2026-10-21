@@ -1072,6 +1072,10 @@ def test_refresh_and_responsive_ui_contract(client):
         assert "max-width: 220px" in page.text
         assert "prefers-reduced-motion" in page.text
         assert "squash-loader__ball" in page.text
+        assert 'id="app-loader"' in page.text
+        assert "hideAppLoader" in page.text
+        assert "SQUASH_QUOTES" in page.text
+        assert "Nicol David" in page.text
 
     # Обновление расписания должно убирать старые карточки и empty-state.
     assert "Object.keys(ITEMS).forEach" in player.text

@@ -12,24 +12,20 @@ Python 3.11+ · FastAPI · aiogram 3 · SQLite
 <table width="100%">
 <tr>
 <td width="48%" align="center" valign="top">
-  <a href="docs/screenshots/player.png"><img src="docs/screenshots/player.png" alt="Расписание игрока" width="100%"></a><br>
-  <sub><b>Игрок</b> · расписание и запись</sub>
+  <a href="docs/screenshots/player.png"><img src="docs/screenshots/player.png" alt="Игрок · расписание и запись" width="100%"></a>
 </td>
 <td width="4%"></td>
 <td width="48%" align="center" valign="top">
-  <a href="docs/screenshots/match.png"><img src="docs/screenshots/match.png" alt="Матчи игроков" width="100%"></a><br>
-  <sub><b>Матч</b> · свои игровые встречи</sub>
+  <a href="docs/screenshots/match.png"><img src="docs/screenshots/match.png" alt="Матч · свои игровые встречи" width="100%"></a>
 </td>
 </tr>
 <tr>
 <td width="48%" align="center" valign="top">
-  <a href="docs/screenshots/profile.png"><img src="docs/screenshots/profile.png" alt="Публичный профиль игрока" width="100%"></a><br>
-  <sub><b>Профиль</b> · публичная карточка игрока</sub>
+  <a href="docs/screenshots/profile.png"><img src="docs/screenshots/profile.png" alt="Профиль · публичная карточка игрока" width="100%"></a>
 </td>
 <td width="4%"></td>
 <td width="48%" align="center" valign="top">
-  <a href="docs/screenshots/coach.png"><img src="docs/screenshots/coach.png" alt="Панель тренера" width="100%"></a><br>
-  <sub><b>Тренер</b> · занятия и участники</sub>
+  <a href="docs/screenshots/coach.png"><img src="docs/screenshots/coach.png" alt="Тренер · занятия и участники" width="100%"></a>
 </td>
 </tr>
 </table>
