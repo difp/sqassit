@@ -986,5 +986,9 @@ def test_refresh_and_responsive_ui_contract(client):
     assert "'me-avatar'" in player.text
     # Обновление панели тренера перечитывает роль.
     assert "applyRoleUi" in coach.text
+    # Реестр тренеров не ждёт IntersectionObserver: иначе раздел выглядит
+    # пустым, пока пользователь не проскроллит в него.
+    assert "whenVisible('coaches-section', loadCoaches)" not in coach.text
+    assert "loadCoaches();" in coach.text
     # Заявки в режиме животного показывают emoji, а не инициал.
     assert "avatarHtml(a.first_name, a.avatar_url, true, a.avatar_emoji)" in coach.text

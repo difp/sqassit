@@ -921,9 +921,11 @@ window.PAGE_REFRESH = async () => {
     whenVisible('players-section', loadPlayers);
     whenVisible('profile-section', loadProfile);
     if (IS_MANAGER) {
+      // Реестр тренеров — маленький запрос. Грузим его сразу, а не ждём
+      // пересечения с viewport: иначе раздел выглядит пустым при скролле.
       loadApplications();
       document.getElementById('coaches-section').hidden = false;
-      whenVisible('coaches-section', loadCoaches);
+      loadCoaches();
     }
   } else {
     loadApplyStatus();
