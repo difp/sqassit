@@ -4,10 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Сквош-тренировки</title>
-  <!-- Локальная копия: telegram.org часто недоступен напрямую из РФ. -->
-  <script src="/static/telegram-web-app.js"></script>
   <script>
     // Тема нужна до отрисовки, чтобы цвета уровней и подсказок не мигали.
+    // Сам Telegram-скрипт грузим в конце body: шапка и скелетоны видны сразу.
     try {
       document.documentElement.dataset.theme =
         (window.Telegram && Telegram.WebApp && Telegram.WebApp.colorScheme) ||
@@ -516,6 +515,8 @@
     </div>
   </div>
 
+  <!-- Локальная копия: не блокирует первую отрисовку и не зависит от telegram.org. -->
+  <script src="/static/telegram-web-app.js"></script>
   <script>
     const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
     if (tg) {
