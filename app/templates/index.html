@@ -244,11 +244,17 @@ function renderSchedule(trainings) {
 }
 
 async function loadSchedule() {
+  const cached = cacheRead('schedule');
+  if (cached) {
+    // Показываем прошлый снимок сразу, свежие данные догружаем следом.
+    renderSchedule(cached);
+  }
   try {
     const data = await api('/api/trainings?days=7');
+    cacheWrite('schedule', data.trainings);
     renderSchedule(data.trainings);
   } catch (e) {
-    document.getElementById('loading').hidden = true;
+    if (!cached) document.getElementById('loading').hidden = true;
     toast(e.message, { label: 'Повторить', onClick: loadSchedule });
   }
 }
@@ -309,6 +315,7 @@ document.getElementById('schedule').addEventListener('click', async (ev) => {
       hapticNotify('success');
       toast(r.promoted ? 'Отменено. Следующий из очереди повышен.' : 'Запись отменена');
     }
+    cacheClear();
     await loadSchedule();
   } catch (e) {
     hapticNotify('error');
@@ -463,6 +470,7 @@ document.getElementById('profile-save').addEventListener('click', async () => {
       show_username: profileUsername.checked,
     });
     APP.me = Object.assign({}, APP.me, data.profile);
+    cacheClear();
     paintProfile();
     hapticNotify('success');
     toast('Профиль сохранён');

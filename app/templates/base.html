@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Сквош-тренировки</title>
+  <link rel="preload" href="/static/telegram-web-app.js" as="script">
   <script>
     // Тема нужна до отрисовки, чтобы цвета уровней и подсказок не мигали.
     // Сам Telegram-скрипт грузим в конце body: шапка и скелетоны видны сразу.
@@ -719,7 +720,7 @@
       if (currentInitData() || !tg) return;
       // В Telegram WebView initData иногда появляется на мгновение позже
       // первого тика скрипта. Не отправляем заведомо неавторизованные запросы.
-      for (let i = 0; i < 15 && !currentInitData(); i++) {
+      for (let i = 0; i < 10 && !currentInitData(); i++) {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
@@ -761,6 +762,46 @@
       return String(s == null ? '' : s).replace(/[&<>"']/g, c => (
         { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
       ));
+    }
+
+    // Короткий session-cache для мгновенного повторного открытия страниц.
+    // Он живёт только в текущей сессии WebView и сбрасывается после действий.
+    const CACHE_TTL_MS = 30000;
+    const CACHE_PREFIX = 'sqassit:cache:';
+    function cacheUserKey() {
+      try {
+        const user = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+        return user && user.id ? String(user.id) : 'anon';
+      } catch (e) { return 'anon'; }
+    }
+    function cacheRead(name) {
+      try {
+        const raw = sessionStorage.getItem(
+          CACHE_PREFIX + name + ':' + cacheUserKey()
+        );
+        if (!raw) return null;
+        const entry = JSON.parse(raw);
+        if (!entry || Date.now() - entry.t > CACHE_TTL_MS) return null;
+        return entry.v;
+      } catch (e) { return null; }
+    }
+    function cacheWrite(name, value) {
+      try {
+        sessionStorage.setItem(
+          CACHE_PREFIX + name + ':' + cacheUserKey(),
+          JSON.stringify({ t: Date.now(), v: value })
+        );
+      } catch (e) { /* приватный режим / переполнение */ }
+    }
+    function cacheClear() {
+      try {
+        const keys = [];
+        for (let i = 0; i < sessionStorage.length; i++) {
+          const key = sessionStorage.key(i);
+          if (key && key.startsWith(CACHE_PREFIX)) keys.push(key);
+        }
+        keys.forEach(key => sessionStorage.removeItem(key));
+      } catch (e) { /* ignore */ }
     }
 
     // Разметка загрузки: один и тот же мяч на всех экранах.

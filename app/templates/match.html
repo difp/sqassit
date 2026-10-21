@@ -161,9 +161,12 @@ function renderMatches(matches) {
 
 async function loadMatches() {
   const loading = document.getElementById('matches-loading');
-  loading.hidden = false;
+  const cached = cacheRead('matches');
+  if (cached) renderMatches(cached);
+  else loading.hidden = false;
   try {
     const data = await api('/api/matches?days=30');
+    cacheWrite('matches', data.matches);
     renderMatches(data.matches);
   } catch (e) {
     loading.hidden = true;
@@ -240,6 +243,7 @@ document.getElementById('matches').addEventListener('click', async (ev) => {
     }
     hapticNotify('success');
     toast(remove ? 'Матч удалён' : (join ? 'Вы присоединились' : 'Вы вышли из матча'));
+    cacheClear();
     loadMatches();
   } catch (e) { hapticNotify('error'); toast(e.message); }
 });
@@ -266,6 +270,7 @@ matchForm.addEventListener('submit', async (ev) => {
     closeMatchSheet();
     form.reset();
     matchTime.value = '19:00';
+    cacheClear();
     loadMatches();
   } catch (e) {
     hapticNotify('error');

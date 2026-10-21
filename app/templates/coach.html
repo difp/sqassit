@@ -405,6 +405,7 @@ async function submitCreate(payload, btn) {
     hapticNotify('success');
     toast('Тренировка создана');
     closeSheet();
+    cacheClear();
     setView('active');
     return;
   } catch (e) {
@@ -511,19 +512,27 @@ function setView(view) {
 }
 async function loadView() {
   const list = document.getElementById('list');
-  list.innerHTML = loaderHtml('Загружаем занятия…');
+  const cacheName = 'coach:' + VIEW;
+  const cached = cacheRead(cacheName);
+  if (cached) {
+    TRAININGS = cached;
+    renderList();
+  } else {
+    list.innerHTML = loaderHtml('Загружаем занятия…');
+  }
   const url = VIEW === 'active' ? '/api/coach/trainings'
     : VIEW === 'history' ? '/api/coach/history'
       : VIEW === 'deleted' ? '/api/coach/deleted'
         : '/api/coach/club/trainings';
   try {
     const data = await api(url);
+    cacheWrite(cacheName, data.trainings);
     TRAININGS = data.trainings;
     renderList();
   } catch (e) {
     hapticNotify('error');
     toast(e.message, { label: 'Повторить', onClick: loadView });
-    list.innerHTML = '';
+    if (!cached) list.innerHTML = '';
   }
 }
 function emptyState(text) { return `<div class="empty"><div>${esc(text)}</div></div>`; }
@@ -752,6 +761,7 @@ document.getElementById('list').addEventListener('click', async (ev) => {
       await api(`/api/coach/trainings/${del}`, 'DELETE');
       hapticNotify('success');
       toast('Тренировка в корзине', { label: 'Вернуть', onClick: () => restoreTraining(del) });
+      cacheClear();
       loadView();
     } else if (restore) {
       await restoreTraining(restore);
@@ -760,6 +770,7 @@ document.getElementById('list').addEventListener('click', async (ev) => {
       await api(`/api/coach/trainings/${purge}/purge`, 'DELETE');
       hapticNotify('success');
       toast('Удалено навсегда');
+      cacheClear();
       loadView();
     } else if (premove && row) {
       const uid = premove, tid = row.dataset.ptid;
@@ -768,6 +779,7 @@ document.getElementById('list').addEventListener('click', async (ev) => {
       hapticNotify('success');
       toast('Игрок снят', { label: 'Вернуть', onClick: () => restoreParticipant(tid, uid) });
       refreshParticipants(tid);
+      cacheClear();
       loadView();
     } else if (prestore && row) {
       await restoreParticipant(row.dataset.ptid, prestore);
@@ -783,6 +795,7 @@ async function restoreTraining(id) {
     await api(`/api/coach/trainings/${id}/restore`, 'POST');
     hapticNotify('success');
     toast('Тренировка восстановлена');
+    cacheClear();
     setView('active');
   } catch (e) { hapticNotify('error'); toast(e.message); }
 }
@@ -792,6 +805,7 @@ async function restoreParticipant(tid, uid) {
     hapticNotify('success');
     toast(r.status === 'waitlist' ? 'Мест нет — игрок в очереди' : 'Игрок возвращён');
     refreshParticipants(tid);
+    cacheClear();
     loadView();
   } catch (e) { hapticNotify('error'); toast(e.message); }
 }
@@ -820,6 +834,7 @@ document.getElementById('list').addEventListener('change', async ev => {
     await api(`/api/coach/trainings/${id}/reminder`, 'PATCH', { enabled, offset_min: min });
     haptic('light');
     updateTotal(id);
+    cacheClear();
     toast('Напоминание: ' + fmtOffset(min));
   } catch (e) { hapticNotify('error'); toast(e.message); loadView(); }
 });
@@ -854,6 +869,7 @@ document.getElementById('transfer-list').addEventListener('click', async (ev) =>
     hapticNotify('success');
     toast('Занятие передано');
     transferSheet.classList.remove('is-open');
+    cacheClear();
     loadView();
   } catch (e) { hapticNotify('error'); toast(e.message); }
 });
