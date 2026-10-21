@@ -39,6 +39,8 @@
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     html, body { margin: 0; padding: 0; }
     html { scroll-padding-top: 64px; }
+    body { overflow-x: hidden; }
+    .app { overflow-x: hidden; }
     [data-theme="light"] { --hint: #6b6b70; }
     [data-theme="dark"] { --hint: #8b99a8; }
     body {
@@ -1036,6 +1038,11 @@
         if (href === path || (href === '/' && path === '')) a.classList.add('is-active');
       });
     })();
+
+    // Не восстанавливаем старую позицию скролла из WebView: приложение
+    // всегда открывается с шапки, а не с середины предыдущей сессии.
+    try { history.scrollRestoration = 'manual'; } catch (e) {}
+    window.scrollTo(0, 0);
 
     // Стартовый экран: прячем после первичной загрузки данных страницы.
     const appLoaderStartedAt = Date.now();

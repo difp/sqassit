@@ -1195,17 +1195,21 @@ window.PAGE_REFRESH = async () => {
 
   try {
     if (me.is_coach) {
-      const jobs = [loadView(), loadPlayers(), loadProfile()];
+      // Сначала показываем главное — список занятий. Остальные секции
+      // догружаем в фоне, чтобы вкладка тренера открывалась сразу.
+      await loadView();
+      hideAppLoader();
+      const background = [loadPlayers(), loadProfile()];
       if (IS_MANAGER) {
-        // Реестр тренеров грузим сразу, не дожидаясь скролла.
         document.getElementById('coaches-section').hidden = false;
-        jobs.push(loadApplications(), loadCoaches());
+        background.push(loadApplications(), loadCoaches());
       }
-      await Promise.allSettled(jobs);
+      Promise.allSettled(background);
     } else {
       await loadApplyStatus();
+      hideAppLoader();
     }
-  } finally {
+  } catch (e) {
     hideAppLoader();
   }
 })();
