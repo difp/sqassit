@@ -11,21 +11,23 @@ Python 3.11+ · FastAPI · aiogram 3 · SQLite
 
 <table width="100%">
 <tr>
-<td width="50%" align="center" valign="top">
+<td width="48%" align="center" valign="top">
   <a href="docs/screenshots/player.png"><img src="docs/screenshots/player.png" alt="Расписание игрока" width="100%"></a><br>
   <sub><b>Игрок</b> · расписание и запись</sub>
 </td>
-<td width="50%" align="center" valign="top">
+<td width="4%"></td>
+<td width="48%" align="center" valign="top">
   <a href="docs/screenshots/match.png"><img src="docs/screenshots/match.png" alt="Матчи игроков" width="100%"></a><br>
   <sub><b>Матч</b> · свои игровые встречи</sub>
 </td>
 </tr>
 <tr>
-<td width="50%" align="center" valign="top">
+<td width="48%" align="center" valign="top">
   <a href="docs/screenshots/profile.png"><img src="docs/screenshots/profile.png" alt="Публичный профиль игрока" width="100%"></a><br>
   <sub><b>Профиль</b> · публичная карточка игрока</sub>
 </td>
-<td width="50%" align="center" valign="top">
+<td width="4%"></td>
+<td width="48%" align="center" valign="top">
   <a href="docs/screenshots/coach.png"><img src="docs/screenshots/coach.png" alt="Панель тренера" width="100%"></a><br>
   <sub><b>Тренер</b> · занятия и участники</sub>
 </td>
