@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS users (
     about                 TEXT NOT NULL DEFAULT '',   -- «о себе» игрока (видит тренер)
     display_mode          TEXT NOT NULL DEFAULT 'name', -- name | animal
     show_username         INTEGER NOT NULL DEFAULT 0, -- согласие показывать @username
+    onboarding_seen       INTEGER NOT NULL DEFAULT 0, -- памятка при первом запуске
     created_at            INTEGER NOT NULL
 );
 
@@ -125,6 +126,7 @@ async def _migrate() -> None:
     trainings_cols = await columns_of("trainings")
     users_cols = await columns_of("users")
     coaches_cols = await columns_of("coaches")
+    onboarding_was_present = "onboarding_seen" in users_cols
 
     additions = {
         ("trainings", "deleted_at"): "ALTER TABLE trainings ADD COLUMN deleted_at INTEGER",
@@ -139,12 +141,20 @@ async def _migrate() -> None:
         ("users", "show_username"): (
             "ALTER TABLE users ADD COLUMN show_username INTEGER NOT NULL DEFAULT 0"
         ),
+        ("users", "onboarding_seen"): (
+            "ALTER TABLE users ADD COLUMN onboarding_seen INTEGER NOT NULL DEFAULT 0"
+        ),
         ("coaches", "is_manager"): "ALTER TABLE coaches ADD COLUMN is_manager INTEGER NOT NULL DEFAULT 0",
     }
     present = {"trainings": trainings_cols, "users": users_cols, "coaches": coaches_cols}
     for (table, column), ddl in additions.items():
         if column not in present[table]:
             await _conn.execute(ddl)
+
+    # Памятку показываем только новым пользователям. При обновлении старой БД
+    # существующие аккаунты не должны внезапно получить онбординг.
+    if not onboarding_was_present:
+        await _conn.execute("UPDATE users SET onboarding_seen = 1")
 
 
 async def close() -> None:
@@ -275,6 +285,14 @@ async def set_player_profile(
         "UPDATE users SET about = ?, display_mode = ?, show_username = ? "
         "WHERE telegram_id = ?",
         (about, display_mode, int(show_username), telegram_id),
+    )
+
+
+async def set_onboarding_seen(telegram_id: int) -> None:
+    """Отмечает, что пользователь прошёл памятку первого запуска."""
+    await _execute(
+        "UPDATE users SET onboarding_seen = 1 WHERE telegram_id = ?",
+        (telegram_id,),
     )
 
 

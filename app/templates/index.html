@@ -86,6 +86,42 @@
     <button class="btn btn--primary btn--block" id="profile-save" type="button">Сохранить</button>
   </div>
 </div>
+
+<!-- Bottom sheet: памятка первого запуска -->
+<div class="sheet" id="onboarding-sheet">
+  <div class="sheet__backdrop" data-onboarding-close></div>
+  <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+    <div class="sheet__handle"></div>
+    <h2 class="sheet__title" id="onboarding-title">Как пользоваться</h2>
+
+    <div id="onboarding-guide">
+      <p class="hint" style="margin:-8px 0 16px">Коротко о главном — это займёт полминуты.</p>
+      <ul class="onboarding-list">
+        <li><b>Расписание.</b> Выберите тренировку на 7 дней вперёд и нажмите «Записаться».</li>
+        <li><b>Лист ожидания.</b> Если мест нет — встаньте в очередь: при освобождении места запись произойдёт автоматически.</li>
+        <li><b>Отмена.</b> Отменить запись можно не позже чем за 4,5 часа до начала.</li>
+        <li><b>Тренер.</b> Напишите ему из карточки тренировки или кнопкой «Написать тренеру».</li>
+      </ul>
+      <button class="btn btn--primary btn--block" id="onboarding-next" type="button">Дальше</button>
+      <button class="btn btn--block" id="onboarding-skip" type="button" style="margin-top:8px">Пропустить</button>
+    </div>
+
+    <div id="onboarding-privacy" hidden>
+      <p class="hint" style="margin:-8px 0 14px">
+        По умолчанию в расписании видны имя и фото из Telegram. Это можно изменить.
+      </p>
+      <div class="card card--compact" style="margin-bottom:14px">
+        <div class="reminder-row__text">Приватность</div>
+        <div class="hint" style="margin-top:4px">
+          Выберите вымышленное животное — тренер и другие игроки не увидят ваши имя и фото.
+          @username по умолчанию скрыт: включайте, только если хотите его показывать.
+        </div>
+      </div>
+      <button class="btn btn--primary btn--block" id="onboarding-setup" type="button">Настроить приватность</button>
+      <button class="btn btn--block" id="onboarding-done" type="button" style="margin-top:8px">Оставить имя и фото</button>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -311,6 +347,60 @@ const profileAbout = document.getElementById('profile-about');
 const profileDisplay = document.getElementById('profile-display');
 const profileUsername = document.getElementById('profile-username');
 
+// ===== Памятка первого запуска =====
+const onboardingSheet = document.getElementById('onboarding-sheet');
+const onboardingTitle = document.getElementById('onboarding-title');
+const onboardingGuide = document.getElementById('onboarding-guide');
+const onboardingPrivacy = document.getElementById('onboarding-privacy');
+
+function showOnboarding() {
+  if (!APP.me || APP.me.onboarding_seen) return;
+  onboardingTitle.textContent = 'Как пользоваться';
+  onboardingGuide.hidden = false;
+  onboardingPrivacy.hidden = true;
+  onboardingSheet.classList.add('is-open');
+  haptic('light');
+  setTimeout(() => document.getElementById('onboarding-next').focus(), 150);
+}
+
+function showOnboardingPrivacy() {
+  onboardingTitle.textContent = 'Приватность';
+  onboardingGuide.hidden = true;
+  onboardingPrivacy.hidden = false;
+  haptic('light');
+  setTimeout(() => document.getElementById('onboarding-setup').focus(), 150);
+}
+
+function markOnboardingSeen() {
+  if (!APP.me || APP.me.onboarding_seen) return;
+  APP.me.onboarding_seen = true;
+  // Не блокируем интерфейс: если запрос не прошёл, памятка просто
+  // появится при следующем запуске.
+  api('/api/me/onboarding', 'POST').catch(() => {});
+}
+
+function closeOnboarding() {
+  if (!onboardingSheet.classList.contains('is-open')) return;
+  onboardingSheet.classList.remove('is-open');
+  markOnboardingSeen();
+}
+
+function maybeShowOnboarding() {
+  if (APP.me && !APP.me.onboarding_seen) showOnboarding();
+}
+
+document.getElementById('onboarding-next').addEventListener('click', showOnboardingPrivacy);
+document.getElementById('onboarding-skip').addEventListener('click', closeOnboarding);
+document.getElementById('onboarding-done').addEventListener('click', closeOnboarding);
+document.getElementById('onboarding-setup').addEventListener('click', () => {
+  closeOnboarding();
+  openProfile();
+});
+document.querySelector('[data-onboarding-close]').addEventListener('click', closeOnboarding);
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && onboardingSheet.classList.contains('is-open')) closeOnboarding();
+});
+
 function paintProfile() {
   const about = document.getElementById('me-about');
   if (!APP.me) return;
@@ -376,7 +466,7 @@ window.PAGE_REFRESH = async () => {
   await Promise.all([loadProfile(), loadSchedule()]);
 };
 
-loadProfile();
+loadProfile().then(maybeShowOnboarding);
 loadSchedule();
 </script>
 {% endblock %}

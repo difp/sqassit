@@ -376,6 +376,12 @@
     .profile-actions { display: flex; gap: 8px; margin-top: 12px; }
     .profile-actions .btn { flex: 1; min-width: 0; }
 
+    /* ===== Памятка первого запуска ===== */
+    .onboarding-list { margin: 0 0 20px; padding-left: 20px; }
+    .onboarding-list li { font-size: 15px; line-height: 1.45; }
+    .onboarding-list li + li { margin-top: 10px; }
+    .onboarding-list b { font-weight: 650; }
+
     .hint--tight { margin: 8px 0 0; line-height: 1.4; }
     .reminder-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
     .reminder-row__text { font-size: 15px; font-weight: 500; }
@@ -501,6 +507,7 @@
       .tab { font-size: 10px; }
       .tab svg { width: 21px; height: 21px; }
       .toast { font-size: 13px; }
+      .onboarding-list li { font-size: 13px; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }

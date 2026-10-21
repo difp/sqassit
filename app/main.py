@@ -584,9 +584,17 @@ async def api_me(user: Annotated[dict, Depends(current_user)]):
             "about": user["about"] or "",
             "display_mode": user["display_mode"] or "name",
             "show_username": bool(user["show_username"]),
+            "onboarding_seen": bool(user["onboarding_seen"]),
             "animal": animal_identity(user["telegram_id"]),
         },
     }
+
+
+@app.post("/api/me/onboarding")
+async def api_onboarding_seen(user: Annotated[dict, Depends(current_user)]):
+    """Отмечает памятку первого запуска как просмотренную."""
+    await db.set_onboarding_seen(user["telegram_id"])
+    return {"ok": True}
 
 
 @app.put("/api/me/profile")
@@ -645,6 +653,7 @@ async def api_export_me(user: Annotated[dict, Depends(current_user)]):
             "about": user["about"] or "",
             "display_mode": user["display_mode"] or "name",
             "show_username": bool(user["show_username"]),
+            "onboarding_seen": bool(user["onboarding_seen"]),
         },
         "bookings": [dict(row) for row in await db.list_user_bookings(user["telegram_id"])],
         "messages": [dict(row) for row in await db.list_user_messages(user["telegram_id"])],

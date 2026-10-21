@@ -86,6 +86,17 @@ def test_auth_required(client):
     assert client.get("/api/me").status_code == 401
 
 
+def test_onboarding_seen_flow(client):
+    me = client.get("/api/me", headers=PLAYER).json()["user"]
+    assert me["onboarding_seen"] is False
+
+    assert client.post("/api/me/onboarding", headers=PLAYER).json()["ok"] is True
+    assert client.get("/api/me", headers=PLAYER).json()["user"]["onboarding_seen"] is True
+
+    exported = client.get("/api/me/export", headers=PLAYER).json()
+    assert exported["user"]["onboarding_seen"] is True
+
+
 def test_coach_role_enforced(client):
     assert client.get("/api/me", headers=COACH).json()["user"]["is_coach"] is True
     r = client.post("/api/coach/trainings", headers=PLAYER, json=_future(3))
@@ -984,6 +995,10 @@ def test_refresh_and_responsive_ui_contract(client):
     assert "empty.hidden = true" in player.text
     # Контейнер аватара сохраняет id после повторного рендера.
     assert "'me-avatar'" in player.text
+    # Первый запуск: памятка и переход к приватности.
+    assert 'id="onboarding-sheet"' in player.text
+    assert "Настроить приватность" in player.text
+    assert "maybeShowOnboarding" in player.text
     # Обновление панели тренера перечитывает роль.
     assert "applyRoleUi" in coach.text
     # Реестр тренеров не ждёт IntersectionObserver: иначе раздел выглядит
