@@ -343,7 +343,7 @@ function activeRow(t) {
       </div>
     </div>
     <div class="t-toolbar">
-      <div class="t-meta">${esc(fmtDay(t.date))}${t.level ? ' · ' + levelPill(t.level) : ''}</div>
+      <div class="t-meta">${dateAndLevel(t.date, t.level)}</div>
       <div class="t-toolbar__actions">
         ${iconBtn(`data-cal="${t.id}"`, 'В календарь', ICON_CAL, 'var(--link)')}
         ${iconBtn(`data-del="${t.id}"`, 'Удалить', ICON_DEL)}
@@ -376,7 +376,7 @@ function historyRow(t) {
       </div>
     </div>
     <div class="t-toolbar">
-      <div class="t-meta">${esc(fmtDay(t.date))}${t.level ? ' · ' + levelPill(t.level) : ''}</div>
+      <div class="t-meta">${dateAndLevel(t.date, t.level)}</div>
       <div class="t-toolbar__actions">
         ${iconBtn(`data-cal="${t.id}"`, 'В календарь', ICON_CAL, 'var(--link)')}
         ${iconBtn(`data-del="${t.id}"`, 'В корзину', ICON_DEL)}
@@ -423,7 +423,7 @@ function clubRow(t) {
       </div>
       <div class="t-info">
         <div class="t-title">${esc(t.type)}</div>
-        <div class="t-meta">${esc(fmtDay(t.date))}${t.level ? ' · ' + levelPill(t.level) : ''}</div>
+        <div class="t-meta">${dateAndLevel(t.date, t.level)}</div>
       </div>
       <div class="t-occ"><b>${t.booked_count}</b><span style="color:var(--hint)">/${t.capacity}</span><span class="lbl">записано</span></div>
     </div>
