@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime
 
 import pytest
@@ -48,3 +49,13 @@ def test_rate_limiter_blocks_and_recovers(monkeypatch):
 
     now[0] += 11
     limiter.check("user")  # окно очистилось
+
+
+def test_rate_limiter_prunes_stale_keys(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(rate_limit_module.time, "monotonic", lambda: now[0])
+    limiter = RateLimiter(limit=2, window_seconds=10)
+    for key in range(10_001):
+        limiter._events[str(key)] = deque([now[0] - 11])
+    limiter.check("fresh")
+    assert list(limiter._events) == ["fresh"]

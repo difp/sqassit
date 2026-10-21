@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from urllib.parse import urlencode
 
 import pytest
+from fastapi import HTTPException
 from starlette.testclient import TestClient
 
 import app.bot as botmod
@@ -31,12 +32,6 @@ async def _fake_polling(bot, dp):
 async def _fake_loop(bot, interval_seconds=60):
     while True:
         await asyncio.sleep(3600)
-
-
-botmod.polling_context = _fake_polling
-botmod.reminder_loop = _fake_loop
-mainmod.bot_module.polling_context = _fake_polling
-mainmod.bot_module.reminder_loop = _fake_loop
 
 
 def _init(user: dict) -> str:
@@ -59,7 +54,7 @@ APPLICANT = {"X-Init-Data": _init({"id": 888, "first_name": "Заявитель"
 
 
 @pytest.fixture()
-def client():
+def client(monkeypatch):
     # Каждый тест получает чистую БД и чистые in-memory-состояния.
     for suffix in ("", "-wal", "-shm"):
         Path(f"{settings.db_path}{suffix}").unlink(missing_ok=True)
@@ -67,6 +62,9 @@ def client():
     mainmod._message_limiter.clear()
     mainmod._apply_limiter.clear()
     mainmod._booking_limiter.clear()
+    # Не поднимаем реальные polling/reminder во время интеграционных тестов.
+    monkeypatch.setattr(botmod, "polling_context", _fake_polling)
+    monkeypatch.setattr(botmod, "reminder_loop", _fake_loop)
 
     with TestClient(mainmod.app) as c:
         # Заглушка отправки в Telegram: тесты не ходят в сеть.
@@ -1091,3 +1089,746 @@ def test_refresh_and_responsive_ui_contract(client):
     assert "loadCoaches();" in coach.text
     # Заявки в режиме животного показывают emoji, а не инициал.
     assert "avatarHtml(a.first_name, a.avatar_url, true, a.avatar_emoji)" in coach.text
+
+
+def test_readyz_cache_and_failures(client, monkeypatch):
+    async def fake_get_me():
+        return object()
+
+    monkeypatch.setattr(mainmod.app.state.bot, "get_me", fake_get_me)
+    mainmod._bot_check_cache = (0.0, False)
+    assert client.get("/readyz").status_code == 200
+    assert client.get("/readyz").status_code == 200  # cached branch
+
+    async def failing_get_me():
+        raise RuntimeError("telegram down")
+
+    monkeypatch.setattr(mainmod.app.state.bot, "get_me", failing_get_me)
+    mainmod._bot_check_cache = (0.0, False)
+    assert client.get("/readyz").status_code == 503
+
+    async def db_down():
+        return False
+
+    monkeypatch.setattr(mainmod.db, "ping", db_down)
+    assert client.get("/readyz").status_code == 503
+
+
+def test_store_avatar_evicts_expired_and_oldest(monkeypatch):
+    mainmod._avatar_cache.clear()
+    now = time.time()
+    mainmod._avatar_cache[1] = (now - mainmod._AVATAR_TTL_SECONDS - 1, b"old", "image/png")
+    for key in range(100, 100 + mainmod._AVATAR_CACHE_MAX_ENTRIES):
+        mainmod._avatar_cache[key] = (now, b"", "image/png")
+    mainmod._store_avatar(999, b"x", "image/png")
+    assert 1 not in mainmod._avatar_cache
+    assert 999 in mainmod._avatar_cache
+    assert len(mainmod._avatar_cache) <= mainmod._AVATAR_CACHE_MAX_ENTRIES
+    mainmod._avatar_cache.clear()
+
+
+def test_auth_rejects_bad_telegram_id(client):
+    headers = {"X-Init-Data": _init({"id": "not-an-int", "first_name": "X"})}
+    response = client.get("/api/me", headers=headers)
+    assert response.status_code == 401
+
+
+def test_authenticate_missing_profile_after_upsert(monkeypatch):
+    async def no_upsert(**kwargs):
+        return None
+
+    async def no_user(telegram_id):
+        return None
+
+    async def not_coach(telegram_id):
+        return False
+
+    monkeypatch.setattr(mainmod.db, "upsert_user", no_upsert)
+    monkeypatch.setattr(mainmod.db, "get_user", no_user)
+    monkeypatch.setattr(mainmod.db, "is_coach_id", not_coach)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(mainmod._authenticate(PLAYER["X-Init-Data"]))
+    assert exc.value.status_code == 500
+
+
+def test_serialize_coach_none():
+    assert mainmod.serialize_coach(None) is None
+
+
+def test_player_profile_missing_and_errors(monkeypatch):
+    payload = mainmod.PlayerProfileIn(
+        about="", display_mode="name", show_username=False
+    )
+    user = {"telegram_id": 555}
+
+    async def no_set(*args, **kwargs):
+        return None
+
+    async def no_user(telegram_id):
+        return None
+
+    monkeypatch.setattr(mainmod.db, "set_player_profile", no_set)
+    monkeypatch.setattr(mainmod.db, "get_user", no_user)
+    with pytest.raises(HTTPException):
+        asyncio.run(mainmod.api_set_player_profile(payload, user))
+
+    async def raise_http(*args, **kwargs):
+        raise HTTPException(status_code=400, detail="bad")
+
+    monkeypatch.setattr(mainmod.db, "set_player_profile", raise_http)
+    with pytest.raises(HTTPException):
+        asyncio.run(mainmod.api_set_player_profile(payload, user))
+
+    async def raise_generic(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "set_player_profile", raise_generic)
+    response = asyncio.run(mainmod.api_set_player_profile(payload, user))
+    assert response.status_code == 500
+
+
+def test_update_notifications_success(client):
+    response = client.put(
+        "/api/me/notifications", headers=PLAYER, json={"enabled": False}
+    )
+    assert response.status_code == 200
+    assert response.json()["notifications_enabled"] is False
+
+
+def test_delete_account_skips_inactive_and_deleted_bookings(client, monkeypatch):
+    async def fake_bookings(telegram_id):
+        return [
+            {"status": "cancelled", "deleted_at": None, "training_id": 1},
+            {"status": "booked", "deleted_at": 1, "training_id": 2},
+        ]
+
+    async def fake_delete(telegram_id):
+        return None
+
+    monkeypatch.setattr(mainmod.db, "list_user_bookings", fake_bookings)
+    monkeypatch.setattr(mainmod.db, "delete_user_data", fake_delete)
+    response = asyncio.run(
+        mainmod.api_delete_me({"telegram_id": 555}, confirm=True)
+    )
+    assert response["ok"] is True
+
+
+def test_waitlist_status_is_returned_to_user(client):
+    tid = _create_training(client, day=22, time_str="18:00", capacity=1)
+    assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER).json()["status"] == "booked"
+    assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER2).json()["status"] == "waitlist"
+    card = next(
+        t for t in client.get("/api/trainings?days=31", headers=PLAYER2).json()["trainings"]
+        if t["id"] == tid
+    )
+    assert card["is_waitlisted"] is True
+
+
+def test_book_started_and_exception(monkeypatch):
+    async def past_training(training_id):
+        return {"id": training_id, "deleted_at": None, "start_at": 0, "capacity": 2}
+
+    monkeypatch.setattr(mainmod.db, "get_training", past_training)
+    response = asyncio.run(mainmod.api_book(1, {"telegram_id": 555}))
+    assert response.status_code == 400
+
+    async def broken_training(training_id):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "get_training", broken_training)
+    response = asyncio.run(mainmod.api_book(1, {"telegram_id": 555}))
+    assert response.status_code == 500
+
+
+def test_cancel_started_and_exception(monkeypatch):
+    async def past_training(training_id):
+        return {"id": training_id, "deleted_at": None, "start_at": 0, "capacity": 2}
+
+    async def booked(training_id, user_id):
+        return {"status": "booked"}
+
+    monkeypatch.setattr(mainmod.db, "get_training", past_training)
+    monkeypatch.setattr(mainmod.db, "get_booking", booked)
+    response = asyncio.run(mainmod.api_cancel(1, {"telegram_id": 555}))
+    assert response.status_code == 403
+
+    async def broken_training(training_id):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "get_training", broken_training)
+    response = asyncio.run(mainmod.api_cancel(1, {"telegram_id": 555}))
+    assert response.status_code == 500
+
+
+def test_calendar_auth_fallbacks_and_missing_training(client, monkeypatch):
+    tid = _create_training(client, day=23, time_str="10:00")
+    bad_header = client.get(
+        f"/calendar/{tid}.ics", headers={"X-Init-Data": "bad"}
+    )
+    assert bad_header.status_code == 401
+
+    from dataclasses import replace
+
+    monkeypatch.setattr(
+        mainmod, "settings", replace(settings, allow_dev_init_data=True)
+    )
+    assert client.get(
+        f"/calendar/{tid}.ics", params={"initData": "bad"}
+    ).status_code == 401
+
+    token = issue_scoped_token(settings.bot_token, "ics", 999, 555)
+    assert client.get(
+        "/calendar/999.ics", params={"token": token}
+    ).status_code == 404
+
+
+def test_coach_history_and_validation_edges(client, monkeypatch):
+    assert client.get("/api/coach/history", headers=COACH).status_code == 200
+
+    past = _future(-1, "10:00")
+    assert client.post(
+        "/api/coach/trainings", headers=COACH, json=past
+    ).status_code == 400
+    assert client.post(
+        "/api/coach/trainings",
+        headers=COACH,
+        json={**_future(24, "10:00"), "level": "Неизвестный"},
+    ).status_code == 422
+
+    async def broken_duplicate(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "find_duplicate_training", broken_duplicate)
+    assert client.post(
+        "/api/coach/trainings",
+        headers=COACH,
+        json={**_future(24, "11:00"), "training_type": "Сломанная"},
+    ).status_code == 500
+
+
+def test_batch_validation_and_skip_edges(client, monkeypatch):
+    start = (datetime.now(settings.timezone) + timedelta(days=7)).date()
+    valid = {
+        "period_start": start.isoformat(),
+        "period_end": (start + timedelta(days=6)).isoformat(),
+        "weekdays": [start.weekday()],
+        "time": "19:00",
+        "training_type": "Batch-edge",
+    }
+    assert client.post(
+        "/api/coach/trainings/batch",
+        headers=COACH,
+        json={**valid, "period_start": "2026-02-31"},
+    ).status_code == 422
+    assert client.post(
+        "/api/coach/trainings/batch",
+        headers=COACH,
+        json={**valid, "level": "Неизвестный"},
+    ).status_code == 422
+
+    other_day = (start.weekday() + 1) % 7
+    assert client.post(
+        "/api/coach/trainings/batch",
+        headers=COACH,
+        json={
+            "period_start": start.isoformat(),
+            "period_end": start.isoformat(),
+            "weekdays": [other_day],
+            "time": "19:00",
+            "training_type": "No dates",
+        },
+    ).status_code == 422
+
+    monkeypatch.setattr(mainmod, "_TRAINING_BATCH_MAX_COUNT", 0)
+    assert client.post(
+        "/api/coach/trainings/batch", headers=COACH, json=valid
+    ).status_code == 422
+    monkeypatch.setattr(mainmod, "_TRAINING_BATCH_MAX_COUNT", 100)
+
+    yesterday = (datetime.now(settings.timezone) - timedelta(days=1)).date()
+    past = client.post(
+        "/api/coach/trainings/batch",
+        headers=COACH,
+        json={
+            "period_start": yesterday.isoformat(),
+            "period_end": yesterday.isoformat(),
+            "weekdays": [yesterday.weekday()],
+            "time": "19:00",
+            "training_type": "Past batch",
+        },
+    )
+    assert past.status_code == 200
+    assert past.json()["created_count"] == 0
+    assert past.json()["skipped_count"] == 1
+
+    async def broken_duplicate(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "find_duplicate_training", broken_duplicate)
+    assert client.post(
+        "/api/coach/trainings/batch",
+        headers=COACH,
+        json={**valid, "training_type": "Broken batch"},
+    ).status_code == 500
+
+
+def test_delete_restore_purge_errors(client, monkeypatch):
+    tid = _create_training(client, day=25, time_str="10:00")
+    async def broken_soft_delete(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "soft_delete_training", broken_soft_delete)
+    assert client.delete(
+        f"/api/coach/trainings/{tid}", headers=COACH
+    ).status_code == 500
+    monkeypatch.undo()
+
+    assert client.post(
+        "/api/coach/trainings/999/restore", headers=COACH
+    ).status_code == 404
+
+    tid2 = _create_training(client, day=25, time_str="11:00")
+    assert client.delete(f"/api/coach/trainings/{tid2}", headers=COACH).status_code == 200
+
+    async def broken_restore(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "restore_training", broken_restore)
+    assert client.post(
+        f"/api/coach/trainings/{tid2}/restore", headers=COACH
+    ).status_code == 500
+
+    tid3 = _create_training(client, day=25, time_str="12:00")
+    assert client.delete(f"/api/coach/trainings/{tid3}", headers=COACH).status_code == 200
+    assert client.delete(
+        f"/api/coach/trainings/{tid3}/purge", headers=COACH
+    ).status_code == 200
+    assert client.delete(
+        "/api/coach/trainings/999/purge", headers=COACH
+    ).status_code == 404
+
+    tid4 = _create_training(client, day=25, time_str="13:00")
+    assert client.delete(f"/api/coach/trainings/{tid4}", headers=COACH).status_code == 200
+
+    async def broken_purge(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "purge_training", broken_purge)
+    assert client.delete(
+        f"/api/coach/trainings/{tid4}/purge", headers=COACH
+    ).status_code == 500
+
+
+def test_participant_management_edges(client, monkeypatch):
+    tid = _create_training(client, day=26, time_str="10:00")
+    assert client.get(
+        "/api/coach/trainings/999/participants", headers=COACH
+    ).status_code == 404
+
+    async def broken_participants(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "get_participants_full", broken_participants)
+    assert client.get(
+        f"/api/coach/trainings/{tid}/participants", headers=COACH
+    ).status_code == 500
+
+    assert client.post(
+        f"/api/coach/trainings/{tid}/participants/999/cancel", headers=COACH
+    ).status_code == 404
+
+    client.post(f"/api/trainings/{tid}/book", headers=PLAYER)
+    async def broken_cancel(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "cancel_booking", broken_cancel)
+    assert client.post(
+        f"/api/coach/trainings/{tid}/participants/555/cancel", headers=COACH
+    ).status_code == 500
+
+    monkeypatch.undo()
+    assert client.post(
+        f"/api/coach/trainings/{tid}/participants/999/restore", headers=COACH
+    ).status_code == 404
+    assert client.post(
+        f"/api/coach/trainings/{tid}/participants/555/restore", headers=COACH
+    ).status_code == 400
+
+    assert client.post(
+        f"/api/coach/trainings/{tid}/participants/555/cancel", headers=COACH
+    ).status_code == 200
+
+    async def broken_restore_booking(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "restore_booking", broken_restore_booking)
+    assert client.post(
+        f"/api/coach/trainings/{tid}/participants/555/restore", headers=COACH
+    ).status_code == 500
+
+
+def test_reminder_notes_profile_edges(client, monkeypatch):
+    assert client.get("/api/me", headers=PLAYER).status_code == 200
+    tid = _create_training(client, day=27, time_str="10:00")
+    assert client.patch(
+        f"/api/coach/trainings/{tid}/reminder",
+        headers=COACH,
+        json={"enabled": False, "offset_min": 60},
+    ).status_code == 200
+
+    async def broken_reminder(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "update_reminder_settings", broken_reminder)
+    assert client.patch(
+        f"/api/coach/trainings/{tid}/reminder",
+        headers=COACH,
+        json={"enabled": True, "offset_min": 60},
+    ).status_code == 500
+    monkeypatch.undo()
+
+    assert client.put(
+        "/api/coach/players/555/notes", headers=COACH, json={"notes": "note"}
+    ).status_code == 200
+    assert client.put(
+        "/api/coach/players/999/notes", headers=COACH, json={"notes": "note"}
+    ).status_code == 404
+
+    async def broken_notes(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "set_user_notes", broken_notes)
+    assert client.put(
+        "/api/coach/players/555/notes", headers=COACH, json={"notes": "x"}
+    ).status_code == 500
+    monkeypatch.undo()
+
+    assert client.get("/api/coach/profile", headers=COACH).status_code == 200
+
+    async def broken_profile(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "set_trainer_profile", broken_profile)
+    assert client.put(
+        "/api/coach/profile", headers=COACH, json={"bio": "x"}
+    ).status_code == 500
+
+
+def test_message_training_not_found_and_notification_edges(client, monkeypatch):
+    assert client.post(
+        "/api/messages/coach",
+        headers=PLAYER,
+        json={"text": "hello", "training_id": 999},
+    ).status_code == 404
+
+    async def failing_send(*args, **kwargs):
+        raise RuntimeError("telegram")
+
+    monkeypatch.setattr(mainmod.app.state.bot, "send_message", failing_send)
+    asyncio.run(mainmod._deliver_to_coach(123, 555, "Иван", "text"))
+    asyncio.run(mainmod._send_user_message(555, "text"))
+
+    training = {
+        "id": 1,
+        "start_at": int(time.time()) + 3600,
+        "training_type": "Тренировка",
+        "capacity": 2,
+    }
+    asyncio.run(mainmod._notify_participant_restored(555, training, "booked"))
+    asyncio.run(mainmod._notify_application_decision(555, approved=True))
+
+    sent = []
+
+    async def capture_send(chat_id, text, **kwargs):
+        sent.append((chat_id, text))
+
+    monkeypatch.setattr(mainmod.app.state.bot, "send_message", capture_send)
+    asyncio.run(mainmod._notify_application_decision(555, approved=True))
+    assert sent
+
+    from dataclasses import replace
+
+    monkeypatch.setattr(
+        mainmod, "settings", replace(settings, webhook_base_url="https://example.test")
+    )
+    asyncio.run(mainmod._notify_new_coach(555))
+    assert sent
+    monkeypatch.setattr(mainmod.app.state.bot, "send_message", failing_send)
+    asyncio.run(mainmod._notify_new_coach(555))
+
+    async def broken_managers():
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "list_managers", broken_managers)
+    asyncio.run(mainmod._notify_managers_about_application(555, "Иван"))
+
+    async def empty_managers():
+        return []
+
+    monkeypatch.setattr(mainmod.db, "list_managers", empty_managers)
+    monkeypatch.setattr(mainmod.app.state.bot, "send_message", failing_send)
+    asyncio.run(mainmod._notify_managers_about_application(555, "Иван"))
+
+
+def test_add_coach_validation_edges(client, monkeypatch):
+    headers = {
+        "X-Init-Data": _init({
+            "id": 555,
+            "first_name": "Иван",
+            "username": "ivan",
+        })
+    }
+    assert client.get("/api/me", headers=headers).status_code == 200
+    assert client.post(
+        "/api/coach/coaches", headers=COACH, json={"username": "ivan"}
+    ).json()["created"] is True
+    assert client.post(
+        "/api/coach/coaches", headers=COACH, json={"username": "nobody"}
+    ).status_code == 404
+    assert client.post(
+        "/api/coach/coaches", headers=COACH, json={}
+    ).status_code == 422
+    assert client.post(
+        "/api/coach/coaches", headers=COACH, json={"telegram_id": 123}
+    ).status_code == 400
+
+    async def broken_add(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "add_coach", broken_add)
+    assert client.post(
+        "/api/coach/coaches", headers=COACH, json={"telegram_id": 999}
+    ).status_code == 500
+
+
+def test_manager_apply_and_approval_edges(client, monkeypatch):
+    assert client.patch(
+        "/api/coach/coaches/123/manager", headers=COACH, json={"enabled": True}
+    ).status_code == 400
+    assert client.patch(
+        "/api/coach/coaches/999/manager", headers=COACH, json={"enabled": True}
+    ).status_code == 404
+    assert client.post(
+        "/api/coach/apply", headers=COACH, json={"message": "x"}
+    ).status_code == 400
+
+    assert client.post(
+        "/api/coach/applications/999/approve", headers=COACH
+    ).status_code == 404
+    assert client.post(
+        "/api/coach/applications/999/reject", headers=COACH
+    ).status_code == 404
+
+    assert client.post(
+        "/api/coach/apply", headers=APPLICANT, json={"message": "x"}
+    ).status_code == 200
+    assert client.post(
+        "/api/coach/applications/888/approve", headers=COACH
+    ).status_code == 200
+    assert client.post(
+        "/api/coach/applications/888/approve", headers=COACH
+    ).status_code == 409
+    assert client.post(
+        "/api/coach/applications/888/reject", headers=COACH
+    ).status_code == 409
+
+    applicant2 = {"X-Init-Data": _init({"id": 889, "first_name": "Второй"})}
+    assert client.post(
+        "/api/coach/apply", headers=applicant2, json={"message": "x"}
+    ).status_code == 200
+    assert client.post(
+        "/api/coach/applications/889/reject", headers=COACH
+    ).status_code == 200
+    assert client.post(
+        "/api/coach/applications/889/reject", headers=COACH
+    ).status_code == 409
+
+
+def test_transfer_validation_edges(client, monkeypatch):
+    headers2 = {
+        "X-Init-Data": _init({
+            "id": 777,
+            "first_name": "Второй тренер",
+            "username": "coach2",
+        })
+    }
+    assert client.get("/api/me", headers=headers2).status_code == 200
+    assert client.post(
+        "/api/coach/coaches", headers=COACH, json={"telegram_id": 777}
+    ).json()["ok"]
+    tid = _create_training(client, day=28, time_str="10:00")
+    assert client.post(
+        f"/api/coach/trainings/{tid}/transfer",
+        headers=COACH,
+        json={"username": "coach2"},
+    ).status_code == 200
+
+    tid2 = _create_training(client, day=28, time_str="11:00")
+    assert client.post(
+        f"/api/coach/trainings/{tid2}/transfer", headers=COACH, json={}
+    ).status_code == 422
+    assert client.post(
+        f"/api/coach/trainings/{tid2}/transfer",
+        headers=COACH,
+        json={"telegram_id": 999},
+    ).status_code == 400
+    assert client.post(
+        f"/api/coach/trainings/{tid2}/transfer",
+        headers=COACH,
+        json={"telegram_id": 123},
+    ).status_code == 400
+
+    async def broken_owner(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "set_training_owner", broken_owner)
+    assert client.post(
+        f"/api/coach/trainings/{tid2}/transfer",
+        headers=COACH,
+        json={"telegram_id": 777},
+    ).status_code == 500
+
+
+def test_webhook_invalid_json_returns_error(client, monkeypatch):
+    from dataclasses import replace
+
+    secret = "a" * 32
+    monkeypatch.setattr(
+        mainmod,
+        "settings",
+        replace(
+            settings,
+            bot_mode="webhook",
+            webhook_base_url="https://example.com",
+            webhook_secret=secret,
+        ),
+    )
+    response = client.post(
+        "/telegram/webhook",
+        content="not-json",
+        headers={"X-Telegram-Bot-Api-Secret-Token": secret},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"ok": False}
+
+
+def test_lifespan_webhook_startup(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    set_webhook_calls = []
+    session_closed = []
+
+    class FakeBot:
+        def __init__(self):
+            self.session = SimpleNamespace(close=self._close)
+
+        async def _close(self):
+            session_closed.append(True)
+
+        async def set_webhook(self, url, **kwargs):
+            set_webhook_calls.append((url, kwargs))
+
+    fake_bot = FakeBot()
+
+    async def no_db(*args, **kwargs):
+        return None
+
+    async def wait_loop(bot):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(
+        mainmod,
+        "settings",
+        replace(
+            settings,
+            bot_mode="webhook",
+            webhook_base_url="https://example.test/",
+            webhook_secret="a" * 32,
+            db_path=tmp_path / "db.sqlite",
+        ),
+    )
+    monkeypatch.setattr(mainmod.db, "connect", no_db)
+    monkeypatch.setattr(mainmod.db, "ensure_coach", no_db)
+    monkeypatch.setattr(mainmod.db, "upsert_user", no_db)
+    monkeypatch.setattr(mainmod.db, "close", no_db)
+    monkeypatch.setattr(mainmod.bot_module, "create_bot", lambda: fake_bot)
+    monkeypatch.setattr(mainmod.bot_module, "create_dispatcher", lambda: object())
+    monkeypatch.setattr(mainmod.bot_module, "reminder_loop", wait_loop)
+
+    fake_app = SimpleNamespace(state=SimpleNamespace())
+
+    async def scenario():
+        async with mainmod.lifespan(fake_app):
+            assert fake_app.state.bot is fake_bot
+
+    asyncio.run(scenario())
+    assert set_webhook_calls == [
+        ("https://example.test/telegram/webhook", {
+            "secret_token": "a" * 32,
+            "drop_pending_updates": True,
+        })
+    ]
+    assert session_closed == [True]
+
+
+def test_avatar_not_found_cache_and_download(client, monkeypatch):
+    assert client.get("/api/me", headers=PLAYER).status_code == 200
+
+    missing_token = issue_scoped_token(settings.bot_token, "avatar", 999, 999)
+    assert client.get(
+        "/api/avatar/999", params={"token": missing_token}
+    ).status_code == 404
+
+    mainmod._avatar_cache[555] = (
+        time.time(), b"cached", "image/png"
+    )
+    token = issue_scoped_token(settings.bot_token, "avatar", 555, 555)
+    cached_response = client.get("/api/avatar/555", params={"token": token})
+    assert cached_response.status_code == 200
+    assert cached_response.content == b"cached"
+
+    mainmod._avatar_cache.pop(555, None)
+    asyncio.run(mainmod.db.set_user_avatar(555, "avatar-file"))
+
+    class FakeFile:
+        file_path = "photo.jpg"
+
+    class FakeBuffer:
+        def getvalue(self):
+            return b"downloaded"
+
+    async def fake_get_file(file_id):
+        return FakeFile()
+
+    async def fake_download_file(file_path):
+        return FakeBuffer()
+
+    monkeypatch.setattr(mainmod.app.state.bot, "get_file", fake_get_file)
+    monkeypatch.setattr(
+        mainmod.app.state.bot, "download_file", fake_download_file
+    )
+    downloaded = client.get("/api/avatar/555", params={"token": token})
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"downloaded"
+    assert downloaded.headers["content-type"] == "image/jpeg"
+
+    class NoPathFile:
+        file_path = None
+
+    async def no_path(file_id):
+        return NoPathFile()
+
+    mainmod._avatar_cache.pop(555, None)
+    monkeypatch.setattr(mainmod.app.state.bot, "get_file", no_path)
+    assert client.get(
+        "/api/avatar/555", params={"token": token}
+    ).status_code == 404
+
+    async def broken_file(file_id):
+        raise RuntimeError("telegram")
+
+    monkeypatch.setattr(mainmod.app.state.bot, "get_file", broken_file)
+    assert client.get(
+        "/api/avatar/555", params={"token": token}
+    ).status_code == 502
+    mainmod._avatar_cache.pop(555, None)

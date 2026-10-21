@@ -358,3 +358,226 @@ def test_send_training_reminder_counts_only_delivered(monkeypatch):
     delivered, total = asyncio.run(botmod.send_training_reminder(bot, training))
     assert delivered == 1
     assert total == 2
+
+
+def test_pending_reply_filter_missing_user_and_missing_entry():
+    assert asyncio.run(botmod.PendingReplyFilter()(SimpleNamespace(from_user=None))) is False
+    message = SimpleNamespace(from_user=SimpleNamespace(id=123))
+    assert asyncio.run(botmod.PendingReplyFilter()(message)) is False
+
+
+def test_cmd_start_missing_user_and_avatar_path(monkeypatch):
+    message, answers, _ = _message(123)
+    message.from_user = None
+    asyncio.run(botmod.cmd_start(message))
+    assert answers == []
+
+    cached = []
+
+    async def fake_upsert(**kwargs):
+        return None
+
+    async def fake_cache(bot, user_id):
+        cached.append(user_id)
+
+    async def fake_is_coach_id(_id):
+        return False
+
+    monkeypatch.setattr(db, "upsert_user", fake_upsert)
+    monkeypatch.setattr(db, "is_coach_id", fake_is_coach_id)
+    monkeypatch.setattr(botmod, "_cache_avatar", fake_cache)
+    message, answers, _ = _message(1002, first_name="Имя")
+    message.bot = SimpleNamespace()
+    asyncio.run(botmod.cmd_start(message))
+    assert cached == [1002]
+    assert answers and "Имя" in answers[0][0]
+
+
+def test_cmd_start_handles_exception(monkeypatch):
+    async def fake_upsert(**kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(db, "upsert_user", fake_upsert)
+    message, answers, _ = _message(1003)
+    asyncio.run(botmod.cmd_start(message))
+    assert answers == []
+
+
+def test_cb_reply_without_message_and_malformed_data(monkeypatch):
+    async def fake_is_coach_id(telegram_id):
+        return True
+
+    monkeypatch.setattr(db, "is_coach_id", fake_is_coach_id)
+    callback, answers, _, _ = _callback(123, "reply:555")
+    callback.message = None
+    asyncio.run(botmod.cb_reply(callback))
+    assert answers == [(None, None)]
+    assert 123 in botmod._pending_reply
+
+    botmod._pending_reply.clear()
+    callback, answers, _, _ = _callback(123, "reply:")
+    asyncio.run(botmod.cb_reply(callback))
+    assert answers == []
+
+
+def test_coach_reply_text_without_pending_bot_or_delivery():
+    message, answers, sent = _message(123, text="просто текст")
+    asyncio.run(botmod.coach_reply_text(message))
+    assert answers == [] and sent == []
+
+    botmod._pending_reply[123] = (555, time.time() + 600)
+    message, answers, sent = _message(123, text="ответ")
+    message.bot = None
+    asyncio.run(botmod.coach_reply_text(message))
+    assert answers == [] and sent == []
+
+    class FailingBot:
+        async def send_message(self, *args, **kwargs):
+            raise RuntimeError("telegram down")
+
+    botmod._pending_reply[123] = (555, time.time() + 600)
+    message, answers, _ = _message(123, text="ответ")
+    message.bot = FailingBot()
+    asyncio.run(botmod.coach_reply_text(message))
+    assert "Не удалось отправить" in answers[-1][0]
+
+
+def test_cmd_inbox_handles_db_error(monkeypatch):
+    async def fake_is_coach_id(telegram_id):
+        return True
+
+    async def fake_list_inbox(coach_id, limit):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(db, "is_coach_id", fake_is_coach_id)
+    monkeypatch.setattr(db, "list_inbox", fake_list_inbox)
+    message, answers, _ = _message(123)
+    asyncio.run(botmod.cmd_inbox(message))
+    assert answers == []
+
+
+def test_cb_apply_chat_missing_reject_and_error(monkeypatch):
+    async def fake_is_manager_id(telegram_id):
+        return True
+
+    async def fake_get_application(telegram_id):
+        return {"telegram_id": telegram_id, "status": "pending"}
+
+    async def fake_decide(telegram_id, status, decided_by):
+        return None
+
+    monkeypatch.setattr(db, "is_manager_id", fake_is_manager_id)
+    monkeypatch.setattr(db, "get_application", fake_get_application)
+    monkeypatch.setattr(db, "decide_application", fake_decide)
+
+    callback, answers, _, _ = _callback(123, "apply:no:888")
+    callback.message = None
+    asyncio.run(botmod.cb_apply(callback))
+    assert answers == [("Сообщение недоступно", True)]
+
+    callback, answers, chat_answers, sent = _callback(123, "apply:no:888")
+    asyncio.run(botmod.cb_apply(callback))
+    assert answers == [("Отклонено", None)]
+    assert "отклонена" in chat_answers[0]
+    assert sent[0][0] == 888
+
+    callback, answers, _, _ = _callback(123, "apply:ok:not-an-id")
+    asyncio.run(botmod.cb_apply(callback))
+    assert answers == []
+
+
+def test_fallback_handles_exception():
+    message, answers, _ = _message(555)
+
+    async def failing_answer(*args, **kwargs):
+        raise RuntimeError("telegram down")
+
+    message.answer = failing_answer
+    asyncio.run(botmod.fallback(message))
+    assert answers == []
+
+
+def test_reminder_loop_marks_due_and_cancels(monkeypatch):
+    training = {"id": 7}
+    marked = []
+
+    async def fake_due(now):
+        return [training]
+
+    async def fake_send(bot, row):
+        return 1, 1
+
+    async def fake_mark(training_id):
+        marked.append(training_id)
+
+    async def fake_sleep(seconds):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(db, "trainings_due_for_reminder", fake_due)
+    monkeypatch.setattr(botmod, "send_training_reminder", fake_send)
+    monkeypatch.setattr(db, "mark_reminder_sent", fake_mark)
+    monkeypatch.setattr(botmod.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(botmod.reminder_loop(None))
+    assert marked == [7]
+
+
+def test_reminder_loop_survives_error(monkeypatch):
+    async def fake_due(now):
+        raise RuntimeError("db down")
+
+    async def fake_sleep(seconds):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(db, "trainings_due_for_reminder", fake_due)
+    monkeypatch.setattr(botmod.asyncio, "sleep", fake_sleep)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(botmod.reminder_loop(None))
+
+
+def test_polling_context_starts_and_stops(monkeypatch):
+    started = asyncio.Event()
+
+    class FakeDP:
+        async def start_polling(self, bot, handle_signals=False):
+            started.set()
+            await asyncio.Event().wait()
+
+    async def scenario():
+        async with botmod.polling_context(None, FakeDP()):
+            await started.wait()
+
+    asyncio.run(scenario())
+
+
+def test_polling_context_restarts_after_error(monkeypatch):
+    calls = [0]
+
+    class FakeDP:
+        async def start_polling(self, bot, handle_signals=False):
+            calls[0] += 1
+            if calls[0] == 1:
+                raise RuntimeError("network")
+            await asyncio.Event().wait()
+
+    async def fake_wait_for(awaitable, timeout):
+        awaitable.close()
+
+    monkeypatch.setattr(botmod.asyncio, "wait_for", fake_wait_for)
+    async def scenario():
+        async with botmod.polling_context(None, FakeDP()):
+            while calls[0] < 2:
+                await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+    assert calls[0] >= 2
+
+
+def test_reminder_loop_cancelled_while_checking(monkeypatch):
+    async def fake_due(now):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(db, "trainings_due_for_reminder", fake_due)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(botmod.reminder_loop(None))

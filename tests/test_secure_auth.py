@@ -36,6 +36,14 @@ def _sign(
     return urlencode(pairs)
 
 
+def _sign_pairs(pairs: dict[str, str], token: str = TOKEN) -> str:
+    dcs = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs))
+    secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
+    signed = dict(pairs)
+    signed["hash"] = hmac.new(secret, dcs.encode(), hashlib.sha256).hexdigest()
+    return urlencode(signed)
+
+
 def test_valid_signature():
     user = {"id": 42, "first_name": "Иван"}
     result = validate_init_data(_sign(user, TOKEN), TOKEN)
@@ -93,3 +101,50 @@ def test_scoped_token_expired(monkeypatch):
     assert verify_scoped_token(TOKEN, token, "avatar", 1) == 2
     monkeypatch.setattr(secure_auth.time, "time", lambda: 1_000_011)
     assert verify_scoped_token(TOKEN, token, "avatar", 1) is None
+
+
+def test_empty_token_rejected():
+    with pytest.raises(InitDataError, match="Токен"):
+        validate_init_data(_sign({"id": 1}, TOKEN), "")
+
+
+def test_missing_hash_rejected():
+    with pytest.raises(InitDataError, match="hash"):
+        validate_init_data("auth_date=1&query_id=AA&user=%7B%22id%22%3A1%7D", TOKEN)
+
+
+def test_invalid_auth_date_rejected():
+    with pytest.raises(InitDataError, match="auth_date"):
+        validate_init_data(_sign({"id": 1}, TOKEN, auth_date="not-a-number"), TOKEN)
+
+
+def test_missing_user_rejected():
+    signed = _sign_pairs({"auth_date": str(int(time.time())), "query_id": "AA"})
+    with pytest.raises(InitDataError, match="пользователь"):
+        validate_init_data(signed, TOKEN)
+
+
+def test_invalid_user_json_rejected():
+    signed = _sign_pairs({
+        "auth_date": str(int(time.time())),
+        "query_id": "AA",
+        "user": "{",
+    })
+    with pytest.raises(InitDataError, match="JSON"):
+        validate_init_data(signed, TOKEN)
+
+
+def test_user_must_be_dict_with_id():
+    signed = _sign_pairs({
+        "auth_date": str(int(time.time())),
+        "query_id": "AA",
+        "user": "[]",
+    })
+    with pytest.raises(InitDataError, match="Некорректные данные"):
+        validate_init_data(signed, TOKEN)
+
+
+def test_scoped_token_malformed_shapes():
+    assert verify_scoped_token(TOKEN, "a:b", "avatar", 1) is None
+    assert verify_scoped_token(TOKEN, "avatar:x:1:9999999999:abc", "avatar", 1) is None
+    assert verify_scoped_token(TOKEN, "x" * 257, "avatar", 1) is None
