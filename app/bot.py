@@ -54,7 +54,7 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-WEB_APP_VERSION = "18"
+WEB_APP_VERSION = "19"
 
 
 def _web_app_url() -> str:
@@ -386,6 +386,9 @@ async def coach_reply_text(message: Message) -> None:
             await message.answer("Отменено")
             return
         if message.bot is None:
+            return
+        if not await db.notification_enabled(target, "messages"):
+            await message.answer("У игрока отключены уведомления о сообщениях.")
             return
         await message.bot.send_message(
             target, f"💬 <b>Сообщение от тренера:</b>\n{html.escape(text)}"

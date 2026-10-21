@@ -2,18 +2,20 @@
 {% block header %}Тренировки{% endblock %}
 
 {% block content %}
-<!-- Профиль игрока + тумблер уведомлений -->
+<!-- Профиль игрока + общий тумблер уведомлений -->
 <section class="card profile-card" id="profile">
-  <span class="avatar" id="me-avatar">…</span>
-  <div class="profile-card__text">
-    <div class="profile-card__name" id="me-name">Игрок</div>
-    <div class="profile-card__sub">Push-уведомления о тренировках</div>
-    <div class="profile-card__about" id="me-about" hidden></div>
+  <div class="profile-card__top">
+    <span class="avatar" id="me-avatar">…</span>
+    <div class="profile-card__text">
+      <div class="profile-card__name" id="me-name">Игрок</div>
+      <div class="profile-card__sub">Уведомления в боте</div>
+    </div>
+    <label class="switch">
+      <input id="notif-toggle" type="checkbox" aria-label="Уведомления в боте" disabled>
+      <span></span>
+    </label>
   </div>
-  <label class="switch">
-    <input id="notif-toggle" type="checkbox" aria-label="Push-уведомления о тренировках" disabled>
-    <span></span>
-  </label>
+  <div class="profile-card__about" id="me-about" hidden></div>
 </section>
 <div class="profile-actions">
   <button class="btn btn--sm" id="profile-edit" type="button">Настроить профиль</button>
@@ -53,9 +55,9 @@
 <!-- Bottom sheet: личное сообщение тренеру -->
 <div class="sheet" id="msg-sheet">
   <div class="sheet__backdrop" data-msg-close></div>
-  <div class="sheet__panel" role="dialog" aria-modal="true">
+  <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="msg-title">
     <div class="sheet__handle"></div>
-    <h2 class="sheet__title">Сообщение тренеру</h2>
+    <h2 class="sheet__title" id="msg-title">Сообщение тренеру</h2>
     <p class="hint form-note">Уйдёт тренеру в чат с ботом — ответ придёт вам сюда же.</p>
     <textarea class="input" id="msg-text" rows="4" maxlength="1000"
               aria-label="Сообщение тренеру"
@@ -64,33 +66,94 @@
   </div>
 </div>
 
-<!-- Bottom sheet: профиль и приватность -->
+<!-- Bottom sheet: профиль, приватность и уведомления -->
 <div class="sheet" id="profile-sheet">
   <div class="sheet__backdrop" data-profile-close></div>
-  <div class="sheet__panel" role="dialog" aria-modal="true">
+  <div class="sheet__panel sheet__panel--form" role="dialog" aria-modal="true" aria-labelledby="profile-sheet-title">
     <div class="sheet__handle"></div>
-    <h2 class="sheet__title">Профиль игрока</h2>
-    <label class="field"><span class="label">О себе</span>
-      <textarea class="input" id="profile-about" rows="4" maxlength="450"
-                placeholder="Например: играю два года, хочу подтянуть подачу"></textarea>
-      <span class="hint hint--tight" id="profile-about-count">0 / 450</span></label>
-    <label class="field"><span class="label">Как показываться в списке участников</span>
-      <select class="input" id="profile-display">
-        <option value="name">Имя и фото из Telegram</option>
-        <option value="animal">Вымышленное животное</option>
-      </select></label>
-    <div class="card card--compact setting-row">
-      <div class="setting-row__text">
-        <div class="reminder-row__text">Показывать @username</div>
-        <div class="hint">По умолчанию скрыт. Включайте, только если хотите, чтобы тренер видел ваш username.</div>
+    <h2 class="sheet__title" id="profile-sheet-title" tabindex="-1">Настройки профиля</h2>
+    <div class="sheet__body">
+
+    <section class="settings-block" aria-labelledby="profile-about-title">
+      <h3 class="settings-block__title" id="profile-about-title">О себе</h3>
+      <label class="field"><span class="label">Коротко о вас</span>
+        <textarea class="input" id="profile-about" rows="4" maxlength="450"
+                  placeholder="Например: играю два года, хочу подтянуть подачу"></textarea>
+        <span class="hint hint--tight" id="profile-about-count">0 / 450</span></label>
+    </section>
+
+    <section class="settings-block" aria-labelledby="profile-privacy-title">
+      <h3 class="settings-block__title" id="profile-privacy-title">Приватность</h3>
+      <label class="field"><span class="label">Как показываться в списке участников</span>
+        <select class="input" id="profile-display">
+          <option value="name">Имя и фото из Telegram</option>
+          <option value="animal">Вымышленное животное</option>
+        </select></label>
+      <div class="settings-list">
+        <label class="setting-row">
+          <span class="setting-row__text">
+            <span class="setting-row__title">Показывать @username</span>
+            <span class="setting-row__hint">По умолчанию скрыт. Включайте, только если хотите, чтобы тренер видел ваш username.</span>
+          </span>
+          <span class="switch">
+            <input id="profile-username" type="checkbox" aria-label="Показывать @username">
+            <span></span>
+          </span>
+        </label>
       </div>
-      <label class="switch">
-        <input id="profile-username" type="checkbox" aria-label="Показывать @username">
-        <span></span>
-      </label>
+      <p class="hint hint--tight form-note" id="profile-preview"></p>
+    </section>
+
+    <section class="settings-block" aria-labelledby="profile-notifications-title">
+      <h3 class="settings-block__title" id="profile-notifications-title">Уведомления</h3>
+      <div class="settings-list">
+        <label class="setting-row">
+          <span class="setting-row__text">
+            <span class="setting-row__title">Все уведомления</span>
+            <span class="setting-row__hint">Общий переключатель сообщений от бота.</span>
+          </span>
+          <span class="switch">
+            <input id="profile-notify-all" type="checkbox" aria-label="Все уведомления">
+            <span></span>
+          </span>
+        </label>
+        <label class="setting-row">
+          <span class="setting-row__text">
+            <span class="setting-row__title">Новые матчи</span>
+            <span class="setting-row__hint">Лента матчей и изменения в ваших матчах.</span>
+          </span>
+          <span class="switch">
+            <input id="profile-notify-matches" type="checkbox" aria-label="Новые матчи">
+            <span></span>
+          </span>
+        </label>
+        <label class="setting-row">
+          <span class="setting-row__text">
+            <span class="setting-row__title">Тренировки</span>
+            <span class="setting-row__hint">Напоминания и изменения вашей записи.</span>
+          </span>
+          <span class="switch">
+            <input id="profile-notify-trainings" type="checkbox" aria-label="Тренировки">
+            <span></span>
+          </span>
+        </label>
+        <label class="setting-row">
+          <span class="setting-row__text">
+            <span class="setting-row__title">Сообщения</span>
+            <span class="setting-row__hint">Личные сообщения от тренера.</span>
+          </span>
+          <span class="switch">
+            <input id="profile-notify-messages" type="checkbox" aria-label="Сообщения">
+            <span></span>
+          </span>
+        </label>
+      </div>
+      <p class="hint hint--tight">Если общий переключатель выключен, бот не присылает уведомления выбранных тем.</p>
+    </section>
     </div>
-    <p class="hint hint--tight form-note" id="profile-preview"></p>
-    <button class="btn btn--primary btn--block" id="profile-save" type="button">Сохранить</button>
+    <div class="sheet__footer">
+      <button class="btn btn--primary btn--block" id="profile-save" type="button">Сохранить</button>
+    </div>
   </div>
 </div>
 
@@ -276,8 +339,8 @@ async function loadProfile() {
     );
   }
   const toggle = document.getElementById('notif-toggle');
-  toggle.checked = !!APP.me.notifications_enabled;
   toggle.disabled = false;
+  syncNotificationControls();
   paintProfile();
 }
 
@@ -285,10 +348,13 @@ document.getElementById('notif-toggle').addEventListener('change', async (ev) =>
   const target = ev.target;
   try {
     await api('/api/me/notifications', 'PUT', { enabled: target.checked });
+    if (APP.me) APP.me.notifications_enabled = target.checked;
+    syncNotificationControls();
     hapticNotify('success');
-    toast('Настройки сохранены');
+    toast(target.checked ? 'Уведомления включены' : 'Уведомления выключены');
   } catch (e) {
     target.checked = !target.checked;
+    syncNotificationControls();
     hapticNotify('error');
     toast(e.message);
   }
@@ -367,6 +433,20 @@ const profileAbout = document.getElementById('profile-about');
 const profileAboutCount = document.getElementById('profile-about-count');
 const profileDisplay = document.getElementById('profile-display');
 const profileUsername = document.getElementById('profile-username');
+const profileNotifyAll = document.getElementById('profile-notify-all');
+const profileNotifyMatches = document.getElementById('profile-notify-matches');
+const profileNotifyTrainings = document.getElementById('profile-notify-trainings');
+const profileNotifyMessages = document.getElementById('profile-notify-messages');
+
+function syncNotificationControls() {
+  if (!APP.me) return;
+  const enabled = !!APP.me.notifications_enabled;
+  document.getElementById('notif-toggle').checked = enabled;
+  profileNotifyAll.checked = enabled;
+  profileNotifyMatches.checked = APP.me.notify_matches !== false;
+  profileNotifyTrainings.checked = APP.me.notify_trainings !== false;
+  profileNotifyMessages.checked = APP.me.notify_messages !== false;
+}
 
 function updateProfileAboutCount() {
   profileAboutCount.textContent = `${profileAbout.value.length} / 450`;
@@ -453,9 +533,12 @@ function openProfile() {
   updateProfileAboutCount();
   profileDisplay.value = APP.me.display_mode || 'name';
   profileUsername.checked = !!APP.me.show_username;
+  syncNotificationControls();
   updateProfilePreview();
+  profileSheet.querySelector('.sheet__body').scrollTop = 0;
   profileSheet.classList.add('is-open');
   haptic('light');
+  setTimeout(() => document.getElementById('profile-sheet-title').focus(), 150);
 }
 
 function closeProfile() { profileSheet.classList.remove('is-open'); }
@@ -474,12 +557,17 @@ document.getElementById('profile-save').addEventListener('click', async () => {
       about: profileAbout.value.trim(),
       display_mode: profileDisplay.value,
       show_username: profileUsername.checked,
+      notifications_enabled: profileNotifyAll.checked,
+      notify_matches: profileNotifyMatches.checked,
+      notify_trainings: profileNotifyTrainings.checked,
+      notify_messages: profileNotifyMessages.checked,
     });
     APP.me = Object.assign({}, APP.me, data.profile);
     cacheClear();
+    syncNotificationControls();
     paintProfile();
     hapticNotify('success');
-    toast('Профиль сохранён');
+    toast('Настройки сохранены');
     closeProfile();
   } catch (e) {
     hapticNotify('error');

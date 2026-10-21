@@ -88,9 +88,9 @@
 <!-- Bottom sheet: создание -->
 <div class="sheet" id="create-sheet">
   <div class="sheet__backdrop" data-close></div>
-  <div class="sheet__panel" role="dialog" aria-modal="true">
+  <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="create-sheet-title">
     <div class="sheet__handle"></div>
-    <h2 class="sheet__title">Новая тренировка</h2>
+    <h2 class="sheet__title" id="create-sheet-title">Новая тренировка</h2>
     <form id="create-form">
       <div class="segmented" id="create-mode">
         <button type="button" data-create-mode="single" class="is-active" aria-pressed="true">Одна</button>
@@ -165,24 +165,78 @@
 <!-- Bottom sheet: профиль -->
 <div class="sheet" id="profile-sheet">
   <div class="sheet__backdrop" data-pclose></div>
-  <div class="sheet__panel" role="dialog" aria-modal="true">
+  <div class="sheet__panel sheet__panel--form" role="dialog" aria-modal="true" aria-labelledby="coach-profile-title">
     <div class="sheet__handle"></div>
-    <h2 class="sheet__title">Профиль тренера</h2>
-    <label class="field"><span class="label">Кратко о себе</span>
-      <textarea class="input" id="profile-bio" maxlength="450" rows="4"
-                placeholder="Например: тренер с 10-летним опытом, работаю над техникой и подачей"></textarea>
-      <span class="hint hint--tight" id="profile-bio-count">0 / 450</span></label>
-    <p class="hint hint--tight form-note">Игроки увидят это в карточке тренировки и смогут написать вам личное сообщение через бота.</p>
-    <button class="btn btn--primary btn--block" id="save-profile" style="margin-top:6px">Сохранить</button>
+    <h2 class="sheet__title" id="coach-profile-title" tabindex="-1">Профиль тренера</h2>
+    <div class="sheet__body">
+      <section class="settings-block" aria-labelledby="coach-about-title">
+        <h3 class="settings-block__title" id="coach-about-title">О себе</h3>
+        <label class="field"><span class="label">Кратко о вас</span>
+          <textarea class="input" id="profile-bio" maxlength="450" rows="4"
+                    placeholder="Например: тренер с 10-летним опытом, работаю над техникой и подачей"></textarea>
+          <span class="hint hint--tight" id="profile-bio-count">0 / 450</span></label>
+        <p class="hint hint--tight form-note">Игроки увидят это в карточке тренировки и смогут написать вам личное сообщение через бота.</p>
+      </section>
+
+      <section class="settings-block" aria-labelledby="coach-notifications-title">
+        <h3 class="settings-block__title" id="coach-notifications-title">Уведомления</h3>
+        <div class="settings-list">
+          <label class="setting-row">
+            <span class="setting-row__text">
+              <span class="setting-row__title">Все уведомления</span>
+              <span class="setting-row__hint">Общий переключатель сообщений от бота.</span>
+            </span>
+            <span class="switch">
+              <input id="coach-notify-all" type="checkbox" aria-label="Все уведомления">
+              <span></span>
+            </span>
+          </label>
+          <label class="setting-row">
+            <span class="setting-row__text">
+              <span class="setting-row__title">Новые матчи</span>
+              <span class="setting-row__hint">Лента матчей и изменения в ваших матчах.</span>
+            </span>
+            <span class="switch">
+              <input id="coach-notify-matches" type="checkbox" aria-label="Новые матчи">
+              <span></span>
+            </span>
+          </label>
+          <label class="setting-row">
+            <span class="setting-row__text">
+              <span class="setting-row__title">Тренировки</span>
+              <span class="setting-row__hint">Напоминания и изменения записи игроков.</span>
+            </span>
+            <span class="switch">
+              <input id="coach-notify-trainings" type="checkbox" aria-label="Тренировки">
+              <span></span>
+            </span>
+          </label>
+          <label class="setting-row">
+            <span class="setting-row__text">
+              <span class="setting-row__title">Сообщения</span>
+              <span class="setting-row__hint">Личные сообщения от игроков.</span>
+            </span>
+            <span class="switch">
+              <input id="coach-notify-messages" type="checkbox" aria-label="Сообщения">
+              <span></span>
+            </span>
+          </label>
+        </div>
+        <p class="hint hint--tight">Если общий переключатель выключен, бот не присылает уведомления выбранных тем.</p>
+      </section>
+    </div>
+    <div class="sheet__footer">
+      <button class="btn btn--primary btn--block" id="save-profile" type="button">Сохранить</button>
+    </div>
   </div>
 </div>
 
 <!-- Bottom sheet: передача занятия -->
 <div class="sheet" id="transfer-sheet">
   <div class="sheet__backdrop" data-xclose></div>
-  <div class="sheet__panel" role="dialog" aria-modal="true">
+  <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="transfer-sheet-title">
     <div class="sheet__handle"></div>
-    <h2 class="sheet__title">Передать занятие</h2>
+    <h2 class="sheet__title" id="transfer-sheet-title">Передать занятие</h2>
     <div class="hint" style="margin:-6px 0 12px">Выберите тренера, которому передать это занятие.</div>
     <div id="transfer-list"></div>
   </div>
@@ -557,18 +611,20 @@ function reminderEditor(t) {
   const h = Math.floor(t.reminder_offset_min / 60);
   const m = t.reminder_offset_min % 60;
   return `
-  <div class="inline-row" style="margin-top:12px">
-    <span style="font-size:15px">Напоминание</span>
-    <label class="switch"><input type="checkbox" data-remind="${t.id}" aria-label="Напоминание о тренировке" ${t.reminder_enabled ? 'checked' : ''}><span></span></label>
-  </div>
-  <div class="inline-row reminder-offset" style="margin-top:10px">
-    <span class="hint">За сколько до старта</span>
-    <div class="hm">
-      <input class="input" style="width:62px;min-height:42px;padding:8px;text-align:center" type="number" min="0" max="48" data-oh="${t.id}" value="${h}"> ч
-      <input class="input" style="width:62px;min-height:42px;padding:8px;text-align:center" type="number" min="0" max="59" data-om="${t.id}" value="${m}"> мин
+  <div class="reminder-box">
+    <div class="inline-row">
+      <span class="reminder-box__title">Напоминание</span>
+      <label class="switch"><input type="checkbox" data-remind="${t.id}" aria-label="Напоминание о тренировке" ${t.reminder_enabled ? 'checked' : ''}><span></span></label>
     </div>
-  </div>
-  <div class="hint" style="margin-top:6px">Итого: <b data-ototal="${t.id}">${esc(fmtOffset(t.reminder_offset_min))}</b> до старта</div>`;
+    <div class="inline-row reminder-offset">
+      <span class="hint">За сколько до старта</span>
+      <div class="hm">
+        <input class="input reminder-input" type="number" min="0" max="48" data-oh="${t.id}" value="${h}"> ч
+        <input class="input reminder-input" type="number" min="0" max="59" data-om="${t.id}" value="${m}"> мин
+      </div>
+    </div>
+    <div class="hint reminder-total">Итого: <b data-ototal="${t.id}">${esc(fmtOffset(t.reminder_offset_min))}</b> до старта</div>
+  </div>`;
 }
 
 function iconBtn(attr, label, path, color) {
@@ -917,6 +973,18 @@ let PROFILE = { bio: '' };
 let PROFILE_LOADED = false;
 const profileBio = document.getElementById('profile-bio');
 const profileBioCount = document.getElementById('profile-bio-count');
+const coachNotifyAll = document.getElementById('coach-notify-all');
+const coachNotifyMatches = document.getElementById('coach-notify-matches');
+const coachNotifyTrainings = document.getElementById('coach-notify-trainings');
+const coachNotifyMessages = document.getElementById('coach-notify-messages');
+
+function syncCoachNotifications() {
+  if (!APP.me) return;
+  coachNotifyAll.checked = !!APP.me.notifications_enabled;
+  coachNotifyMatches.checked = APP.me.notify_matches !== false;
+  coachNotifyTrainings.checked = APP.me.notify_trainings !== false;
+  coachNotifyMessages.checked = APP.me.notify_messages !== false;
+}
 
 function updateProfileBioCount() {
   profileBioCount.textContent = `${profileBio.value.length} / 450`;
@@ -947,19 +1015,38 @@ document.getElementById('profile-edit').addEventListener('click', async () => {
   await ensureProfile();
   profileBio.value = PROFILE.bio || '';
   updateProfileBioCount();
+  syncCoachNotifications();
+  profileSheet.querySelector('.sheet__body').scrollTop = 0;
   profileSheet.classList.add('is-open');
   haptic('light');
+  setTimeout(() => document.getElementById('coach-profile-title').focus(), 150);
 });
 document.querySelector('[data-pclose]').addEventListener('click', () => profileSheet.classList.remove('is-open'));
 document.getElementById('save-profile').addEventListener('click', async () => {
+  const btn = document.getElementById('save-profile');
+  btn.disabled = true;
   try {
-    const data = await api('/api/coach/profile', 'PUT', { bio: document.getElementById('profile-bio').value.trim() });
+    const data = await api('/api/coach/profile', 'PUT', {
+      bio: document.getElementById('profile-bio').value.trim(),
+    });
+    const notifications = await api('/api/me/notifications', 'PUT', {
+      enabled: coachNotifyAll.checked,
+      notify_matches: coachNotifyMatches.checked,
+      notify_trainings: coachNotifyTrainings.checked,
+      notify_messages: coachNotifyMessages.checked,
+    });
     PROFILE = data.profile;
+    if (APP.me) APP.me = Object.assign({}, APP.me, notifications);
     renderProfileCard(PROFILE);
     hapticNotify('success');
-    toast('Профиль сохранён');
+    toast('Настройки сохранены');
     profileSheet.classList.remove('is-open');
-  } catch (e) { hapticNotify('error'); toast(e.message); }
+  } catch (e) {
+    hapticNotify('error');
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 // ===== CRM =====

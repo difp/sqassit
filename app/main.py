@@ -461,7 +461,10 @@ class NotesIn(BaseModel):
 
 
 class NotificationsIn(BaseModel):
-    enabled: bool
+    enabled: bool | None = None
+    notify_matches: bool | None = None
+    notify_trainings: bool | None = None
+    notify_messages: bool | None = None
 
 
 class TrainerProfileIn(BaseModel):
@@ -472,6 +475,10 @@ class PlayerProfileIn(BaseModel):
     about: str = Field(default="", max_length=450)
     display_mode: Literal["name", "animal"] = "name"
     show_username: bool = False
+    notifications_enabled: bool | None = None
+    notify_matches: bool | None = None
+    notify_trainings: bool | None = None
+    notify_messages: bool | None = None
 
 
 class CoachIn(BaseModel):
@@ -501,6 +508,11 @@ class MatchIn(BaseModel):
     duration_min: int = Field(default=60, ge=15, le=600)
     max_players: int = Field(default=4, ge=2, le=20)
     level: str = Field(default="", max_length=60)
+
+
+async def _notifications_allowed(telegram_id: int, category: str) -> bool:
+    """Учитывает общий тумблер и категорию уведомлений."""
+    return await db.notification_enabled(telegram_id, category)
 
 
 _TRAINING_BATCH_MAX_DAYS = 92
@@ -675,6 +687,9 @@ async def api_me(user: Annotated[dict, Depends(current_user)]):
             "is_owner": bool(user.get("is_owner")),
             "is_manager": bool(user.get("is_manager")),
             "notifications_enabled": bool(user["notifications_enabled"]),
+            "notify_matches": bool(user["notify_matches"]),
+            "notify_trainings": bool(user["notify_trainings"]),
+            "notify_messages": bool(user["notify_messages"]),
             "avatar_url": _avatar_url(user["telegram_id"], real=True),
             "about": user["about"] or "",
             "display_mode": user["display_mode"] or "name",
@@ -727,6 +742,10 @@ async def api_set_player_profile(
             about=sanitize_bio(payload.about),
             display_mode=payload.display_mode,
             show_username=payload.show_username,
+            notifications_enabled=payload.notifications_enabled,
+            notify_matches=payload.notify_matches,
+            notify_trainings=payload.notify_trainings,
+            notify_messages=payload.notify_messages,
         )
         updated = await db.get_user(user["telegram_id"])
         if updated is None:
@@ -737,6 +756,10 @@ async def api_set_player_profile(
                 "about": updated["about"] or "",
                 "display_mode": updated["display_mode"] or "name",
                 "show_username": bool(updated["show_username"]),
+                "notifications_enabled": bool(updated["notifications_enabled"]),
+                "notify_matches": bool(updated["notify_matches"]),
+                "notify_trainings": bool(updated["notify_trainings"]),
+                "notify_messages": bool(updated["notify_messages"]),
                 "animal": animal_identity(user["telegram_id"]),
             },
         }
@@ -752,8 +775,23 @@ async def api_set_notifications(
     payload: NotificationsIn,
     user: Annotated[dict, Depends(current_user)],
 ):
-    await db.set_notifications_enabled(user["telegram_id"], payload.enabled)
-    return {"ok": True, "notifications_enabled": payload.enabled}
+    await db.set_notification_settings(
+        user["telegram_id"],
+        enabled=payload.enabled,
+        matches=payload.notify_matches,
+        trainings=payload.notify_trainings,
+        messages=payload.notify_messages,
+    )
+    updated = await db.get_user(user["telegram_id"])
+    if updated is None:
+        raise HTTPException(status_code=500, detail="Профиль не найден.")
+    return {
+        "ok": True,
+        "notifications_enabled": bool(updated["notifications_enabled"]),
+        "notify_matches": bool(updated["notify_matches"]),
+        "notify_trainings": bool(updated["notify_trainings"]),
+        "notify_messages": bool(updated["notify_messages"]),
+    }
 
 
 @app.get("/api/me/export")
@@ -767,6 +805,9 @@ async def api_export_me(user: Annotated[dict, Depends(current_user)]):
             "username": user["username"],
             "first_name": user["first_name"],
             "notifications_enabled": bool(user["notifications_enabled"]),
+            "notify_matches": bool(user["notify_matches"]),
+            "notify_trainings": bool(user["notify_trainings"]),
+            "notify_messages": bool(user["notify_messages"]),
             "notes": user["notes"],
             "about": user["about"] or "",
             "display_mode": user["display_mode"] or "name",
@@ -1524,6 +1565,8 @@ async def api_message_coach(payload: MessageIn, user: Annotated[dict, Depends(cu
 
 async def _deliver_to_coach(coach_id: int, sender_id: int, sender_name: str, text: str) -> None:
     """Фоновая доставка сообщения тренеру с кнопкой быстрого ответа."""
+    if not await _notifications_allowed(coach_id, "messages"):
+        return
     try:
         sender = html.escape(sender_name)
         keyboard = InlineKeyboardMarkup(
@@ -1636,7 +1679,9 @@ async def _notify_training_event(
     training: aiosqlite.Row, user_id: int | None = None, status: str = ""
 ) -> None:
     participants = await db.get_participants(training["id"])
-    if training["created_by"]:
+    if training["created_by"] and await _notifications_allowed(
+        training["created_by"], "trainings"
+    ):
         await _send_event_notification(
             "training",
             training["id"],
@@ -1644,7 +1689,7 @@ async def _notify_training_event(
             0,
             _training_participants_text(training, participants),
         )
-    if user_id is not None:
+    if user_id is not None and await _notifications_allowed(user_id, "trainings"):
         if not status:
             found = next(
                 (p["status"] for p in participants if p["telegram_id"] == user_id),
@@ -1679,7 +1724,9 @@ async def _notify_training_deleted(training: aiosqlite.Row) -> None:
     if fresh is not None:
         training = fresh
     participants = await db.get_participants(training["id"])
-    if training["created_by"]:
+    if training["created_by"] and await _notifications_allowed(
+        training["created_by"], "trainings"
+    ):
         await _send_event_notification(
             "training",
             training["id"],
@@ -1688,6 +1735,8 @@ async def _notify_training_deleted(training: aiosqlite.Row) -> None:
             _training_participants_text(training, participants),
         )
     for row in participants:
+        if not await _notifications_allowed(row["telegram_id"], "trainings"):
+            continue
         await _send_event_notification(
             "training",
             training["id"],
@@ -1734,7 +1783,9 @@ async def _notify_match_event(
     match: aiosqlite.Row, user_id: int | None = None, status: str = "joined"
 ) -> None:
     players = await db.get_match_players(match["id"])
-    if match["created_by"]:
+    if match["created_by"] and await _notifications_allowed(
+        match["created_by"], "matches"
+    ):
         await _send_event_notification(
             "match",
             match["id"],
@@ -1742,7 +1793,11 @@ async def _notify_match_event(
             0,
             _match_participants_text(match, players),
         )
-    if user_id is not None and user_id != match["created_by"]:
+    if (
+        user_id is not None
+        and user_id != match["created_by"]
+        and await _notifications_allowed(user_id, "matches")
+    ):
         await _send_event_notification(
             "match",
             match["id"],
@@ -1786,7 +1841,9 @@ async def _notify_match_feed(exclude_user_id: int | None = None) -> None:
 
 async def _notify_match_deleted(match: aiosqlite.Row) -> None:
     players = await db.get_match_players(match["id"])
-    if match["created_by"]:
+    if match["created_by"] and await _notifications_allowed(
+        match["created_by"], "matches"
+    ):
         await _send_event_notification(
             "match",
             match["id"],
@@ -1795,7 +1852,9 @@ async def _notify_match_deleted(match: aiosqlite.Row) -> None:
             _match_participants_text(match, players),
         )
     for row in players:
-        if row["telegram_id"] != match["created_by"]:
+        if row["telegram_id"] != match["created_by"] and await _notifications_allowed(
+            row["telegram_id"], "matches"
+        ):
             await _send_event_notification(
                 "match",
                 match["id"],
@@ -1806,6 +1865,8 @@ async def _notify_match_deleted(match: aiosqlite.Row) -> None:
 
 
 async def _notify_training_transferred(new_coach_id: int, training: aiosqlite.Row) -> None:
+    if not await _notifications_allowed(new_coach_id, "trainings"):
+        return
     await _send_user_message(
         new_coach_id,
         "Вам передали занятие.\n\n"
@@ -2020,6 +2081,8 @@ async def _notify_managers_about_application(applicant_id: int, name: str) -> No
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"apply:no:{applicant_id}"),
         ]])
         for rid in recipients:
+            if not await _notifications_allowed(rid, "messages"):
+                continue
             try:
                 await app.state.bot.send_message(
                     rid,

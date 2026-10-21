@@ -27,6 +27,15 @@ def clear_pending_reply():
     botmod._pending_reply.clear()
 
 
+@pytest.fixture(autouse=True)
+def notifications_on(monkeypatch):
+    """Юнит-тесты бота не поднимают БД: по умолчанию уведомления разрешены."""
+    async def enabled(telegram_id, category):
+        return True
+
+    monkeypatch.setattr(db, "notification_enabled", enabled)
+
+
 def _message(user_id: int, text: str = "", first_name: str = "Игрок", username: str | None = None):
     answers: list[tuple[str, object]] = []
     sent: list[tuple[int, str, object]] = []
@@ -80,7 +89,7 @@ def test_web_app_url_keeps_existing_query(monkeypatch):
         "settings",
         replace(settings, webhook_base_url="https://example.test/app?x=1"),
     )
-    assert botmod._web_app_url() == "https://example.test/app?x=1&v=18"
+    assert botmod._web_app_url() == "https://example.test/app?x=1&v=19"
 
 
 def test_web_app_url_falls_back_to_telegram(monkeypatch):
@@ -127,7 +136,7 @@ def test_cmd_start_escapes_name_and_hides_id(monkeypatch):
     assert "&lt;Иван&gt;" in text
     assert "<Иван>" not in text
     assert "1001" not in text
-    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=18")
+    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=19")
     assert calls["user"]["telegram_id"] == 1001
 
 
@@ -314,7 +323,7 @@ def test_fallback_opens_web_app(monkeypatch):
     asyncio.run(botmod.fallback(message))
     text, markup = answers[0]
     assert "Открой приложение" in text
-    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=18")
+    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=19")
 
 
 def test_cache_avatar_uses_largest_photo(monkeypatch):
@@ -616,7 +625,7 @@ def test_bot_main_keyboard_slot_label_and_names(monkeypatch):
         replace(settings, webhook_base_url="https://example.test"),
     )
     keyboard = botmod._main_keyboard()
-    assert keyboard.inline_keyboard[0][0].web_app.url.endswith("?v=18")
+    assert keyboard.inline_keyboard[0][0].web_app.url.endswith("?v=19")
     assert keyboard.inline_keyboard[1][0].callback_data == "slots:list"
     assert keyboard.inline_keyboard[1][1].callback_data == "attendees:list"
     label = botmod._slot_label(_training())
@@ -932,3 +941,19 @@ def test_slot_callbacks_without_user_or_message(monkeypatch):
     callback, _, _, _ = _callback_with_message(555, "attendees:show:1")
     callback.message = None
     asyncio.run(botmod.cb_attendees_show(callback))
+
+
+
+def test_coach_reply_respects_message_notifications(monkeypatch):
+    async def disabled(telegram_id, category):
+        assert category == "messages"
+        return False
+
+    monkeypatch.setattr(db, "notification_enabled", disabled)
+    botmod._pending_reply[123] = (555, time.time() + 600)
+    message, answers, sent = _message(123, text="ответ")
+
+    asyncio.run(botmod.coach_reply_text(message))
+
+    assert sent == []
+    assert answers == [("У игрока отключены уведомления о сообщениях.", None)]

@@ -26,7 +26,13 @@ def test_migration_backfills_onboarding_for_existing_users(tmp_path):
             "INSERT INTO users (telegram_id, username, first_name, created_at) "
             "VALUES (42, 'old', 'Old', 1)"
         )
-        con.execute("ALTER TABLE users DROP COLUMN onboarding_seen")
+        for column in (
+            "onboarding_seen",
+            "notify_matches",
+            "notify_trainings",
+            "notify_messages",
+        ):
+            con.execute(f"ALTER TABLE users DROP COLUMN {column}")
         con.commit()
     finally:
         con.close()
@@ -37,6 +43,9 @@ def test_migration_backfills_onboarding_for_existing_users(tmp_path):
             row = await db.get_user(42)
             assert row is not None
             assert row["onboarding_seen"] == 1
+            assert row["notify_matches"] == 1
+            assert row["notify_trainings"] == 1
+            assert row["notify_messages"] == 1
         finally:
             await db.close()
 
@@ -101,6 +110,37 @@ def test_database_helpers_and_queue_branches(tmp_path):
             assert inbox and inbox[0]["text"] == "Привет"
             assert await db.notification_targets(training_id) == []
             assert await db.list_match_feed_recipients() == []
+            with pytest.raises(ValueError, match="категория"):
+                await db.notification_enabled(1, "unknown")
+
+            # Общий тумблер выключен — категории тоже недоступны.
+            assert await db.notification_enabled(1, "matches") is False
+            await db.set_notifications_enabled(1, True)
+            assert await db.notification_enabled(1, "matches") is True
+
+            # Тематические тумблеры работают независимо и фильтруют рассылки.
+            await db.set_player_profile(
+                1,
+                about="",
+                display_mode="name",
+                show_username=False,
+                notify_matches=False,
+                notify_trainings=False,
+            )
+            assert await db.notification_enabled(1, "matches") is False
+            assert await db.notification_enabled(1, "trainings") is False
+            assert await db.notification_targets(training_id) == []
+            assert await db.list_match_feed_recipients() == []
+            await db.set_player_profile(
+                1,
+                about="",
+                display_mode="name",
+                show_username=False,
+                notify_matches=True,
+                notify_trainings=True,
+            )
+            assert [row["telegram_id"] for row in await db.notification_targets(training_id)] == [1]
+            assert [row["telegram_id"] for row in await db.list_match_feed_recipients()] == [1]
 
             await db.save_event_notification("training", 1, 123, 0, 55, "text")
             saved = await db.get_event_notification("training", 1, 123, 0)

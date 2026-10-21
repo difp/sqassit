@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS users (
     avatar_file_id        TEXT,      -- file_id аватарки; сам файл НЕ сохраняем на диск
     is_coach              INTEGER NOT NULL DEFAULT 0,
     notifications_enabled INTEGER NOT NULL DEFAULT 1,
+    notify_matches        INTEGER NOT NULL DEFAULT 1, -- лента матчей и события матчей
+    notify_trainings      INTEGER NOT NULL DEFAULT 1, -- напоминания и изменения записи
+    notify_messages       INTEGER NOT NULL DEFAULT 1, -- личные сообщения от пользователей
     notes                 TEXT NOT NULL DEFAULT '',
     bio                   TEXT NOT NULL DEFAULT '',   -- кратко о тренере
     links                 TEXT NOT NULL DEFAULT '[]', -- ссылки тренера (JSON-массив)
@@ -184,6 +187,15 @@ async def _migrate() -> None:
         ("users", "onboarding_seen"): (
             "ALTER TABLE users ADD COLUMN onboarding_seen INTEGER NOT NULL DEFAULT 0"
         ),
+        ("users", "notify_matches"): (
+            "ALTER TABLE users ADD COLUMN notify_matches INTEGER NOT NULL DEFAULT 1"
+        ),
+        ("users", "notify_trainings"): (
+            "ALTER TABLE users ADD COLUMN notify_trainings INTEGER NOT NULL DEFAULT 1"
+        ),
+        ("users", "notify_messages"): (
+            "ALTER TABLE users ADD COLUMN notify_messages INTEGER NOT NULL DEFAULT 1"
+        ),
         ("coaches", "is_manager"): "ALTER TABLE coaches ADD COLUMN is_manager INTEGER NOT NULL DEFAULT 0",
     }
     present = {"trainings": trainings_cols, "users": users_cols, "coaches": coaches_cols}
@@ -319,12 +331,37 @@ async def set_player_profile(
     about: str,
     display_mode: str,
     show_username: bool,
+    notifications_enabled: bool | None = None,
+    notify_matches: bool | None = None,
+    notify_trainings: bool | None = None,
+    notify_messages: bool | None = None,
 ) -> None:
-    """Сохраняет «о себе» и настройки приватности игрока."""
+    """Сохраняет профиль, приватность и настройки уведомлений игрока."""
+    def flag(value: bool | None) -> int | None:
+        return None if value is None else int(value)
+
     await _execute(
-        "UPDATE users SET about = ?, display_mode = ?, show_username = ? "
-        "WHERE telegram_id = ?",
-        (about, display_mode, int(show_username), telegram_id),
+        """
+        UPDATE users
+           SET about = ?,
+               display_mode = ?,
+               show_username = ?,
+               notifications_enabled = COALESCE(?, notifications_enabled),
+               notify_matches = COALESCE(?, notify_matches),
+               notify_trainings = COALESCE(?, notify_trainings),
+               notify_messages = COALESCE(?, notify_messages)
+         WHERE telegram_id = ?
+        """,
+        (
+            about,
+            display_mode,
+            int(show_username),
+            flag(notifications_enabled),
+            flag(notify_matches),
+            flag(notify_trainings),
+            flag(notify_messages),
+            telegram_id,
+        ),
     )
 
 
@@ -469,10 +506,70 @@ async def list_managers() -> list[aiosqlite.Row]:
 
 
 async def set_notifications_enabled(telegram_id: int, enabled: bool) -> None:
-    """Персональный тумблер пуш-уведомлений игрока."""
+    """Общий тумблер уведомлений игрока."""
     await _execute(
         "UPDATE users SET notifications_enabled = ? WHERE telegram_id = ?",
         (int(enabled), telegram_id),
+    )
+
+
+async def set_notification_settings(
+    telegram_id: int,
+    *,
+    enabled: bool | None = None,
+    matches: bool | None = None,
+    trainings: bool | None = None,
+    messages: bool | None = None,
+) -> None:
+    """Обновляет только выбранные переключатели уведомлений."""
+    def flag(value: bool | None) -> int | None:
+        return None if value is None else int(value)
+
+    await _execute(
+        """
+        UPDATE users
+           SET notifications_enabled = COALESCE(?, notifications_enabled),
+               notify_matches = COALESCE(?, notify_matches),
+               notify_trainings = COALESCE(?, notify_trainings),
+               notify_messages = COALESCE(?, notify_messages)
+         WHERE telegram_id = ?
+        """,
+        (
+            flag(enabled),
+            flag(matches),
+            flag(trainings),
+            flag(messages),
+            telegram_id,
+        ),
+    )
+
+
+async def notification_enabled(telegram_id: int, category: str) -> bool:
+    """Проверяет общий и тематический переключатели уведомлений."""
+    columns = {
+        "matches": "notify_matches",
+        "trainings": "notify_trainings",
+        "messages": "notify_messages",
+    }
+    if category not in columns:
+        raise ValueError(f"Неизвестная категория уведомлений: {category}")
+    row = await _fetchone(
+        """
+        SELECT notifications_enabled,
+               CASE ?
+                   WHEN 'matches' THEN notify_matches
+                   WHEN 'trainings' THEN notify_trainings
+                   WHEN 'messages' THEN notify_messages
+               END AS category_enabled
+          FROM users
+         WHERE telegram_id = ?
+        """,
+        (category, telegram_id),
+    )
+    return bool(
+        row is not None
+        and row["notifications_enabled"]
+        and row["category_enabled"]
     )
 
 
@@ -1026,6 +1123,7 @@ async def notification_targets(training_id: int) -> list[aiosqlite.Row]:
           JOIN users u ON u.telegram_id = b.user_id
          WHERE b.training_id = ? AND b.status = 'booked'
            AND u.notifications_enabled = 1
+           AND u.notify_trainings = 1
         """,
         (training_id,),
     )
@@ -1233,5 +1331,8 @@ async def save_event_notification(
 async def list_match_feed_recipients() -> list[aiosqlite.Row]:
     """Кому отправлять обновляемую ленту опубликованных матчей."""
     return await _fetchall(
-        "SELECT telegram_id FROM users WHERE notifications_enabled = 1"
+        """
+        SELECT telegram_id FROM users
+         WHERE notifications_enabled = 1 AND notify_matches = 1
+        """
     )

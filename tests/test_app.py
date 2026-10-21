@@ -1197,10 +1197,48 @@ def test_player_profile_missing_and_errors(monkeypatch):
 
 def test_update_notifications_success(client):
     response = client.put(
-        "/api/me/notifications", headers=PLAYER, json={"enabled": False}
+        "/api/me/notifications",
+        headers=PLAYER,
+        json={
+            "enabled": False,
+            "notify_matches": False,
+            "notify_trainings": False,
+            "notify_messages": False,
+        },
     )
     assert response.status_code == 200
-    assert response.json()["notifications_enabled"] is False
+    body = response.json()
+    assert body["notifications_enabled"] is False
+    assert body["notify_matches"] is False
+    assert body["notify_trainings"] is False
+    assert body["notify_messages"] is False
+
+    # Частичное обновление не сбрасывает остальные флаги.
+    partial = client.put(
+        "/api/me/notifications",
+        headers=PLAYER,
+        json={"notify_messages": True},
+    ).json()
+    assert partial["notifications_enabled"] is False
+    assert partial["notify_messages"] is True
+    assert partial["notify_matches"] is False
+
+
+def test_update_notifications_missing_profile(monkeypatch):
+    async def no_set(*args, **kwargs):
+        return None
+
+    async def no_user(telegram_id):
+        return None
+
+    monkeypatch.setattr(mainmod.db, "set_notification_settings", no_set)
+    monkeypatch.setattr(mainmod.db, "get_user", no_user)
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            mainmod.api_set_notifications(
+                mainmod.NotificationsIn(enabled=False), {"telegram_id": 555}
+            )
+        )
 
 
 def test_delete_account_skips_inactive_and_deleted_bookings(client, monkeypatch):
@@ -2150,7 +2188,11 @@ def test_training_notification_texts_and_targets(monkeypatch):
     async def fake_send(kind, entity_id, chat_id, user_id, text):
         calls.append((kind, entity_id, chat_id, user_id, text))
 
+    async def notifications_on(telegram_id, category):
+        return True
+
     monkeypatch.setattr(mainmod.db, "get_participants", fake_participants)
+    monkeypatch.setattr(mainmod.db, "notification_enabled", notifications_on)
     monkeypatch.setattr(mainmod, "_send_event_notification", fake_send)
     asyncio.run(mainmod._notify_training_event(training, 555))
     assert any(call[2] == 123 and call[3] == 0 for call in calls)
@@ -2200,7 +2242,11 @@ def test_match_notification_texts_and_targets(monkeypatch):
     async def fake_send(kind, entity_id, chat_id, user_id, text):
         calls.append((kind, entity_id, chat_id, user_id, text))
 
+    async def notifications_on(telegram_id, category):
+        return True
+
     monkeypatch.setattr(mainmod.db, "get_match_players", fake_players)
+    monkeypatch.setattr(mainmod.db, "notification_enabled", notifications_on)
     monkeypatch.setattr(mainmod, "_send_event_notification", fake_send)
     asyncio.run(mainmod._notify_match_event(match, 555, "joined"))
     assert any(call[3] == 0 for call in calls)
@@ -2272,3 +2318,148 @@ def test_match_creation_rate_limit(client):
         headers=PLAYER,
         json={**_future(31, "10:00"), "title": "Лишний"},
     ).status_code == 429
+
+
+def test_notification_preferences_api_roundtrip(client):
+    me = client.get("/api/me", headers=PLAYER).json()["user"]
+    assert me["notifications_enabled"] is True
+    assert me["notify_matches"] is True
+    assert me["notify_trainings"] is True
+    assert me["notify_messages"] is True
+
+    saved = client.put(
+        "/api/me/profile",
+        headers=PLAYER,
+        json={
+            "about": "Люблю подачу",
+            "display_mode": "name",
+            "show_username": False,
+            "notifications_enabled": False,
+            "notify_matches": False,
+            "notify_trainings": False,
+            "notify_messages": False,
+        },
+    )
+    assert saved.status_code == 200
+    profile = saved.json()["profile"]
+    assert profile["notifications_enabled"] is False
+    assert profile["notify_matches"] is False
+    assert profile["notify_trainings"] is False
+    assert profile["notify_messages"] is False
+
+    me = client.get("/api/me", headers=PLAYER).json()["user"]
+    assert me["notifications_enabled"] is False
+    assert me["notify_matches"] is False
+    assert me["notify_trainings"] is False
+    assert me["notify_messages"] is False
+
+    exported = client.get("/api/me/export", headers=PLAYER).json()["user"]
+    assert exported["notify_matches"] is False
+    assert exported["notify_trainings"] is False
+    assert exported["notify_messages"] is False
+
+    # Отдельный быстрый переключатель меняет только общий флаг.
+    updated = client.put(
+        "/api/me/notifications", headers=PLAYER, json={"enabled": True}
+    )
+    assert updated.status_code == 200
+    me = client.get("/api/me", headers=PLAYER).json()["user"]
+    assert me["notifications_enabled"] is True
+    assert me["notify_matches"] is False
+
+
+def test_message_delivery_respects_notification_preference(client, monkeypatch):
+    client.get("/api/me", headers=COACH)
+    assert client.put(
+        "/api/me/profile",
+        headers=COACH,
+        json={
+            "about": "",
+            "display_mode": "name",
+            "show_username": False,
+            "notify_messages": False,
+        },
+    ).status_code == 200
+
+    sent = []
+
+    async def fake_send(chat_id, text, reply_markup=None):
+        sent.append((chat_id, text))
+
+    monkeypatch.setattr(mainmod.app.state, "bot", SimpleNamespace(send_message=fake_send))
+    asyncio.run(mainmod._deliver_to_coach(123, 555, "Иван", "Привет"))
+    assert sent == []
+
+    assert client.put(
+        "/api/me/profile",
+        headers=COACH,
+        json={
+            "about": "",
+            "display_mode": "name",
+            "show_username": False,
+            "notify_messages": True,
+        },
+    ).status_code == 200
+    asyncio.run(mainmod._deliver_to_coach(123, 555, "Иван", "Привет"))
+    assert sent and sent[0][0] == 123
+
+
+def test_suppressed_event_notifications(monkeypatch):
+    training = {
+        "id": 1,
+        "training_type": "Тренировка",
+        "start_at": int(time.time()) + 3600,
+        "capacity": 2,
+        "created_by": 123,
+        "deleted_at": None,
+    }
+    match = {
+        "id": 2,
+        "title": "Матч",
+        "start_at": int(time.time()) + 3600,
+        "max_players": 4,
+        "location": "Парк",
+        "created_by": 123,
+        "deleted_at": None,
+    }
+
+    async def off(telegram_id, category):
+        return False
+
+    async def participants(training_id):
+        return [{"telegram_id": 123}, {"telegram_id": 555}]
+
+    async def match_players(match_id):
+        return [
+            {
+                "telegram_id": 555,
+                "first_name": "Иван",
+                "display_mode": "name",
+                "avatar_file_id": None,
+                "created_at": 1,
+            }
+        ]
+
+    async def fresh(training_id):
+        return training
+
+    async def no_managers():
+        return []
+
+    calls = []
+
+    async def fake_send(*args, **kwargs):
+        calls.append(args)
+
+    monkeypatch.setattr(mainmod.db, "notification_enabled", off)
+    monkeypatch.setattr(mainmod.db, "get_participants", participants)
+    monkeypatch.setattr(mainmod.db, "get_match_players", match_players)
+    monkeypatch.setattr(mainmod.db, "get_training", fresh)
+    monkeypatch.setattr(mainmod.db, "list_managers", no_managers)
+    monkeypatch.setattr(mainmod.app.state, "bot", SimpleNamespace(send_message=fake_send))
+
+    asyncio.run(mainmod._notify_training_deleted(training))
+    asyncio.run(mainmod._notify_match_deleted(match))
+    asyncio.run(mainmod._notify_training_transferred(777, training))
+    asyncio.run(mainmod._notify_managers_about_application(555, "Иван"))
+    assert calls == []
