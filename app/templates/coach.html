@@ -32,8 +32,17 @@
   </div>
 
   <div id="list">
-    <div class="skeleton"></div>
-    <div class="skeleton"></div>
+    <div class="loading-state" role="status" aria-live="polite">
+      <span class="squash-loader" aria-hidden="true">
+        <span class="squash-loader__ball">
+          <span class="squash-loader__shine"></span>
+          <span class="squash-loader__dot"></span>
+          <span class="squash-loader__dot"></span>
+        </span>
+        <span class="squash-loader__shadow"></span>
+      </span>
+      <span>Загружаем занятия…</span>
+    </div>
   </div>
 
   <!-- CRM -->
@@ -268,7 +277,7 @@ function setView(view) {
 }
 async function loadView() {
   const list = document.getElementById('list');
-  list.innerHTML = '<div class="skeleton"></div><div class="skeleton"></div>';
+  list.innerHTML = loaderHtml('Загружаем занятия…');
   const url = VIEW === 'active' ? '/api/coach/trainings'
     : VIEW === 'history' ? '/api/coach/history'
       : VIEW === 'deleted' ? '/api/coach/deleted'

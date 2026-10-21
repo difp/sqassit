@@ -388,6 +388,50 @@
     .skeleton--row { width: 100%; height: 46px; border-radius: 10px; }
     .skeleton--row + .skeleton--row { margin-top: 8px; }
     .coach-row .skeleton { flex: 1; }
+
+    /* ===== Загрузка: сквош-мяч с двумя жёлтыми точками ===== */
+    .loading-state {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 12px; padding: 42px 16px; color: var(--hint);
+      font-size: 14px; text-align: center;
+    }
+    .squash-loader {
+      position: relative; width: 46px; height: 58px; display: block;
+      filter: drop-shadow(0 5px 8px rgba(0,0,0,.18));
+    }
+    .squash-loader__ball {
+      position: absolute; left: 2px; top: 1px; width: 42px; height: 42px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 34% 28%, #4a5058 0%, #20252c 42%, #0d1117 100%);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.14), inset -4px -6px 10px rgba(0,0,0,.45);
+      animation: squash-roll 1.15s cubic-bezier(.45,.05,.55,.95) infinite;
+    }
+    .squash-loader__dot {
+      position: absolute; top: 13px; width: 6px; height: 6px; border-radius: 50%;
+      background: #ffd60a; box-shadow: 0 0 5px rgba(255,214,10,.75);
+    }
+    .squash-loader__dot:first-child { left: 14px; }
+    .squash-loader__dot:last-child { left: 23px; }
+    .squash-loader__shine {
+      position: absolute; width: 9px; height: 5px; left: 9px; top: 8px;
+      border-radius: 50%; background: rgba(255,255,255,.22); transform: rotate(-32deg);
+    }
+    .squash-loader__shadow {
+      position: absolute; left: 6px; bottom: 2px; width: 34px; height: 8px;
+      border-radius: 50%; background: rgba(0,0,0,.22);
+      animation: squash-shadow 1.15s cubic-bezier(.45,.05,.55,.95) infinite;
+    }
+    @keyframes squash-roll {
+      0%   { transform: translateY(0) rotate(0deg); }
+      25%  { transform: translateY(-4px) rotate(90deg); }
+      50%  { transform: translateY(0) rotate(180deg); }
+      75%  { transform: translateY(-3px) rotate(270deg); }
+      100% { transform: translateY(0) rotate(360deg); }
+    }
+    @keyframes squash-shadow {
+      0%, 50%, 100% { transform: scaleX(1); opacity: .7; }
+      25%, 75% { transform: scaleX(.82); opacity: .45; }
+    }
     @keyframes sk { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
     [hidden] { display: none !important; }
 
@@ -473,6 +517,7 @@
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
       .btn:active, .header-action:active, .chip:active { transform: none; }
+      .squash-loader__ball, .squash-loader__shadow { animation: none; }
     }
   </style>
 </head>
@@ -601,6 +646,21 @@
       return String(s == null ? '' : s).replace(/[&<>"']/g, c => (
         { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
       ));
+    }
+
+    // Разметка загрузки: один и тот же мяч на всех экранах.
+    function loaderHtml(text) {
+      return `<div class="loading-state" role="status" aria-live="polite">
+        <span class="squash-loader" aria-hidden="true">
+          <span class="squash-loader__ball">
+            <span class="squash-loader__shine"></span>
+            <span class="squash-loader__dot"></span>
+            <span class="squash-loader__dot"></span>
+          </span>
+          <span class="squash-loader__shadow"></span>
+        </span>
+        <span>${esc(text || 'Загрузка…')}</span>
+      </div>`;
     }
 
     // Дата и уровень без висящего разделителя при переносе строки.

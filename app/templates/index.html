@@ -21,10 +21,16 @@
 </div>
 <div style="height:18px"></div>
 
-<div id="loading">
-  <div class="skeleton"></div>
-  <div class="skeleton"></div>
-  <div class="skeleton"></div>
+<div id="loading" class="loading-state" role="status" aria-live="polite">
+  <span class="squash-loader" aria-hidden="true">
+    <span class="squash-loader__ball">
+      <span class="squash-loader__shine"></span>
+      <span class="squash-loader__dot"></span>
+      <span class="squash-loader__dot"></span>
+    </span>
+    <span class="squash-loader__shadow"></span>
+  </span>
+  <span>Загружаем расписание…</span>
 </div>
 
 <div id="empty" class="empty" hidden>
