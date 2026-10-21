@@ -666,8 +666,8 @@ function activeRow(t) {
       <span>${wait ? 'Очередь: ' + wait : 'Очередь пуста'}</span>
     </div>
     ${reminderEditor(t)}
-    <details style="margin-top:12px" data-pid="${t.id}">
-      <summary style="font-size:13px;font-weight:600;color:var(--link);cursor:pointer">Участники</summary>
+    <details class="disclosure" data-pid="${t.id}">
+      <summary>Участники</summary>
       <div data-plist="${t.id}"><div class="hint" style="padding:10px 0">Загрузка…</div></div>
     </details>
   </div>`;
@@ -742,8 +742,8 @@ function clubRow(t) {
       <div class="t-coach__text"><div class="t-coach__name">Тренер · ${coach}</div></div>
       <span class="badge badge--muted">Только чтение</span>
     </div>
-    <details style="margin-top:12px" data-pid="${t.id}">
-      <summary style="font-size:13px;font-weight:600;color:var(--link);cursor:pointer">Участники</summary>
+    <details class="disclosure" data-pid="${t.id}">
+      <summary>Участники</summary>
       <div data-plist="${t.id}"><div class="hint" style="padding:10px 0">Загрузка…</div></div>
     </details>
   </div>`;
@@ -1067,8 +1067,8 @@ function playerRow(p) {
       </div>
     </button>
     ${p.about ? `<div class="player-about">${esc(p.about)}</div>` : ''}
-    <details style="margin-top:12px">
-      <summary style="font-size:13px;font-weight:600;color:var(--link);cursor:pointer">Заметки тренера</summary>
+    <details class="disclosure">
+      <summary>Заметки тренера</summary>
       <textarea class="input" data-notes="${p.telegram_id}" rows="2" style="margin-top:8px">${esc(p.notes)}</textarea>
       <button class="btn btn--primary btn--sm" data-save="${p.telegram_id}" style="margin-top:8px">Сохранить</button>
     </details>
