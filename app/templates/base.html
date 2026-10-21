@@ -397,11 +397,79 @@
       .reminder-offset > .hint { flex: 1 0 100%; }
       .reminder-offset .hm { margin-left: 0; }
     }
-    @media (max-width: 360px) {
+    /* Сильное увеличение/очень узкий экран: не ломаем сетку, а перестраиваем. */
+    @media (max-width: 340px) {
+      html { scroll-padding-top: 56px; }
+      .app-header { padding-left: 10px; padding-right: 10px; gap: 8px; }
+      .app-title { font-size: 17px; }
+      .header-action { width: 34px; height: 34px; }
+      .app-main { padding: 12px 10px calc(var(--tabbar-h) + 20px + env(safe-area-inset-bottom)); }
+      .card { padding: 12px; border-radius: 14px; }
+      .section-title { font-size: 12px; }
+      .profile-card { flex-wrap: wrap; align-items: flex-start; }
+      .profile-card__text { flex: 1 1 calc(100% - 48px); }
+      .profile-card > .switch { margin-left: 48px; }
+      .profile-actions { flex-direction: column; }
+      .segmented { display: grid; grid-template-columns: 1fr 1fr; }
+      .segmented button { font-size: 12px; }
+      .row2 { grid-template-columns: 1fr; gap: 0; }
+      .btn { padding-inline: 12px; }
+      .icon-btn { width: 34px; height: 34px; }
+      .t-top { flex-wrap: wrap; }
+      .t-info { flex: 1 0 100%; margin-top: 8px; }
+      .t-occ { margin-left: auto; }
+      .t-toolbar { flex-wrap: wrap; }
+      .t-toolbar .t-meta { flex: 1 0 100%; }
+      .t-toolbar__actions { margin-left: auto; }
+      .level { white-space: normal; }
+      .t-coach { flex-wrap: wrap; }
+      .t-coach__text { flex: 1 1 calc(100% - 42px); }
+      .t-coach__action { margin-left: 42px; }
+      .badge { max-width: 100%; white-space: normal; }
+      .reminder-row, .setting-row, .inline-row { flex-wrap: wrap; }
+      .reminder-row .switch, .setting-row .switch, .inline-row .switch { margin-left: auto; }
+      .hm { flex-wrap: wrap; }
+      .p-row, .coach-item { flex-wrap: wrap; }
+      .p-row > div:last-child, .coach-item__actions { margin-left: 42px; }
+      .coach-item__text { flex: 1 1 calc(100% - 42px); }
+      .coach-item__meta { white-space: normal; }
+      .tab { font-size: 11px; }
+      .toast { max-width: 96%; }
+      .sheet__panel { padding-left: 12px; padding-right: 12px; }
+    }
+    @media (min-width: 341px) and (max-width: 360px) {
       .row2 { grid-template-columns: 1fr; gap: 0; }
       .app-header { padding-left: 14px; padding-right: 14px; }
       .app-main { padding-left: 14px; padding-right: 14px; }
       .segmented button { font-size: 12px; }
+    }
+    /* 300%+ zoom / панель уже 220px: ещё плотнее, без горизонтального скролла. */
+    @media (max-width: 220px) {
+      .app-main { padding: 8px 6px calc(var(--tabbar-h) + 16px + env(safe-area-inset-bottom)); }
+      .card { padding: 10px; border-radius: 12px; }
+      .app-title { font-size: 15px; }
+      .header-action { width: 30px; height: 30px; }
+      .section-title { font-size: 11px; }
+      .segmented { padding: 2px; gap: 2px; }
+      .segmented button { min-height: 32px; font-size: 11px; }
+      .t-time { font-size: 19px; }
+      .t-title { font-size: 14px; }
+      .t-duration { font-size: 11.5px; }
+      .t-meta, .level { font-size: 12px; }
+      .icon-btn { width: 30px; height: 30px; }
+      .btn { font-size: 13px; }
+      .btn--sm { font-size: 12px; }
+      .badge { font-size: 10px; padding: 3px 5px; }
+      .coach-item__name { gap: 4px; }
+      .coach-item__name .badge { padding: 3px 5px; }
+      .profile-card__text { flex-basis: calc(100% - 42px); }
+      .profile-card > .switch { margin-left: 42px; }
+      .t-coach__text { flex-basis: calc(100% - 36px); }
+      .t-coach__action { margin-left: 36px; }
+      .p-row > div:last-child, .coach-item__actions { margin-left: 36px; }
+      .tab { font-size: 10px; }
+      .tab svg { width: 21px; height: 21px; }
+      .toast { font-size: 13px; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
