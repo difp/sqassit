@@ -85,6 +85,13 @@
       font-size: 13px; color: var(--hint); letter-spacing: .02em;
     }
 
+    .app-auth-error {
+      position: fixed; inset: 0; z-index: 110; display: grid; place-items: center;
+      padding: 24px; background: var(--bg);
+    }
+    .app-auth-error .card { width: 100%; max-width: 420px; }
+    .app-auth-error .hint { margin: 10px 0 16px; }
+
     /* ===== Верхняя панель ===== */
     .app-header {
       position: sticky; top: 0; z-index: 20; min-width: 0;
@@ -702,6 +709,13 @@
     </span>
     <div class="app-loader__caption">Загружаем…</div>
   </div>
+  <div class="app-auth-error" id="app-auth-error" hidden role="alert">
+    <div class="card">
+      <div class="profile-card__name">Не удалось открыть приложение</div>
+      <p class="hint" id="app-auth-error-text">Telegram не передал данные авторизации. Закройте мини-приложение и откройте его снова.</p>
+      <button class="btn btn--primary btn--block" id="app-auth-retry" type="button">Повторить</button>
+    </div>
+  </div>
   <div class="app">
     <header class="app-header">
       <h1 class="app-title">{% block header %}Сквош{% endblock %}</h1>
@@ -1276,6 +1290,16 @@
     // Страховка: даже при сбое страничного скрипта не оставляем пустой экран.
     setTimeout(hideAppLoader, 12000);
 
+    function showAuthError(message) {
+      const box = document.getElementById('app-auth-error');
+      const text = document.getElementById('app-auth-error-text');
+      if (!box) return;
+      if (message) text.textContent = message;
+      box.hidden = false;
+      document.getElementById('app-auth-retry').onclick = () => location.reload();
+    }
+    window.showAuthError = showAuthError;
+
     // Общий профиль. Вкладка «Тренер» видна всем: игрок может оставить заявку.
     const APP = {
       me: null,
@@ -1283,7 +1307,12 @@
         try {
           const data = await api('/api/me');
           APP.me = data.user;
-        } catch (e) { /* 401/403 — профиль недоступен */ }
+        } catch (e) {
+          APP.authError = e;
+          showAuthError(e && e.status === 401
+            ? 'Telegram не передал данные авторизации. Закройте мини-приложение и откройте его снова.'
+            : (e && e.message) || 'Не удалось загрузить профиль.');
+        }
       })(),
       async refresh() {
         await APP.ready;
