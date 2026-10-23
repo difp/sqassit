@@ -7,13 +7,17 @@ Python 3.11+ · FastAPI · aiogram 3 · SQLite
 
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.146-009688?logo=fastapi&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-aiosqlite-003B57?logo=sqlite&logoColor=white)
+![Telegram](https://img.shields.io/badge/Telegram-Mini_App-26A5E4?logo=telegram&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
+## Скриншоты
+
 <p align="center">
-  <a href="docs/screenshots/player-match.png"><img src="docs/screenshots/player-match.png" alt="Игрок · расписание и запись; Матч · свои игровые встречи" width="100%"></a>
+  <a href="docs/screenshots/player-match.png"><img src="docs/screenshots/player-match.png" alt="Игрок: расписание и запись; Матч: заявки и состав" width="100%"></a>
 </p>
 <p align="center">
-  <a href="docs/screenshots/profile-coach.png"><img src="docs/screenshots/profile-coach.png" alt="Профиль · публичная карточка игрока; Тренер · занятия и участники" width="100%"></a>
+  <a href="docs/screenshots/coach-chat.png"><img src="docs/screenshots/coach-chat.png" alt="Тренер: занятия и игроки; Чат: отдельный диалог с игроком" width="100%"></a>
 </p>
 
 ## Как устроено
@@ -62,6 +66,7 @@ Telegram Web App работает только по HTTPS. Продакшен:
 
 ## Документация
 
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — компоненты, заявки и приватность чата.
 - [`docs/DEPLOY.md`](docs/DEPLOY.md) — VPS, systemd, HTTPS, бэкапы.
 - [`docs/COACHES.md`](docs/COACHES.md) — роли, заявки, передача занятий.
 - [`docs/PRIVACY.md`](docs/PRIVACY.md) — данные, приватность, экспорт и удаление.
