@@ -664,8 +664,8 @@ function reminderEditor(t) {
     <div class="inline-row reminder-offset">
       <span class="hint">За сколько до старта</span>
       <div class="hm">
-        <input class="input reminder-input" type="number" min="0" max="48" data-oh="${t.id}" value="${h}"> ч
-        <input class="input reminder-input" type="number" min="0" max="59" data-om="${t.id}" value="${m}"> мин
+        <span class="hm__part"><input class="input reminder-input" type="number" min="0" max="48" data-oh="${t.id}" value="${h}" aria-label="Часы до старта"> <span>ч</span></span>
+        <span class="hm__part"><input class="input reminder-input" type="number" min="0" max="59" data-om="${t.id}" value="${m}" aria-label="Минуты до старта"> <span>мин</span></span>
       </div>
     </div>
     <div class="hint reminder-total">Итого: <b data-ototal="${t.id}">${esc(fmtOffset(t.reminder_offset_min))}</b> до старта</div>
@@ -826,7 +826,7 @@ function participantRow(tid, p, own) {
           : `<button class="btn btn--danger btn--sm" data-premove="${p.telegram_id}">Снять</button>`;
   return `
   <div class="p-row" data-ptid="${tid}" data-uid="${p.telegram_id}">
-    <button type="button" class="participant-open" data-profile-token="${esc(p.profile_token || '')}" aria-label="Профиль: ${esc(p.first_name)}">
+    <button type="button" class="participant-open" data-profile-token="${esc(p.profile_token || '')}">
       ${avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)}
       <div style="flex:1;min-width:0">
         <div style="font-weight:600;font-size:14px">${esc(p.first_name)}</div>
@@ -1180,7 +1180,7 @@ async function loadMessages() {
     const data = await api('/api/coach/messages');
     box.innerHTML = data.conversations.length
       ? data.conversations.map(c => `
-        <button type="button" class="card player-open" data-chat-user="${c.telegram_id}" aria-label="Чат: ${esc(c.first_name)}">
+        <button type="button" class="card player-open" data-chat-user="${c.telegram_id}">
           ${avatarHtml(c.first_name, c.avatar_url, false)}
           <div style="flex:1;min-width:0">
             <div style="font-weight:600">${esc(c.first_name)}</div>
@@ -1234,7 +1234,7 @@ function playerRow(p) {
     : 'username скрыт';
   return `
   <div class="card">
-    <button type="button" class="player-open" data-profile-token="${esc(p.profile_token || '')}" aria-label="Профиль: ${esc(p.first_name || 'Игрок')}">
+    <button type="button" class="player-open" data-profile-token="${esc(p.profile_token || '')}">
       ${avatarHtml(p.first_name, p.avatar_url, false, p.avatar_emoji)}
       <div style="flex:1;min-width:0">
         <div style="font-weight:600">${esc(p.first_name || 'Игрок')}</div>

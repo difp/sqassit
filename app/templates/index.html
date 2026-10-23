@@ -224,7 +224,7 @@ function coachHtml(c, trainingId) {
     ? `<div class="t-coach__bio">${esc(c.bio)}</div>`
     : '<div class="t-coach__bio">Нажмите, чтобы написать тренеру</div>';
   return `
-  <div class="t-coach" data-coach-msg="${trainingId}" role="button" tabindex="0" aria-label="Написать тренеру">
+  <div class="t-coach" data-coach-msg="${trainingId}" role="button" tabindex="0">
     ${avatarHtml(c.first_name, c.avatar_url, true)}
     <div class="t-coach__text">
       <div class="t-coach__name">Тренер · ${esc(c.first_name)}</div>

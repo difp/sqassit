@@ -204,7 +204,8 @@
     }
     .badge--success { background: rgba(52,199,89,.16); color: #2fa84f; }
     .badge--warn { background: rgba(255,159,10,.18); color: #c77700; }
-    .badge--muted { background: rgba(120,120,128,.16); color: var(--hint); }
+    .badge--muted { background: rgba(120,120,128,.16); color: #5a5a60; }
+    [data-theme="dark"] .badge--muted { color: var(--hint); }
 
     /* ===== Аватарки (инициал как фолбэк, картинка кладётся сверху) ===== */
     .avatar {
@@ -247,14 +248,21 @@
       display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px;
       font-size: 14px; color: var(--hint); margin-top: 3px; line-height: 1.35;
     }
-    .t-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
-    .t-toolbar .t-meta { margin-top: 0; min-width: 0; }
-    .t-toolbar__actions { display: flex; gap: 2px; flex: none; }
+    .t-toolbar {
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 6px 12px; margin-top: 8px;
+    }
+    .t-toolbar .t-meta { flex: 1 1 180px; margin-top: 0; min-width: 0; }
+    .t-toolbar__actions {
+      display: flex; flex-wrap: wrap; justify-content: flex-end;
+      gap: 2px; flex: none; margin-left: auto;
+    }
     .t-occ { text-align: right; flex: none; font-variant-numeric: tabular-nums; }
     .t-occ b { font-size: 18px; }
     .t-occ .lbl { display: block; font-size: 12.5px; color: var(--hint); }
     .t-people { display: flex; align-items: center; gap: 10px; margin-top: 12px; min-width: 0; }
     .t-names { font-size: 14px; color: var(--hint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .t-organizer { font-size: 11px; font-weight: 600; color: var(--hint); white-space: nowrap; }
     .t-actions { margin-top: 12px; display: flex; gap: 8px; }
     .t-actions-col { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
 
@@ -286,6 +294,9 @@
     .input:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
     textarea.input { min-height: 86px; padding: 12px 14px; resize: vertical; line-height: 1.4; }
     select.input { padding-right: 34px; }
+    input[type="number"] { -moz-appearance: textfield; }
+    input[type="number"]::-webkit-inner-spin-button,
+    input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
     .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; min-width: 0; }
     .row2 > * { min-width: 0; }
     .inline-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -514,7 +525,11 @@
     .reminder-box .inline-row + .inline-row,
     .reminder-box .reminder-total { margin-top: var(--space-2); }
     .reminder-box .reminder-total { margin-bottom: 0; }
+    .reminder-box .reminder-offset { align-items: flex-start; flex-wrap: wrap; row-gap: 6px; }
+    .reminder-box .reminder-offset > .hint { flex: 1 1 100%; }
+    .reminder-box .hm { margin-left: 0; white-space: nowrap; }
     .reminder-input { width: 64px; min-height: 42px; padding: 8px; text-align: center; font-variant-numeric: tabular-nums; }
+    .hm__part { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
     .setting-row .switch { margin-left: var(--space-2); }
 
     /* Раскрывающиеся списки: точка вместо «поехавших» нативных стрелок. */
@@ -620,6 +635,8 @@
       .reminder-offset { align-items: flex-start; flex-wrap: wrap; }
       .reminder-offset > .hint { flex: 1 0 100%; }
       .reminder-offset .hm { margin-left: 0; }
+      .t-toolbar .t-meta { flex: 1 1 100%; }
+      .t-toolbar__actions { margin-left: auto; }
     }
     /* Сильное увеличение/очень узкий экран: не ломаем сетку, а перестраиваем. */
     @media (max-width: 340px) {
@@ -687,6 +704,7 @@
       .badge { font-size: 10px; padding: 3px 5px; }
       .coach-item__name { gap: 4px; }
       .coach-item__name .badge { padding: 3px 5px; }
+      .reminder-input { width: 52px; }
       .profile-card__top { gap: var(--space-2); }
       .t-coach__text { flex-basis: calc(100% - 36px); }
       .t-coach__action { margin-left: 36px; }

@@ -322,7 +322,11 @@ def serialize_match(
     booked = [p for p in participants if _row_status(p) == "booked"]
     pending = [p for p in participants if _row_status(p) == "pending"]
     participant_data = [
-        {**participant_identity(p), "joined_at": p["created_at"]}
+        {
+            **participant_identity(p),
+            "joined_at": p["created_at"],
+            "is_organizer": p["telegram_id"] == row["created_by"],
+        }
         for p in booked
     ]
     return {
@@ -1905,7 +1909,8 @@ async def _notify_feedback(
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[[
             InlineKeyboardButton(
-                text="✍️ Ответить", callback_data=f"reply:{user['telegram_id']}"
+                text="Открыть приложение",
+                web_app=WebAppInfo(url=bot_module._web_app_url()),
             )
         ]]
     )

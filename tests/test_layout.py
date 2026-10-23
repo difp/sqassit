@@ -25,6 +25,9 @@ def test_base_layout_guardrails() -> None:
     # Формы и сетки не создают горизонтальный скролл.
     assert ".row2 > * { min-width: 0; }" in html
     assert "max-width: 100%" in html
+    assert "flex-wrap: wrap; gap: 6px 12px" in html
+    assert "::-webkit-inner-spin-button" in html
+    assert ".t-toolbar .t-meta { flex: 1 1 180px" in html
 
 
 def test_disclosures_use_aligned_dots() -> None:

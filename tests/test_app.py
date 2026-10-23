@@ -1996,6 +1996,7 @@ def test_match_create_list_join_leave_and_delete(client, monkeypatch):
     assert match["title"] == "Вечерний матч"
     assert match["players_count"] == 1
     assert match["participants"][0]["profile_token"]
+    assert match["participants"][0]["is_organizer"] is True
     assert "telegram_id" not in match["participants"][0]
     assert match["creator"]["first_name"] == "Иван"
 
@@ -2595,7 +2596,7 @@ def test_feedback_rate_limit(client):
     assert response.headers["Retry-After"]
 
 
-def test_feedback_notification_hides_id_and_supports_reply(monkeypatch):
+def test_feedback_notification_hides_id_and_supports_reply(client, monkeypatch):
     sent = {}
 
     async def fake_send(chat_id, text, reply_markup=None):
@@ -2619,7 +2620,7 @@ def test_feedback_notification_hides_id_and_supports_reply(monkeypatch):
     assert "Тренировки" in sent["text"]
     assert "&lt;b&gt;Не работает&lt;/b&gt;" in sent["text"]
     assert "555" not in sent["text"]
-    assert sent["reply_markup"].inline_keyboard[0][0].callback_data == "reply:555"
+    assert sent["reply_markup"].inline_keyboard[0][0].web_app.url
 
     # В режиме «животное» имя скрыто и в обратной связи.
     animal_user = {

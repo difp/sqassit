@@ -115,9 +115,12 @@ function matchParticipantsLine(list) {
       ? `<button type="button" class="avatar-btn" data-profile-token="${esc(p.profile_token)}" aria-label="Профиль: ${esc(p.first_name)}">${avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)}</button>`
       : avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)
   ).join('') + '</div>';
-  const names = list.map(p => p.profile_token
-    ? `<button type="button" class="participant-name" data-profile-token="${esc(p.profile_token)}">${esc(p.first_name)}</button>`
-    : esc(p.first_name)).join(', ');
+  const names = list.map(p => {
+    const label = p.profile_token
+      ? `<button type="button" class="participant-name" data-profile-token="${esc(p.profile_token)}">${esc(p.first_name)}</button>`
+      : esc(p.first_name);
+    return label + (p.is_organizer ? ' <span class="t-organizer">организатор</span>' : '');
+  }).join(', ');
   return stack + `<span class="t-names">${names}</span>`;
 }
 
@@ -139,9 +142,9 @@ function matchCard(m) {
     actions += `<button class="btn btn--block" data-match-coauthors="${m.id}" style="margin-top:8px">Соавторы матча</button>`;
     actions += `<button class="btn btn--block" data-match-delete="${m.id}" style="margin-top:8px">Удалить матч</button>`;
   }
-  const creator = m.creator
+  const creator = m.creator && !m.participants.some(p => p.is_organizer)
     ? `<div class="t-coach" style="cursor:default">
-        <button type="button" class="participant-open" data-profile-token="${esc(m.creator.profile_token || '')}" aria-label="Профиль: ${esc(m.creator.first_name)}">
+        <button type="button" class="participant-open" data-profile-token="${esc(m.creator.profile_token || '')}">
           ${avatarHtml(m.creator.first_name, m.creator.avatar_url, true, m.creator.avatar_emoji)}
           <div class="t-coach__text"><div class="t-coach__name">Организатор · ${esc(m.creator.first_name)}</div></div>
         </button>
