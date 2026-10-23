@@ -16,6 +16,15 @@ Python 3.11+ · FastAPI · aiogram 3 · SQLite
   <a href="docs/screenshots/profile-coach.png"><img src="docs/screenshots/profile-coach.png" alt="Профиль · публичная карточка игрока; Тренер · занятия и участники" width="100%"></a>
 </p>
 
+## Как устроено
+
+<p align="center">
+  <a href="docs/ARCHITECTURE.md"><img src="docs/diagrams/architecture.svg" alt="Архитектура SQASSIT: Telegram, FastAPI, SQLite" width="100%"></a>
+</p>
+
+- [Архитектура и потоки](docs/ARCHITECTURE.md) — компоненты, путь заявки и
+  приватность чата в трёх схемах.
+
 ## Что умеет
 
 - запись на тренировки, лист ожидания FIFO, напоминания и `.ics`;

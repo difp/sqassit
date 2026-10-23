@@ -28,7 +28,7 @@
     <button type="button" data-view="active" class="is-active">Активные</button>
     <button type="button" data-view="history">История</button>
     <button type="button" data-view="deleted">Корзина</button>
-    <button type="button" data-view="club">Клуб</button>
+    <button type="button" data-view="club">Око</button>
   </div>
 
   <div id="list">
@@ -86,7 +86,7 @@
         <input class="input" id="coach-input" placeholder="telegram_id или @username" autocomplete="off">
       </label>
       <button class="btn btn--primary btn--block" id="coach-add">Добавить тренера</button>
-      <p class="hint hint--tight">Добавить можно только после /start. Администратора снять нельзя; чужие занятия видны в режиме «Клуб».</p>
+      <p class="hint hint--tight">Добавить можно только после /start. Администратора снять нельзя; чужие занятия видны в режиме «Око».</p>
     </div>
   </section>
 </div>
@@ -634,9 +634,7 @@ async function loadView() {
     if (!cached) list.innerHTML = '';
   }
 }
-function emptyState(text) {
-  return `<div class="empty"><svg class="empty-art" viewBox="0 0 240 150" aria-hidden="true" focusable="false"><use href="#ill-empty-schedule"/></svg><div>${esc(text)}</div></div>`;
-}
+function emptyState(text) { return `<div class="empty"><div>${esc(text)}</div></div>`; }
 function renderList() {
   const list = document.getElementById('list');
   if (!TRAININGS.length) {
@@ -769,7 +767,7 @@ function deletedRow(t) {
   </div>`;
 }
 
-// ---------- Клуб (чужое, только чтение) ----------
+// ---------- Око (чужое, только чтение) ----------
 function clubRow(t) {
   const coach = t.coach ? esc(t.coach.first_name) : 'Тренер';
   const avatar = t.coach ? avatarHtml(t.coach.first_name, t.coach.avatar_url, true) : '';
@@ -1191,7 +1189,7 @@ async function loadMessages() {
             <div class="hint" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.last_text)}</div>
           </div>
         </button>`).join('')
-      : '<div class="empty empty--inline"><svg class="empty-art" viewBox="0 0 160 110" aria-hidden="true" focusable="false"><use href="#ill-chat"/></svg><div>Личных чатов пока нет. Напишите игроку из карточки.</div></div>';
+      : '<div class="empty empty--inline"><div>Личных чатов пока нет. Напишите игроку из карточки.</div></div>';
   } catch (e) { box.innerHTML = `<div class="hint">${esc(e.message)}</div>`; }
 }
 async function openCoachChat(userId, name) {
@@ -1208,7 +1206,7 @@ async function loadCoachChat() {
     const data = await api(`/api/coach/messages/${CHAT_USER}`);
     coachChatLog.innerHTML = data.messages.length
       ? data.messages.map(m => `<div class="chat-bubble ${m.from_me ? 'chat-bubble--me' : ''}">${esc(m.text)}</div>`).join('')
-      : '<div class="chat-empty"><svg class="chat-empty__art" viewBox="0 0 160 110" aria-hidden="true" focusable="false"><use href="#ill-chat"/></svg><span>Сообщений пока нет. Напишите первым.</span></div>';
+      : '<div class="chat-empty">Сообщений пока нет. Напишите первым.</div>';
     coachChatLog.scrollTop = coachChatLog.scrollHeight;
   } catch (e) { coachChatLog.innerHTML = `<div class="chat-empty">${esc(e.message)}</div>`; }
 }

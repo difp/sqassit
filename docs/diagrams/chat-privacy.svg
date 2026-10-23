@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 700" role="img" aria-labelledby="title desc">
+  <title id="title">Приватность чата</title>
+  <desc id="desc">У тренера отдельный чат с каждым игроком; другие игроки и другие тренеры не видят эти диалоги.</desc>
+  <defs>
+    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#dce7f2"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 10 5 0 10Z" fill="#64748b"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 10 5 0 10Z" fill="#0f6fc5"/>
+    </marker>
+  </defs>
+  <rect width="1100" height="700" fill="#ffffff"/>
+  <rect width="1100" height="178" fill="url(#dots)"/>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Arial,sans-serif">
+    <text x="56" y="58" fill="#0f6fc5" font-size="12" font-weight="700" letter-spacing="2.4">SQASSIT · CHAT PRIVACY</text>
+    <text x="56" y="98" fill="#0b1220" font-size="32" font-weight="700" letter-spacing="-0.7">Один игрок — один чат</text>
+    <text x="56" y="126" fill="#5b6b7f" font-size="15">Тренер видит отдельные диалоги с каждым игроком. Общего инбокса нет.</text>
+
+    <g transform="translate(812 46)">
+      <rect width="232" height="34" rx="17" fill="#eef7ff" stroke="#c9e2fa"/>
+      <text x="116" y="22" fill="#0b5fa8" font-size="12" font-weight="700" text-anchor="middle">ТОЛЬКО УЧАСТНИКИ</text>
+    </g>
+
+    <!-- players -->
+    <text x="56" y="190" fill="#64748b" font-size="11" font-weight="700" letter-spacing="1.8">ИГРОКИ</text>
+    <g>
+      <rect x="56" y="210" width="252" height="108" rx="15" fill="#ffffff" stroke="#cbd9e7"/>
+      <circle cx="92" cy="246" r="19" fill="#dbeafe"/>
+      <text x="92" y="252" fill="#0b5fa8" font-size="15" font-weight="700" text-anchor="middle">А</text>
+      <text x="124" y="245" fill="#0b1220" font-size="15" font-weight="700">Анна</text>
+      <text x="124" y="266" fill="#5b6b7f" font-size="12">игрок</text>
+      <rect x="76" y="286" width="208" height="18" rx="9" fill="#f1f5f9"/>
+      <text x="88" y="299" fill="#7b8da3" font-size="10.5">своя переписка</text>
+
+      <rect x="56" y="402" width="252" height="108" rx="15" fill="#ffffff" stroke="#cbd9e7"/>
+      <circle cx="92" cy="438" r="19" fill="#dcfce7"/>
+      <text x="92" y="444" fill="#23784f" font-size="15" font-weight="700" text-anchor="middle">Б</text>
+      <text x="124" y="437" fill="#0b1220" font-size="15" font-weight="700">Борис</text>
+      <text x="124" y="458" fill="#5b6b7f" font-size="12">игрок</text>
+      <rect x="76" y="478" width="208" height="18" rx="9" fill="#f1f5f9"/>
+      <text x="88" y="491" fill="#7b8da3" font-size="10.5">своя переписка</text>
+    </g>
+
+    <!-- threads -->
+    <text x="400" y="190" fill="#64748b" font-size="11" font-weight="700" letter-spacing="1.8">ЛИЧНЫЕ ДИАЛОГИ</text>
+    <g>
+      <rect x="400" y="210" width="334" height="108" rx="15" fill="#eef7ff" stroke="#b9dcf8"/>
+      <rect x="400" y="210" width="5" height="108" rx="2.5" fill="#0f6fc5"/>
+      <text x="424" y="239" fill="#0b5fa8" font-size="14.5" font-weight="700">Анна ↔ тренер</text>
+      <text x="424" y="261" fill="#4d6b86" font-size="12">«Не смогу прийти в субботу»</text>
+      <text x="424" y="281" fill="#6b849e" font-size="11.5">ответ тренера</text>
+      <g transform="translate(646 231)">
+        <rect width="68" height="24" rx="12" fill="#ffffff" stroke="#b9dcf8"/>
+        <text x="34" y="16" fill="#0b5fa8" font-size="10" font-weight="700" text-anchor="middle">🔒 private</text>
+      </g>
+
+      <rect x="400" y="402" width="334" height="108" rx="15" fill="#eef7ff" stroke="#b9dcf8"/>
+      <rect x="400" y="402" width="5" height="108" rx="2.5" fill="#0f6fc5"/>
+      <text x="424" y="431" fill="#0b5fa8" font-size="14.5" font-weight="700">Борис ↔ тренер</text>
+      <text x="424" y="453" fill="#4d6b86" font-size="12">«Возьму ракетку напрокат»</text>
+      <text x="424" y="473" fill="#6b849e" font-size="11.5">отдельная история</text>
+      <g transform="translate(646 423)">
+        <rect width="68" height="24" rx="12" fill="#ffffff" stroke="#b9dcf8"/>
+        <text x="34" y="16" fill="#0b5fa8" font-size="10" font-weight="700" text-anchor="middle">🔒 private</text>
+      </g>
+    </g>
+
+    <!-- coach -->
+    <text x="806" y="190" fill="#64748b" font-size="11" font-weight="700" letter-spacing="1.8">ТРЕНЕР</text>
+    <rect x="806" y="210" width="238" height="300" rx="15" fill="#ffffff" stroke="#cbd9e7"/>
+    <circle cx="844" cy="248" r="19" fill="#fef3c7"/>
+    <text x="844" y="254" fill="#7a5600" font-size="15" font-weight="700" text-anchor="middle">Т</text>
+    <text x="876" y="245" fill="#0b1220" font-size="15" font-weight="700">Тренер клуба</text>
+    <text x="876" y="266" fill="#5b6b7f" font-size="12">видит только свои чаты</text>
+    <line x1="826" y1="292" x2="1024" y2="292" stroke="#e2e8f0"/>
+    <text x="826" y="318" fill="#5b6b7f" font-size="12">Анна</text>
+    <text x="1024" y="318" fill="#23784f" font-size="12" font-weight="700" text-anchor="end">2 сообщения</text>
+    <text x="826" y="344" fill="#5b6b7f" font-size="12">Борис</text>
+    <text x="1024" y="344" fill="#23784f" font-size="12" font-weight="700" text-anchor="end">1 сообщение</text>
+    <text x="826" y="382" fill="#7b8da3" font-size="11.5">Контакты и телефон — только</text>
+    <text x="826" y="400" fill="#7b8da3" font-size="11.5">в тренерском просмотре.</text>
+
+    <rect x="806" y="536" width="238" height="102" rx="15" fill="#f8fafc" stroke="#dbe5ef" stroke-dasharray="5 5"/>
+    <text x="826" y="566" fill="#5b6b7f" font-size="13.5" font-weight="700">Другой тренер</text>
+    <text x="826" y="588" fill="#7b8da3" font-size="12">эти чаты не видит</text>
+    <g transform="translate(826 604)">
+      <rect width="128" height="20" rx="10" fill="#eef2f6"/>
+      <text x="64" y="14" fill="#64748b" font-size="10.5" font-weight="700" text-anchor="middle">NO SHARED INBOX</text>
+    </g>
+
+    <!-- arrows -->
+    <g stroke="#64748b" stroke-width="1.8" fill="none">
+      <line x1="308" y1="264" x2="392" y2="264" marker-end="url(#arrow)"/>
+      <line x1="734" y1="264" x2="798" y2="264" marker-end="url(#arrow)"/>
+      <line x1="308" y1="456" x2="392" y2="456" marker-end="url(#arrow)"/>
+      <line x1="734" y1="456" x2="798" y2="456" marker-end="url(#arrow)"/>
+    </g>
+
+    <rect x="56" y="622" width="988" height="46" rx="12" fill="#f8fafc" stroke="#dbe5ef"/>
+    <text x="76" y="650" fill="#475569" font-size="12.5">Игрок видит только свою переписку. Тренер — только свои диалоги. Текст сообщений не пересылается в Telegram.</text>
+  </g>
+</svg>

@@ -89,7 +89,7 @@ def test_web_app_url_keeps_existing_query(monkeypatch):
         "settings",
         replace(settings, webhook_base_url="https://example.test/app?x=1"),
     )
-    assert botmod._web_app_url() == "https://example.test/app?x=1&v=33"
+    assert botmod._web_app_url() == "https://example.test/app?x=1&v=34"
 
 
 def test_web_app_url_falls_back_to_telegram(monkeypatch):
@@ -136,7 +136,7 @@ def test_cmd_start_escapes_name_and_hides_id(monkeypatch):
     assert "&lt;Иван&gt;" in text
     assert "<Иван>" not in text
     assert "1001" not in text
-    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=33")
+    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=34")
     assert calls["user"]["telegram_id"] == 1001
 
 
@@ -323,7 +323,7 @@ def test_fallback_opens_web_app(monkeypatch):
     asyncio.run(botmod.fallback(message))
     text, markup = answers[0]
     assert "Открой приложение" in text
-    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=33")
+    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=34")
 
 
 def test_cache_avatar_uses_largest_photo(monkeypatch):
@@ -625,7 +625,7 @@ def test_bot_main_keyboard_slot_label_and_names(monkeypatch):
         replace(settings, webhook_base_url="https://example.test"),
     )
     keyboard = botmod._main_keyboard()
-    assert keyboard.inline_keyboard[0][0].web_app.url.endswith("?v=33")
+    assert keyboard.inline_keyboard[0][0].web_app.url.endswith("?v=34")
     assert keyboard.inline_keyboard[1][0].callback_data == "slots:list"
     assert keyboard.inline_keyboard[1][1].callback_data == "attendees:list"
     label = botmod._slot_label(_training())
@@ -964,6 +964,13 @@ def test_coach_reply_respects_message_notifications(monkeypatch):
     assert answers == [("У игрока отключены уведомления о сообщениях.", None)]
 
 
+def test_rules_text_matches_product_copy():
+    assert "Правила SQASSIT" in botmod.RULES_TEXT
+    assert "минимум за 4,5 часа" in botmod.RULES_TEXT
+    assert "достоверные данные" in botmod.RULES_TEXT
+    assert "Правила могут обновляться." in botmod.RULES_TEXT
+
+
 def test_ensure_rules_message_creates_edits_and_pins(monkeypatch):
     state = {"record": None, "saved": [], "sent": 0, "edited": 0, "pinned": 0}
 
@@ -1001,6 +1008,13 @@ def test_ensure_rules_message_creates_edits_and_pins(monkeypatch):
     assert state["sent"] == 1
     assert state["edited"] == 1
     assert state["pinned"] == 2
+
+    # Режим обновления не создаёт новое сообщение и не уведомляет игрока.
+    state["record"] = None
+    asyncio.run(
+        botmod.ensure_rules_message(bot, 123, create_if_missing=False)
+    )
+    assert state["sent"] == 1
 
 
 def test_ensure_rules_message_recovers_from_missing_message(monkeypatch):
@@ -1051,14 +1065,14 @@ def test_ensure_rules_for_all_iterates_users(monkeypatch):
     async def fake_users():
         return [{"telegram_id": 1}, {"telegram_id": 2}]
 
-    async def fake_rule(bot, chat_id):
-        sent.append(chat_id)
+    async def fake_rule(bot, chat_id, *, create_if_missing=True):
+        sent.append((chat_id, create_if_missing))
 
     monkeypatch.setattr(db, "list_all_users", fake_users)
     monkeypatch.setattr(botmod, "ensure_rules_message", fake_rule)
     asyncio.run(botmod.ensure_rules_for_all(SimpleNamespace()))
 
-    assert sent == [1, 2]
+    assert sent == [(1, False), (2, False)]
 
 
 def test_ensure_rules_message_not_modified_and_pin_failure(monkeypatch):

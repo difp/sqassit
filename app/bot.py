@@ -58,7 +58,7 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-WEB_APP_VERSION = "33"
+WEB_APP_VERSION = "34"
 
 
 def _web_app_url() -> str:
@@ -73,19 +73,26 @@ def _web_app_url() -> str:
 
 
 RULES_TEXT = (
-    "📌 <b>Правила клуба</b>\n\n"
-    "• Записывайтесь только если действительно планируете прийти.\n"
-    "• Отменяйте запись заранее — лучше не позже чем за 4,5 часа.\n"
-    "• Уважайте тренера и других игроков: без спама и грубости.\n"
-    "• В матчах указывайте реальное место и время.\n"
-    "• Личные данные видны только тренеру для модерации.\n"
-    "• Ошибки и идеи присылайте через «Обратную связь» в приложении.\n\n"
-    "Сообщение с правилами будет обновляться."
+    "<b>Правила SQASSIT</b>\n\n"
+    "• Записывайтесь только при уверенности, что придёте. Отменяйте запись заранее — минимум за 4,5 часа.\n\n"
+    "• Уважайте других игроков: соблюдайте договорённости, не опаздывайте и избегайте грубости.\n\n"
+    "• Указывайте достоверные данные при создании матчей.\n\n"
+    "• Личные данные доступны тренеру для модерации.\n\n"
+    "• Нашли ошибку или есть идея? Напишите через «Обратную связь».\n\n"
+    "Правила могут обновляться."
 )
 
 
-async def ensure_rules_message(bot: Bot, chat_id: int) -> None:
-    """Создаёт/обновляет одно закреплённое сообщение с правилами."""
+async def ensure_rules_message(
+    bot: Bot, chat_id: int, *, create_if_missing: bool = True
+) -> None:
+    """
+    Создаёт/обновляет одно закреплённое сообщение с правилами.
+
+    При обновлении существующего сообщения используется edit_message_text:
+    игрок не получает новое уведомление. create_if_missing=False не отправляет
+    ничего, если правила этому чату ещё не отправлялись.
+    """
     try:
         record = await db.get_event_notification("rules", 0, chat_id, 0)
         message_id = int(record["message_id"] or 0) if record is not None else 0
@@ -99,6 +106,8 @@ async def ensure_rules_message(bot: Bot, chat_id: int) -> None:
                     logger.info("Не удалось обновить правила %s", chat_id, exc_info=True)
                     message_id = 0
         if not message_id:
+            if not create_if_missing:
+                return
             sent = await bot.send_message(chat_id, RULES_TEXT)
             message_id = int(getattr(sent, "message_id", 0) or 0)
         if not message_id:
@@ -119,14 +128,16 @@ async def ensure_rules_message(bot: Bot, chat_id: int) -> None:
 
 
 async def ensure_rules_for_all(bot: Bot) -> None:
-    """Досылает закреплённые правила существующим пользователям после деплоя."""
+    """Обновляет уже закреплённые правила, не создавая новых сообщений."""
     try:
         rows = await db.list_all_users()
         for row in rows:
-            await ensure_rules_message(bot, int(row["telegram_id"]))
+            await ensure_rules_message(
+                bot, int(row["telegram_id"]), create_if_missing=False
+            )
             await asyncio.sleep(0.05)
     except Exception:
-        logger.exception("Ошибка рассылки правил")
+        logger.exception("Ошибка обновления правил")
 
 
 def _main_keyboard() -> InlineKeyboardMarkup:

@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+  <title id="title">Архитектура SQASSIT</title>
+  <desc id="desc">Telegram WebView и Bot API связаны с одним процессом FastAPI, который хранит данные в SQLite.</desc>
+  <defs>
+    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#dce7f2"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 10 5 0 10Z" fill="#64748b"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 10 5 0 10Z" fill="#0f6fc5"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="700" fill="#ffffff"/>
+  <rect width="1200" height="190" fill="url(#dots)"/>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Arial,sans-serif">
+    <text x="56" y="58" fill="#0f6fc5" font-size="12" font-weight="700" letter-spacing="2.4">SQASSIT · SYSTEM MAP</text>
+    <text x="56" y="98" fill="#0b1220" font-size="32" font-weight="700" letter-spacing="-0.7">Как устроено приложение</text>
+    <text x="56" y="126" fill="#5b6b7f" font-size="15">Один процесс обслуживает Web App, бота, API и напоминания.</text>
+    <g transform="translate(916 46)">
+      <rect width="228" height="34" rx="17" fill="#edf6ff" stroke="#c9e2fa"/>
+      <text x="114" y="22" fill="#0b5fa8" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="0.4">TELEGRAM MINI APP</text>
+    </g>
+
+    <!-- Columns -->
+    <g>
+      <rect x="56" y="154" width="292" height="464" rx="18" fill="#fbfdff" stroke="#d8e5f1"/>
+      <text x="80" y="188" fill="#64748b" font-size="11" font-weight="700" letter-spacing="1.8">TELEGRAM</text>
+
+      <rect x="76" y="208" width="252" height="158" rx="14" fill="#ffffff" stroke="#cbd9e7"/>
+      <rect x="76" y="208" width="252" height="4" rx="2" fill="#0f6fc5"/>
+      <text x="96" y="238" fill="#0b1220" font-size="17" font-weight="700">WebView</text>
+      <text x="96" y="261" fill="#5b6b7f" font-size="13">HTML · CSS · JavaScript</text>
+      <text x="96" y="283" fill="#5b6b7f" font-size="13">initData · тема · safe-area</text>
+      <rect x="96" y="306" width="92" height="28" rx="14" fill="#eef7ff"/>
+      <text x="142" y="325" fill="#0b5fa8" font-size="11" font-weight="700" text-anchor="middle">Mini App</text>
+      <rect x="196" y="306" width="110" height="28" rx="14" fill="#f1f5f9"/>
+      <text x="251" y="325" fill="#475569" font-size="11" font-weight="700" text-anchor="middle">Telegram client</text>
+
+      <rect x="76" y="398" width="252" height="142" rx="14" fill="#ffffff" stroke="#cbd9e7"/>
+      <rect x="76" y="398" width="252" height="4" rx="2" fill="#ffd60a"/>
+      <text x="96" y="428" fill="#0b1220" font-size="17" font-weight="700">Bot API</text>
+      <text x="96" y="451" fill="#5b6b7f" font-size="13">уведомления · WebApp-кнопки</text>
+      <text x="96" y="473" fill="#5b6b7f" font-size="13">webhook / long polling</text>
+      <text x="96" y="508" fill="#7b8da3" font-size="11">Только ссылки на приложение,</text>
+      <text x="96" y="524" fill="#7b8da3" font-size="11">без текста личных сообщений.</text>
+
+      <text x="78" y="592" fill="#7b8da3" font-size="12">Один и тот же пользователь</text>
+    </g>
+
+    <g>
+      <rect x="388" y="154" width="424" height="464" rx="18" fill="#fbfdff" stroke="#d8e5f1"/>
+      <text x="412" y="188" fill="#64748b" font-size="11" font-weight="700" letter-spacing="1.8">CORE · FASTAPI</text>
+
+      <rect x="408" y="208" width="384" height="348" rx="16" fill="#ffffff" stroke="#bcd7ee"/>
+      <rect x="408" y="208" width="384" height="5" rx="2.5" fill="#0f6fc5"/>
+      <text x="428" y="238" fill="#0b1220" font-size="17" font-weight="700">Один процесс</text>
+      <text x="428" y="260" fill="#5b6b7f" font-size="12.5">Web App и бот работают вместе</text>
+
+      <rect x="428" y="280" width="344" height="58" rx="11" fill="#eef7ff" stroke="#d3e9fb"/>
+      <text x="446" y="303" fill="#0b5fa8" font-size="13.5" font-weight="700">Web App</text>
+      <text x="446" y="322" fill="#4d6b86" font-size="11.5">шаблоны · статика · сессии по initData</text>
+
+      <rect x="428" y="352" width="164" height="92" rx="11" fill="#f8fafc" stroke="#dbe5ef"/>
+      <text x="446" y="376" fill="#0b1220" font-size="13.5" font-weight="700">REST API</text>
+      <text x="446" y="397" fill="#5b6b7f" font-size="11.5">записи · матчи ·</text>
+      <text x="446" y="414" fill="#5b6b7f" font-size="11.5">чат · заявки</text>
+
+      <rect x="608" y="352" width="164" height="92" rx="11" fill="#f8fafc" stroke="#dbe5ef"/>
+      <text x="626" y="376" fill="#0b1220" font-size="13.5" font-weight="700">aiogram</text>
+      <text x="626" y="397" fill="#5b6b7f" font-size="11.5">команды ·</text>
+      <text x="626" y="414" fill="#5b6b7f" font-size="11.5">inline-кнопки</text>
+
+      <rect x="428" y="458" width="344" height="58" rx="11" fill="#fff9e8" stroke="#f5e2a7"/>
+      <text x="446" y="481" fill="#7a5600" font-size="13.5" font-weight="700">Планировщик</text>
+      <text x="446" y="500" fill="#806c34" font-size="11.5">напоминания и фоновые уведомления</text>
+
+      <text x="410" y="592" fill="#7b8da3" font-size="12">systemd · HTTPS · reverse proxy</text>
+    </g>
+
+    <g>
+      <rect x="852" y="154" width="292" height="464" rx="18" fill="#fbfdff" stroke="#d8e5f1"/>
+      <text x="876" y="188" fill="#64748b" font-size="11" font-weight="700" letter-spacing="1.8">DATA</text>
+
+      <rect x="872" y="208" width="252" height="190" rx="14" fill="#ffffff" stroke="#cbd9e7"/>
+      <rect x="872" y="208" width="252" height="4" rx="2" fill="#2f9e62"/>
+      <text x="892" y="238" fill="#0b1220" font-size="17" font-weight="700">SQLite</text>
+      <text x="892" y="261" fill="#5b6b7f" font-size="13">users · phone · settings</text>
+      <text x="892" y="283" fill="#5b6b7f" font-size="13">trainings · bookings</text>
+      <text x="892" y="305" fill="#5b6b7f" font-size="13">matches · participants</text>
+      <text x="892" y="327" fill="#5b6b7f" font-size="13">messages · event_coauthors</text>
+      <text x="892" y="349" fill="#5b6b7f" font-size="13">notifications · feedback</text>
+      <rect x="892" y="366" width="104" height="20" rx="10" fill="#ecf8f1"/>
+      <text x="944" y="380" fill="#23784f" font-size="10.5" font-weight="700" text-anchor="middle">WAL · backups</text>
+
+      <rect x="872" y="422" width="252" height="118" rx="14" fill="#ffffff" stroke="#cbd9e7"/>
+      <rect x="872" y="422" width="252" height="4" rx="2" fill="#8b5cf6"/>
+      <text x="892" y="452" fill="#0b1220" font-size="17" font-weight="700">Экспорт</text>
+      <text x="892" y="475" fill="#5b6b7f" font-size="13">CSV · .ics · удаление данных</text>
+      <text x="892" y="497" fill="#5b6b7f" font-size="13">файлы в data/exports</text>
+      <text x="892" y="519" fill="#7b8da3" font-size="11">по запросу пользователя</text>
+    </g>
+
+    <!-- Arrows -->
+    <line x1="328" y1="276" x2="408" y2="276" stroke="#0f6fc5" stroke-width="2" marker-end="url(#arrowBlue)"/>
+    <text x="368" y="265" fill="#0b5fa8" font-size="10.5" font-weight="700" text-anchor="middle">HTTPS</text>
+    <text x="368" y="292" fill="#0b5fa8" font-size="10.5" font-weight="700" text-anchor="middle">initData</text>
+
+    <line x1="792" y1="276" x2="872" y2="276" stroke="#0f6fc5" stroke-width="2" marker-end="url(#arrowBlue)"/>
+    <text x="832" y="265" fill="#0b5fa8" font-size="10.5" font-weight="700" text-anchor="middle">aiosqlite</text>
+
+    <line x1="328" y1="438" x2="408" y2="438" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="368" y="427" fill="#516176" font-size="10.5" font-weight="700" text-anchor="middle">updates</text>
+    <line x1="408" y1="466" x2="328" y2="466" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="368" y="457" fill="#516176" font-size="10.5" font-weight="700" text-anchor="middle">send</text>
+
+    <line x1="408" y1="524" x2="328" y2="524" stroke="#f0b429" stroke-width="1.8" stroke-dasharray="5 5" marker-end="url(#arrow)"/>
+    <text x="368" y="545" fill="#8a6500" font-size="10.5" font-weight="700" text-anchor="middle">reminders</text>
+  </g>
+</svg>

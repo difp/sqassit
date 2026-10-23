@@ -368,7 +368,7 @@ def test_club_readonly_and_transfer(client):
     t = client.post("/api/coach/trainings", headers=COACH, json={
         **_future(10, "18:00"), "training_type": "Владельца", "capacity": 2}).json()["id"]
 
-    # другой тренер видит его в «Клубе» и может читать участников
+    # другой тренер видит его в «Оке» и может читать участников
     club = [x["id"] for x in client.get("/api/coach/club/trainings", headers=COACH2).json()["trainings"]]
     assert t in club
     assert client.get(f"/api/coach/trainings/{t}/participants", headers=COACH2).status_code == 200

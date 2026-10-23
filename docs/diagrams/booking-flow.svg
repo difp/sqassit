@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">Поток заявки на тренировку</title>
+  <desc id="desc">Игрок отправляет заявку, система создаёт pending, тренер или соавтор принимает решение, после чего назначается booked, waitlist или rejected.</desc>
+  <defs>
+    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#dce7f2"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 10 5 0 10Z" fill="#64748b"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="760" fill="#ffffff"/>
+  <rect width="1200" height="178" fill="url(#dots)"/>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Arial,sans-serif">
+    <text x="56" y="58" fill="#0f6fc5" font-size="12" font-weight="700" letter-spacing="2.4">SQASSIT · BOOKING FLOW</text>
+    <text x="56" y="98" fill="#0b1220" font-size="32" font-weight="700" letter-spacing="-0.7">От заявки до места</text>
+    <text x="56" y="126" fill="#5b6b7f" font-size="15">Pending не занимает место. Решение принимает создатель или соавтор.</text>
+
+    <!-- lanes -->
+    <g>
+      <rect x="48" y="154" width="312" height="554" rx="17" fill="#fbfdff" stroke="#d8e5f1"/>
+      <rect x="392" y="154" width="352" height="554" rx="17" fill="#fbfdff" stroke="#d8e5f1"/>
+      <rect x="776" y="154" width="376" height="554" rx="17" fill="#fbfdff" stroke="#d8e5f1"/>
+      <text x="72" y="186" fill="#64748b" font-size="11" font-weight="700" letter-spacing="1.8">ИГРОК</text>
+      <text x="416" y="186" fill="#64748b" font-size="11" font-weight="700" letter-spacing="1.8">СИСТЕМА</text>
+      <text x="800" y="186" fill="#64748b" font-size="11" font-weight="700" letter-spacing="1.8">ТРЕНЕР / СОАВТОР</text>
+    </g>
+
+    <!-- player -->
+    <g>
+      <rect x="68" y="204" width="272" height="78" rx="12" fill="#ffffff" stroke="#cbd9e7"/>
+      <text x="86" y="232" fill="#0b1220" font-size="14.5" font-weight="700">Выбирает тренировку</text>
+      <text x="86" y="253" fill="#5b6b7f" font-size="12">карточка в расписании</text>
+      <text x="86" y="270" fill="#7b8da3" font-size="11">дата · время · свободные места</text>
+
+      <rect x="68" y="326" width="272" height="78" rx="12" fill="#ffffff" stroke="#cbd9e7"/>
+      <text x="86" y="354" fill="#0b1220" font-size="14.5" font-weight="700">Отправляет заявку</text>
+      <text x="86" y="375" fill="#5b6b7f" font-size="12">один тап · без оплаты</text>
+
+      <rect x="68" y="458" width="272" height="78" rx="12" fill="#f8fafc" stroke="#dbe5ef" stroke-dasharray="4 4"/>
+      <text x="86" y="486" fill="#5b6b7f" font-size="14.5" font-weight="700">Ждёт решения</text>
+      <text x="86" y="507" fill="#7b8da3" font-size="12">место пока не занято</text>
+
+      <rect x="68" y="590" width="272" height="78" rx="12" fill="#ffffff" stroke="#cbd9e7"/>
+      <text x="86" y="618" fill="#0b1220" font-size="14.5" font-weight="700">Видит результат</text>
+      <text x="86" y="639" fill="#5b6b7f" font-size="12">booked · waitlist · rejected</text>
+    </g>
+
+    <!-- system -->
+    <g>
+      <rect x="412" y="204" width="312" height="78" rx="12" fill="#eef7ff" stroke="#cfe6fa"/>
+      <text x="430" y="232" fill="#0b5fa8" font-size="14.5" font-weight="700">Проверка</text>
+      <text x="430" y="253" fill="#4d6b86" font-size="12">телефон · время · лимиты</text>
+      <text x="430" y="270" fill="#6b849e" font-size="11">PHONE_REQUIRED_FROM</text>
+
+      <rect x="412" y="326" width="312" height="78" rx="12" fill="#fff8e8" stroke="#efd99c"/>
+      <text x="430" y="354" fill="#7a5600" font-size="14.5" font-weight="700">pending</text>
+      <text x="430" y="375" fill="#806c34" font-size="12">заявка создана, место не занимает</text>
+
+      <rect x="412" y="458" width="312" height="78" rx="12" fill="#ffffff" stroke="#cbd9e7"/>
+      <text x="430" y="486" fill="#0b1220" font-size="14.5" font-weight="700">Применяет решение</text>
+      <text x="430" y="507" fill="#5b6b7f" font-size="12">booked → waitlist → rejected</text>
+
+      <rect x="412" y="590" width="312" height="78" rx="12" fill="#ffffff" stroke="#cbd9e7"/>
+      <text x="430" y="618" fill="#0b1220" font-size="14.5" font-weight="700">Статус и уведомление</text>
+      <text x="430" y="639" fill="#5b6b7f" font-size="12">состав обновляется у всех участников</text>
+    </g>
+
+    <!-- coach -->
+    <g>
+      <rect x="796" y="326" width="332" height="78" rx="12" fill="#ffffff" stroke="#cbd9e7"/>
+      <text x="814" y="354" fill="#0b1220" font-size="14.5" font-weight="700">Видит заявку</text>
+      <text x="814" y="375" fill="#5b6b7f" font-size="12">в приложении или по ссылке из бота</text>
+
+      <rect x="796" y="458" width="332" height="78" rx="12" fill="#ffffff" stroke="#cbd9e7"/>
+      <text x="814" y="486" fill="#0b1220" font-size="14.5" font-weight="700">Одобрить / отклонить</text>
+      <text x="814" y="507" fill="#5b6b7f" font-size="12">создатель или соавтор</text>
+
+      <rect x="796" y="590" width="332" height="78" rx="12" fill="#f8fafc" stroke="#dbe5ef" stroke-dasharray="4 4"/>
+      <text x="814" y="618" fill="#5b6b7f" font-size="14.5" font-weight="700">Уведомление</text>
+      <text x="814" y="639" fill="#7b8da3" font-size="12">игрок получает итоговый статус</text>
+    </g>
+
+    <!-- arrows -->
+    <g stroke="#64748b" stroke-width="2" fill="none">
+      <line x1="340" y1="243" x2="404" y2="243" marker-end="url(#arrow)"/>
+      <line x1="568" y1="282" x2="568" y2="326" marker-end="url(#arrow)"/>
+      <line x1="204" y1="282" x2="204" y2="326" marker-end="url(#arrow)"/>
+      <line x1="340" y1="365" x2="404" y2="365" marker-end="url(#arrow)"/>
+      <line x1="724" y1="365" x2="788" y2="365" marker-end="url(#arrow)"/>
+      <line x1="962" y1="404" x2="962" y2="458" marker-end="url(#arrow)"/>
+      <line x1="788" y1="497" x2="724" y2="497" marker-end="url(#arrow)"/>
+      <line x1="568" y1="536" x2="568" y2="590" marker-end="url(#arrow)"/>
+      <line x1="404" y1="629" x2="340" y2="629" marker-end="url(#arrow)"/>
+    </g>
+
+    <!-- legend -->
+    <g transform="translate(68 742)">
+      <circle cx="6" cy="6" r="5" fill="#f0b429"/>
+      <text x="18" y="10" fill="#7b6a3a" font-size="11.5">pending</text>
+      <circle cx="94" cy="6" r="5" fill="#2f9e62"/>
+      <text x="106" y="10" fill="#397554" font-size="11.5">booked</text>
+      <circle cx="174" cy="6" r="5" fill="#3b82f6"/>
+      <text x="186" y="10" fill="#3c6496" font-size="11.5">waitlist</text>
+      <circle cx="264" cy="6" r="5" fill="#94a3b8"/>
+      <text x="276" y="10" fill="#64748b" font-size="11.5">rejected</text>
+    </g>
+    <text x="1134" y="748" fill="#7b8da3" font-size="11.5" text-anchor="end">Pending не занимает место</text>
+  </g>
+</svg>
