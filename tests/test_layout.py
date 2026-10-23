@@ -33,7 +33,9 @@ def test_disclosures_use_aligned_dots() -> None:
 
     assert ".disclosure > summary" in base
     assert "::-webkit-details-marker" in base
+    assert ".disclosure__dot" in base
     assert "border-radius: 50%" in base
     assert '<summary style=' not in coach
     for tag in re.findall(r"<details[^>]*>", coach):
         assert 'class="disclosure"' in tag
+    assert coach.count('class="disclosure__dot"') >= 3

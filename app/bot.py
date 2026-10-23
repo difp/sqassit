@@ -54,7 +54,7 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-WEB_APP_VERSION = "24"
+WEB_APP_VERSION = "25"
 
 
 def _web_app_url() -> str:
@@ -66,6 +66,63 @@ def _web_app_url() -> str:
     # заметных обновлений интерфейса. Меняйте при крупных релизах.
     separator = "&" if "?" in base else "?"
     return f"{base}{separator}v={WEB_APP_VERSION}"
+
+
+RULES_TEXT = (
+    "📌 <b>Правила клуба</b>\n\n"
+    "• Записывайтесь только если действительно планируете прийти.\n"
+    "• Отменяйте запись заранее — лучше не позже чем за 4,5 часа.\n"
+    "• Уважайте тренера и других игроков: без спама и грубости.\n"
+    "• В матчах указывайте реальное место и время.\n"
+    "• Личные данные видны только тренеру для модерации.\n"
+    "• Ошибки и идеи присылайте через «Обратную связь» в приложении.\n\n"
+    "Сообщение с правилами будет обновляться."
+)
+
+
+async def ensure_rules_message(bot: Bot, chat_id: int) -> None:
+    """Создаёт/обновляет одно закреплённое сообщение с правилами."""
+    try:
+        record = await db.get_event_notification("rules", 0, chat_id, 0)
+        message_id = int(record["message_id"] or 0) if record is not None else 0
+        if message_id and record is not None and record["text"] != RULES_TEXT:
+            try:
+                await bot.edit_message_text(
+                    text=RULES_TEXT, chat_id=chat_id, message_id=message_id
+                )
+            except Exception as exc:
+                if "message is not modified" not in str(exc).lower():
+                    logger.info("Не удалось обновить правила %s", chat_id, exc_info=True)
+                    message_id = 0
+        if not message_id:
+            sent = await bot.send_message(chat_id, RULES_TEXT)
+            message_id = int(getattr(sent, "message_id", 0) or 0)
+        if not message_id:
+            return
+        await db.save_event_notification(
+            "rules", 0, chat_id, 0, message_id, RULES_TEXT
+        )
+        try:
+            await bot.pin_chat_message(
+                chat_id=chat_id,
+                message_id=message_id,
+                disable_notification=True,
+            )
+        except Exception:
+            logger.info("Не удалось закрепить правила %s", chat_id, exc_info=True)
+    except Exception:
+        logger.info("Не удалось отправить правила %s", chat_id, exc_info=True)
+
+
+async def ensure_rules_for_all(bot: Bot) -> None:
+    """Досылает закреплённые правила существующим пользователям после деплоя."""
+    try:
+        rows = await db.list_all_users()
+        for row in rows:
+            await ensure_rules_message(bot, int(row["telegram_id"]))
+            await asyncio.sleep(0.05)
+    except Exception:
+        logger.exception("Ошибка рассылки правил")
 
 
 def _main_keyboard() -> InlineKeyboardMarkup:
@@ -332,6 +389,8 @@ async def cmd_start(message: Message) -> None:
             await _cache_avatar(bot, user.id)
 
         keyboard = _main_keyboard()
+        if bot is not None:
+            await ensure_rules_message(bot, user.id)
         await message.answer(
             f"Привет, {html.escape(user.first_name or 'друг')}!\n\n"
             "Здесь можно записаться на сквош-тренировки: смотри расписание на 7 дней, "

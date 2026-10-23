@@ -69,6 +69,11 @@ def client(monkeypatch):
     monkeypatch.setattr(botmod, "polling_context", _fake_polling)
     monkeypatch.setattr(botmod, "reminder_loop", _fake_loop)
 
+    async def _no_rules_broadcast(bot):
+        return None
+
+    monkeypatch.setattr(botmod, "ensure_rules_for_all", _no_rules_broadcast)
+
     with TestClient(mainmod.app) as c:
         # Заглушка отправки в Telegram: тесты не ходят в сеть.
         async def _noop_send(*args, **kwargs):
@@ -2234,6 +2239,7 @@ def test_match_notification_texts_and_targets(monkeypatch):
         assert mainmod._match_personal_text(match, status)
     deleted = {**match, "deleted_at": 1}
     assert "Матч отменён" in mainmod._match_participants_text(deleted, players)
+    assert "Матч отменён" in mainmod._match_update_text(deleted, players, "deleted")
 
     calls = []
 
@@ -2255,6 +2261,52 @@ def test_match_notification_texts_and_targets(monkeypatch):
     calls.clear()
     asyncio.run(mainmod._notify_match_deleted(deleted))
     assert len(calls) >= 27
+
+
+def test_match_notification_skips_disabled_participant(monkeypatch):
+    match = {
+        "id": 2,
+        "title": "Матч",
+        "start_at": int(time.time()) + 3600,
+        "max_players": 4,
+        "location": "Парк",
+        "created_by": 123,
+        "deleted_at": None,
+    }
+    players = [
+        {
+            "telegram_id": 123,
+            "first_name": "Тренер",
+            "display_mode": "name",
+            "avatar_file_id": None,
+            "created_at": 1,
+        },
+        {
+            "telegram_id": 556,
+            "first_name": "Мария",
+            "display_mode": "name",
+            "avatar_file_id": None,
+            "created_at": 1,
+        },
+    ]
+    calls = []
+
+    async def fake_players(match_id):
+        return players
+
+    async def allowed(telegram_id, category):
+        return telegram_id != 556
+
+    async def fake_send(kind, entity_id, chat_id, user_id, text):
+        calls.append((chat_id, user_id))
+
+    monkeypatch.setattr(mainmod.db, "get_match_players", fake_players)
+    monkeypatch.setattr(mainmod.db, "notification_enabled", allowed)
+    monkeypatch.setattr(mainmod, "_send_event_notification", fake_send)
+    asyncio.run(mainmod._notify_match_event(match, 123, "joined"))
+
+    assert (123, 0) in calls
+    assert (556, 556) not in calls
 
 
 def test_match_invalid_date_and_started(client, monkeypatch):

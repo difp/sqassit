@@ -89,7 +89,7 @@ def test_web_app_url_keeps_existing_query(monkeypatch):
         "settings",
         replace(settings, webhook_base_url="https://example.test/app?x=1"),
     )
-    assert botmod._web_app_url() == "https://example.test/app?x=1&v=24"
+    assert botmod._web_app_url() == "https://example.test/app?x=1&v=25"
 
 
 def test_web_app_url_falls_back_to_telegram(monkeypatch):
@@ -136,7 +136,7 @@ def test_cmd_start_escapes_name_and_hides_id(monkeypatch):
     assert "&lt;Иван&gt;" in text
     assert "<Иван>" not in text
     assert "1001" not in text
-    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=24")
+    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=25")
     assert calls["user"]["telegram_id"] == 1001
 
 
@@ -323,7 +323,7 @@ def test_fallback_opens_web_app(monkeypatch):
     asyncio.run(botmod.fallback(message))
     text, markup = answers[0]
     assert "Открой приложение" in text
-    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=24")
+    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=25")
 
 
 def test_cache_avatar_uses_largest_photo(monkeypatch):
@@ -625,7 +625,7 @@ def test_bot_main_keyboard_slot_label_and_names(monkeypatch):
         replace(settings, webhook_base_url="https://example.test"),
     )
     keyboard = botmod._main_keyboard()
-    assert keyboard.inline_keyboard[0][0].web_app.url.endswith("?v=24")
+    assert keyboard.inline_keyboard[0][0].web_app.url.endswith("?v=25")
     assert keyboard.inline_keyboard[1][0].callback_data == "slots:list"
     assert keyboard.inline_keyboard[1][1].callback_data == "attendees:list"
     label = botmod._slot_label(_training())
@@ -957,3 +957,136 @@ def test_coach_reply_respects_message_notifications(monkeypatch):
 
     assert sent == []
     assert answers == [("У игрока отключены уведомления о сообщениях.", None)]
+
+
+def test_ensure_rules_message_creates_edits_and_pins(monkeypatch):
+    state = {"record": None, "saved": [], "sent": 0, "edited": 0, "pinned": 0}
+
+    async def fake_get(kind, entity_id, chat_id, user_id):
+        assert (kind, entity_id, chat_id, user_id) == ("rules", 0, 123, 0)
+        return state["record"]
+
+    async def fake_save(kind, entity_id, chat_id, user_id, message_id, text):
+        state["saved"].append((kind, entity_id, chat_id, user_id, message_id, text))
+        state["record"] = {"message_id": message_id, "text": text}
+
+    class RulesBot:
+        async def send_message(self, chat_id, text):
+            state["sent"] += 1
+            return SimpleNamespace(message_id=77)
+
+        async def edit_message_text(self, **kwargs):
+            state["edited"] += 1
+
+        async def pin_chat_message(self, **kwargs):
+            state["pinned"] += 1
+
+    monkeypatch.setattr(db, "get_event_notification", fake_get)
+    monkeypatch.setattr(db, "save_event_notification", fake_save)
+    bot = RulesBot()
+    asyncio.run(botmod.ensure_rules_message(bot, 123))
+    assert state["sent"] == 1
+    assert state["edited"] == 0
+    assert state["pinned"] == 1
+    assert state["saved"][0][4] == 77
+
+    # Повторный вызов обновляет существующее сообщение и снова закрепляет его.
+    state["record"] = {"message_id": 77, "text": "old"}
+    asyncio.run(botmod.ensure_rules_message(bot, 123))
+    assert state["sent"] == 1
+    assert state["edited"] == 1
+    assert state["pinned"] == 2
+
+
+def test_ensure_rules_message_recovers_from_missing_message(monkeypatch):
+    state = {"record": {"message_id": 55, "text": "old"}, "sent": 0, "edited": 0}
+
+    async def fake_get(*args):
+        return state["record"]
+
+    async def fake_save(*args):
+        return None
+
+    class RulesBot:
+        async def send_message(self, chat_id, text):
+            state["sent"] += 1
+            return SimpleNamespace(message_id=88)
+
+        async def edit_message_text(self, **kwargs):
+            state["edited"] += 1
+            raise RuntimeError("message not found")
+
+        async def pin_chat_message(self, **kwargs):
+            return None
+
+    monkeypatch.setattr(db, "get_event_notification", fake_get)
+    monkeypatch.setattr(db, "save_event_notification", fake_save)
+    asyncio.run(botmod.ensure_rules_message(RulesBot(), 123))
+    assert state["edited"] == 1
+    assert state["sent"] == 1
+
+    # Если Telegram вернул сообщение без message_id — молча выходим.
+    class NoIdBot:
+        async def send_message(self, chat_id, text):
+            return SimpleNamespace(message_id=0)
+
+    state["record"] = None
+    asyncio.run(botmod.ensure_rules_message(NoIdBot(), 123))
+
+    async def broken_get(*args):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(db, "get_event_notification", broken_get)
+    asyncio.run(botmod.ensure_rules_message(RulesBot(), 123))
+
+
+def test_ensure_rules_for_all_iterates_users(monkeypatch):
+    sent = []
+
+    async def fake_users():
+        return [{"telegram_id": 1}, {"telegram_id": 2}]
+
+    async def fake_rule(bot, chat_id):
+        sent.append(chat_id)
+
+    monkeypatch.setattr(db, "list_all_users", fake_users)
+    monkeypatch.setattr(botmod, "ensure_rules_message", fake_rule)
+    asyncio.run(botmod.ensure_rules_for_all(SimpleNamespace()))
+
+    assert sent == [1, 2]
+
+
+def test_ensure_rules_message_not_modified_and_pin_failure(monkeypatch):
+    state = {"sent": 0, "pinned": 0}
+
+    async def fake_get(*args):
+        return {"message_id": 55, "text": "old"}
+
+    async def fake_save(*args):
+        return None
+
+    class RulesBot:
+        async def send_message(self, chat_id, text):
+            state["sent"] += 1
+            return SimpleNamespace(message_id=99)
+
+        async def edit_message_text(self, **kwargs):
+            raise RuntimeError("message is not modified")
+
+        async def pin_chat_message(self, **kwargs):
+            state["pinned"] += 1
+            raise RuntimeError("cannot pin")
+
+    monkeypatch.setattr(db, "get_event_notification", fake_get)
+    monkeypatch.setattr(db, "save_event_notification", fake_save)
+    asyncio.run(botmod.ensure_rules_message(RulesBot(), 123))
+    assert state["sent"] == 0
+    assert state["pinned"] == 1
+
+
+def test_ensure_rules_for_all_handles_db_error(monkeypatch):
+    async def broken_users():
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(db, "list_all_users", broken_users)
+    asyncio.run(botmod.ensure_rules_for_all(SimpleNamespace()))

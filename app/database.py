@@ -648,6 +648,11 @@ async def delete_user_data(telegram_id: int) -> None:
     await _execute("DELETE FROM users WHERE telegram_id = ?", (telegram_id,))
 
 
+async def list_all_users() -> list[aiosqlite.Row]:
+    """Все пользователи, которым можно доставить закреплённые правила."""
+    return await _fetchall("SELECT telegram_id FROM users ORDER BY telegram_id")
+
+
 async def list_players() -> list[aiosqlite.Row]:
     """
     Список игроков для CRM тренера.

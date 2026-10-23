@@ -667,7 +667,7 @@ function activeRow(t) {
     </div>
     ${reminderEditor(t)}
     <details class="disclosure" data-pid="${t.id}">
-      <summary>Участники</summary>
+      <summary><span class="disclosure__dot" aria-hidden="true"></span>Участники</summary>
       <div data-plist="${t.id}"><div class="hint" style="padding:10px 0">Загрузка…</div></div>
     </details>
   </div>`;
@@ -743,7 +743,7 @@ function clubRow(t) {
       <span class="badge badge--muted">Только чтение</span>
     </div>
     <details class="disclosure" data-pid="${t.id}">
-      <summary>Участники</summary>
+      <summary><span class="disclosure__dot" aria-hidden="true"></span>Участники</summary>
       <div data-plist="${t.id}"><div class="hint" style="padding:10px 0">Загрузка…</div></div>
     </details>
   </div>`;
@@ -1068,7 +1068,7 @@ function playerRow(p) {
     </button>
     ${p.about ? `<div class="player-about">${esc(p.about)}</div>` : ''}
     <details class="disclosure">
-      <summary>Заметки тренера</summary>
+      <summary><span class="disclosure__dot" aria-hidden="true"></span>Заметки тренера</summary>
       <textarea class="input" data-notes="${p.telegram_id}" rows="2" style="margin-top:8px">${esc(p.notes)}</textarea>
       <button class="btn btn--primary btn--sm" data-save="${p.telegram_id}" style="margin-top:8px">Сохранить</button>
     </details>

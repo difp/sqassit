@@ -576,7 +576,10 @@ async def lifespan(app: FastAPI):
         await polling_ctx.__aenter__()
         logger.info("Запущен long-polling.")
 
-    # 5. Фоновый планировщик напоминаний.
+    # 5. Закреплённые правила для существующих пользователей.
+    _spawn(bot_module.ensure_rules_for_all(tg_bot))
+
+    # 6. Фоновый планировщик напоминаний.
     tasks.append(asyncio.create_task(bot_module.reminder_loop(tg_bot)))
 
     try:
@@ -1836,6 +1839,23 @@ def _match_personal_text(match: aiosqlite.Row, status: str) -> str:
     return "✅ Вы присоединились к матчу.\n\n" + header
 
 
+def _match_update_text(
+    match: aiosqlite.Row,
+    players: list[aiosqlite.Row],
+    status: str = "updated",
+) -> str:
+    """Одна карточка матча для участников: статус + актуальный состав."""
+    if status == "joined":
+        prefix = "✅ Вы присоединились к матчу."
+    elif status == "left":
+        prefix = "Вы вышли из матча."
+    elif status == "deleted":
+        prefix = "Матч отменён организатором."
+    else:
+        prefix = "🏸 Обновление матча."
+    return prefix + "\n\n" + _match_participants_text(match, players)
+
+
 async def _notify_match_event(
     match: aiosqlite.Row, user_id: int | None = None, status: str = "joined"
 ) -> None:
@@ -1850,6 +1870,23 @@ async def _notify_match_event(
             0,
             _match_participants_text(match, players),
         )
+
+    # Остальные участники видят, кто присоединился или вышел, в одном
+    # редактируемом сообщении на матч. Автор уже получил сводку выше.
+    for player in players:
+        player_id = int(player["telegram_id"])
+        if player_id == match["created_by"] or player_id == user_id:
+            continue
+        if not await _notifications_allowed(player_id, "matches"):
+            continue
+        await _send_event_notification(
+            "match",
+            match["id"],
+            player_id,
+            player_id,
+            _match_update_text(match, players),
+        )
+
     if (
         user_id is not None
         and user_id != match["created_by"]
@@ -1860,7 +1897,7 @@ async def _notify_match_event(
             match["id"],
             user_id,
             user_id,
-            _match_personal_text(match, status),
+            _match_update_text(match, players, status),
         )
 
 
