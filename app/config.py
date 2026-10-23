@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -48,6 +49,7 @@ class Settings:
     bot_proxy: str
     allow_dev_init_data: bool
     enable_api_docs: bool
+    phone_required_from: datetime | None
 
 
 def load_settings() -> Settings:
@@ -68,6 +70,19 @@ def load_settings() -> Settings:
     if bot_mode not in {"polling", "webhook"}:
         raise RuntimeError("BOT_MODE должен быть 'polling' или 'webhook'.")
 
+    phone_raw = _optional("PHONE_REQUIRED_FROM")
+    phone_required_from: datetime | None = None
+    if phone_raw:
+        try:
+            phone_required_from = datetime.fromisoformat(phone_raw)
+        except ValueError as exc:
+            raise RuntimeError(
+                "PHONE_REQUIRED_FROM должен быть ISO-датой, например "
+                "2026-10-24T00:00:00+03:00."
+            ) from exc
+        if phone_required_from.tzinfo is None:
+            phone_required_from = phone_required_from.replace(tzinfo=tz)
+
     webhook_base_url = _optional("WEBHOOK_BASE_URL").rstrip("/")
     webhook_secret = _optional("WEBHOOK_SECRET")
     validate_webhook_settings(bot_mode, webhook_base_url, webhook_secret)
@@ -85,6 +100,7 @@ def load_settings() -> Settings:
         in ("1", "true", "yes", "on"),
         enable_api_docs=_optional("ENABLE_API_DOCS", "false").lower()
         in ("1", "true", "yes", "on"),
+        phone_required_from=phone_required_from,
     )
 
 

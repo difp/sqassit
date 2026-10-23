@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS users (
     telegram_id           INTEGER PRIMARY KEY,
     username              TEXT,
     first_name            TEXT,
+    phone                 TEXT NOT NULL DEFAULT '', -- введён вручную или из Telegram-контакта
     avatar_file_id        TEXT,      -- file_id аватарки; сам файл НЕ сохраняем на диск
     is_coach              INTEGER NOT NULL DEFAULT 0,
     notifications_enabled INTEGER NOT NULL DEFAULT 1,
@@ -205,6 +206,7 @@ async def _migrate() -> None:
         ("users", "notify_messages"): (
             "ALTER TABLE users ADD COLUMN notify_messages INTEGER NOT NULL DEFAULT 1"
         ),
+        ("users", "phone"): "ALTER TABLE users ADD COLUMN phone TEXT NOT NULL DEFAULT ''",
         ("coaches", "is_manager"): "ALTER TABLE coaches ADD COLUMN is_manager INTEGER NOT NULL DEFAULT 0",
     }
     present = {"trainings": trainings_cols, "users": users_cols, "coaches": coaches_cols}
@@ -344,8 +346,9 @@ async def set_player_profile(
     notify_matches: bool | None = None,
     notify_trainings: bool | None = None,
     notify_messages: bool | None = None,
+    phone: str | None = None,
 ) -> None:
-    """Сохраняет профиль, приватность и настройки уведомлений игрока."""
+    """Сохраняет профиль, приватность, телефон и настройки уведомлений."""
     def flag(value: bool | None) -> int | None:
         return None if value is None else int(value)
 
@@ -358,7 +361,8 @@ async def set_player_profile(
                notifications_enabled = COALESCE(?, notifications_enabled),
                notify_matches = COALESCE(?, notify_matches),
                notify_trainings = COALESCE(?, notify_trainings),
-               notify_messages = COALESCE(?, notify_messages)
+               notify_messages = COALESCE(?, notify_messages),
+               phone = COALESCE(?, phone)
          WHERE telegram_id = ?
         """,
         (
@@ -369,8 +373,16 @@ async def set_player_profile(
             flag(notify_matches),
             flag(notify_trainings),
             flag(notify_messages),
+            phone,
             telegram_id,
         ),
+    )
+
+
+async def set_user_phone(telegram_id: int, phone: str) -> None:
+    """Сохраняет телефон, полученный кнопкой контакта в боте."""
+    await _execute(
+        "UPDATE users SET phone = ? WHERE telegram_id = ?", (phone, telegram_id)
     )
 
 
@@ -883,7 +895,8 @@ async def get_participants(training_id: int) -> list[aiosqlite.Row]:
     return await _fetchall(
         """
         SELECT b.status, b.position, b.created_at,
-               u.telegram_id, u.first_name, u.avatar_file_id, u.display_mode
+               u.telegram_id, u.first_name, u.username, u.phone,
+               u.avatar_file_id, u.display_mode
           FROM bookings b
           JOIN users u ON u.telegram_id = b.user_id
          WHERE b.training_id = ? AND b.status IN ('booked', 'waitlist')
@@ -903,7 +916,8 @@ async def get_participants_for_trainings(
     rows = await _fetchall(
         """
         SELECT b.training_id, b.status, b.position, b.created_at,
-               u.telegram_id, u.first_name, u.avatar_file_id, u.display_mode
+               u.telegram_id, u.first_name, u.username, u.phone,
+               u.avatar_file_id, u.display_mode
           FROM bookings b
           JOIN users u ON u.telegram_id = b.user_id
          WHERE b.training_id IN (SELECT value FROM json_each(?))
@@ -945,7 +959,7 @@ async def get_participants_full(training_id: int) -> list[aiosqlite.Row]:
     return await _fetchall(
         """
         SELECT b.status, b.position, b.created_at,
-               u.telegram_id, u.first_name, u.username, u.show_username,
+               u.telegram_id, u.first_name, u.username, u.show_username, u.phone,
                u.avatar_file_id, u.about, u.display_mode
           FROM bookings b
           JOIN users u ON u.telegram_id = b.user_id

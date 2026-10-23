@@ -2624,3 +2624,117 @@ def test_feedback_notification_hides_id_and_supports_reply(monkeypatch):
 
     monkeypatch.setattr(mainmod.app.state, "bot", SimpleNamespace(send_message=failing_send))
     asyncio.run(mainmod._notify_feedback(user, "idea", "Идея", ""))
+
+
+def test_phone_profile_and_validation(client):
+    me = client.get("/api/me", headers=PLAYER).json()["user"]
+    assert me["phone"] == ""
+
+    saved = client.put(
+        "/api/me/profile",
+        headers=PLAYER,
+        json={
+            "about": "",
+            "display_mode": "name",
+            "show_username": False,
+            "phone": "+7 (999) 123-45-67",
+        },
+    )
+    assert saved.status_code == 200
+    assert saved.json()["profile"]["phone"] == "+79991234567"
+    assert client.get("/api/me", headers=PLAYER).json()["user"]["phone"] == "+79991234567"
+    assert client.get("/api/me/export", headers=PLAYER).json()["user"]["phone"] == "+79991234567"
+
+    bad = client.put(
+        "/api/me/profile",
+        headers=PLAYER,
+        json={
+            "about": "",
+            "display_mode": "name",
+            "show_username": False,
+            "phone": "123",
+        },
+    )
+    assert bad.status_code == 422
+
+    cleared = client.put(
+        "/api/me/profile",
+        headers=PLAYER,
+        json={
+            "about": "",
+            "display_mode": "name",
+            "show_username": False,
+            "phone": "",
+        },
+    )
+    assert cleared.json()["profile"]["phone"] == ""
+
+
+def test_phone_required_for_new_events(client, monkeypatch):
+    coach_headers = COACH
+    coach = client.get("/api/me", headers=coach_headers).json()["user"]
+    assert coach["is_coach"] is True
+    training = client.post(
+        "/api/coach/trainings",
+        headers=COACH,
+        json={**_future(5, "18:00"), "capacity": 2},
+    ).json()["id"]
+    existing_match = client.post(
+        "/api/matches",
+        headers=COACH,
+        json={**_future(6, "12:00"), "title": "Телефонный матч"},
+    ).json()["id"]
+
+    from dataclasses import replace
+    from datetime import datetime
+
+    past = datetime(2020, 1, 1, tzinfo=settings.timezone)
+    monkeypatch.setattr(
+        mainmod, "settings", replace(settings, phone_required_from=past)
+    )
+
+    blocked = client.post(f"/api/trainings/{training}/book", headers=PLAYER)
+    assert blocked.status_code == 403
+    assert "телефон" in blocked.json()["error"].lower()
+
+    assert client.post(
+        f"/api/matches/{existing_match}/join", headers=PLAYER2
+    ).status_code == 403
+    assert client.post(
+        "/api/matches",
+        headers=PLAYER2,
+        json={**_future(7, "12:00"), "title": "Без телефона"},
+    ).status_code == 403
+
+    client.put(
+        "/api/me/profile",
+        headers=PLAYER,
+        json={
+            "about": "",
+            "display_mode": "name",
+            "show_username": False,
+            "phone": "+79991234567",
+        },
+    )
+    assert client.post(f"/api/trainings/{training}/book", headers=PLAYER).status_code == 200
+
+    # С телефоном создание матча и вход в него снова доступны.
+    created = client.post(
+        "/api/matches",
+        headers=PLAYER,
+        json={**_future(6, "13:00"), "title": "Матч с телефоном"},
+    )
+    assert created.status_code == 200
+    assert client.post(
+        f"/api/matches/{created.json()['id']}/join", headers=PLAYER2
+    ).status_code == 403
+    assert client.post(
+        f"/api/matches/{existing_match}/join", headers=PLAYER
+    ).status_code == 200
+
+
+def test_phone_normalization():
+    assert mainmod.normalize_phone("+7 (999) 123-45-67") == "+79991234567"
+    assert mainmod.normalize_phone("8 999 123 45 67") == "89991234567"
+    with pytest.raises(ValueError):
+        mainmod.normalize_phone("123")

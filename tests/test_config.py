@@ -60,3 +60,20 @@ def test_load_settings_rejects_unknown_bot_mode(monkeypatch):
     monkeypatch.setenv("BOT_MODE", "carrier-pigeon")
     with pytest.raises(RuntimeError, match="BOT_MODE"):
         load_settings()
+
+
+def test_load_settings_rejects_bad_phone_cutoff(monkeypatch):
+    monkeypatch.setenv("COACH_TELEGRAM_ID", "123")
+    monkeypatch.setenv("TIMEZONE", "Europe/Moscow")
+    monkeypatch.setenv("PHONE_REQUIRED_FROM", "not-a-date")
+    with pytest.raises(RuntimeError, match="PHONE_REQUIRED_FROM"):
+        load_settings()
+
+
+def test_load_settings_accepts_naive_phone_cutoff(monkeypatch):
+    monkeypatch.setenv("COACH_TELEGRAM_ID", "123")
+    monkeypatch.setenv("TIMEZONE", "Europe/Moscow")
+    monkeypatch.setenv("PHONE_REQUIRED_FROM", "2026-10-24T00:00:00")
+    loaded = load_settings()
+    assert loaded.phone_required_from is not None
+    assert loaded.phone_required_from.tzinfo is not None

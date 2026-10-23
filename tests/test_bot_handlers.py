@@ -89,7 +89,7 @@ def test_web_app_url_keeps_existing_query(monkeypatch):
         "settings",
         replace(settings, webhook_base_url="https://example.test/app?x=1"),
     )
-    assert botmod._web_app_url() == "https://example.test/app?x=1&v=25"
+    assert botmod._web_app_url() == "https://example.test/app?x=1&v=26"
 
 
 def test_web_app_url_falls_back_to_telegram(monkeypatch):
@@ -136,7 +136,7 @@ def test_cmd_start_escapes_name_and_hides_id(monkeypatch):
     assert "&lt;Иван&gt;" in text
     assert "<Иван>" not in text
     assert "1001" not in text
-    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=25")
+    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=26")
     assert calls["user"]["telegram_id"] == 1001
 
 
@@ -323,7 +323,7 @@ def test_fallback_opens_web_app(monkeypatch):
     asyncio.run(botmod.fallback(message))
     text, markup = answers[0]
     assert "Открой приложение" in text
-    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=25")
+    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=26")
 
 
 def test_cache_avatar_uses_largest_photo(monkeypatch):
@@ -625,7 +625,7 @@ def test_bot_main_keyboard_slot_label_and_names(monkeypatch):
         replace(settings, webhook_base_url="https://example.test"),
     )
     keyboard = botmod._main_keyboard()
-    assert keyboard.inline_keyboard[0][0].web_app.url.endswith("?v=25")
+    assert keyboard.inline_keyboard[0][0].web_app.url.endswith("?v=26")
     assert keyboard.inline_keyboard[1][0].callback_data == "slots:list"
     assert keyboard.inline_keyboard[1][1].callback_data == "attendees:list"
     label = botmod._slot_label(_training())
@@ -916,6 +916,11 @@ def test_cb_attendees_show_edges(monkeypatch):
 
     monkeypatch.setattr(db, "get_training", training)
     monkeypatch.setattr(db, "get_participants", participants)
+
+    async def not_coach(_id):
+        return False
+
+    monkeypatch.setattr(db, "is_coach_id", not_coach)
     callback, _, chat_answers, _ = _callback_with_message(555, "attendees:show:1")
     asyncio.run(botmod.cb_attendees_show(callback))
     assert "Иван" in chat_answers[0] and "Мария" not in chat_answers[0]
@@ -1090,3 +1095,135 @@ def test_ensure_rules_for_all_handles_db_error(monkeypatch):
 
     monkeypatch.setattr(db, "list_all_users", broken_users)
     asyncio.run(botmod.ensure_rules_for_all(SimpleNamespace()))
+
+
+def test_phone_contact_and_command(monkeypatch):
+    saved = []
+
+    async def fake_set_phone(user_id, phone):
+        saved.append((user_id, phone))
+
+    monkeypatch.setattr(db, "set_user_phone", fake_set_phone)
+    message, answers, _ = _message(555, text="/phone")
+    asyncio.run(botmod.cmd_phone(message))
+    assert "телефон" in answers[0][0].lower()
+    assert answers[0][1] is not None
+
+    async def fake_send(chat_id, text, **kwargs):
+        return None
+
+    message, answers, _ = _message(555)
+    message.contact = SimpleNamespace(user_id=555, phone_number="+7 999 123-45-67")
+    message.answer = lambda text, **kwargs: _append_answer(answers, text, kwargs)
+    asyncio.run(botmod.handle_contact(message))
+    assert saved == [(555, "+79991234567")]
+    assert answers
+
+
+async def _append_answer(answers, text, kwargs=None):
+    answers.append((text, kwargs.get("reply_markup") if kwargs else None))
+
+
+def test_phone_contact_wrong_user_invalid_and_error(monkeypatch):
+    async def fake_set_phone(user_id, phone):
+        raise AssertionError("not called")
+
+    monkeypatch.setattr(db, "set_user_phone", fake_set_phone)
+    message, answers, _ = _message(555)
+    message.contact = SimpleNamespace(user_id=556, phone_number="+79991234567")
+
+    async def answer(text, **kwargs):
+        answers.append((text, kwargs.get("reply_markup")))
+
+    message.answer = answer
+    asyncio.run(botmod.handle_contact(message))
+    assert "своим" in answers[-1][0]
+
+    message, answers, _ = _message(555)
+    message.contact = SimpleNamespace(user_id=555, phone_number="123")
+    message.answer = answer
+    asyncio.run(botmod.handle_contact(message))
+    assert "распознать" in answers[-1][0]
+
+    message, answers, _ = _message(555)
+    message.contact = None
+    message.answer = answer
+    asyncio.run(botmod.handle_contact(message))
+
+    class BrokenAnswer:
+        async def answer(self, *args, **kwargs):
+            raise RuntimeError("telegram")
+
+    broken = SimpleNamespace(
+        from_user=SimpleNamespace(id=555),
+        contact=SimpleNamespace(user_id=555, phone_number="+79991234567"),
+        answer=BrokenAnswer().answer,
+    )
+
+    async def ok_set_phone(user_id, phone):
+        return None
+
+    monkeypatch.setattr(db, "set_user_phone", ok_set_phone)
+    asyncio.run(botmod.handle_contact(broken))
+
+
+def test_cmd_phone_handles_error():
+    class BrokenMessage:
+        async def answer(self, *args, **kwargs):
+            raise RuntimeError("telegram")
+
+    asyncio.run(botmod.cmd_phone(BrokenMessage()))
+
+
+def test_cmd_start_prompts_for_phone(monkeypatch):
+    async def fake_is_coach_id(_id):
+        return False
+
+    async def fake_upsert(**kwargs):
+        return None
+
+    async def fake_get_user(_id):
+        return {"phone": ""}
+
+    async def fake_cache(*args):
+        return None
+
+    monkeypatch.setattr(db, "is_coach_id", fake_is_coach_id)
+    monkeypatch.setattr(db, "upsert_user", fake_upsert)
+    monkeypatch.setattr(db, "get_user", fake_get_user)
+    monkeypatch.setattr(botmod, "_cache_avatar", fake_cache)
+    monkeypatch.setattr(
+        botmod, "settings", replace(settings, webhook_base_url="https://example.test")
+    )
+    message, answers, _ = _message(555, first_name="Иван")
+    message.bot = SimpleNamespace()
+    asyncio.run(botmod.cmd_start(message))
+    assert any("Телефон нужен" in text for text, _ in answers)
+
+
+def test_attendees_coach_sees_username_and_phone(monkeypatch):
+    async def training(_id):
+        return _training()
+
+    async def participants(_id):
+        return [
+            {
+                "status": "booked",
+                "telegram_id": 555,
+                "first_name": "Иван",
+                "username": "ivan",
+                "phone": "+79991234567",
+                "display_mode": "name",
+            }
+        ]
+
+    async def is_coach(_id):
+        return True
+
+    monkeypatch.setattr(db, "get_training", training)
+    monkeypatch.setattr(db, "get_participants", participants)
+    monkeypatch.setattr(db, "is_coach_id", is_coach)
+    callback, _, chat_answers, _ = _callback_with_message(123, "attendees:show:1")
+    asyncio.run(botmod.cb_attendees_show(callback))
+    assert "@ivan" in chat_answers[0]
+    assert "+79991234567" in chat_answers[0]

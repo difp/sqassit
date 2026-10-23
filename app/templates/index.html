@@ -82,6 +82,14 @@
         <span class="hint hint--tight" id="profile-about-count">0 / 450</span></label>
     </section>
 
+    <section class="settings-block" aria-labelledby="profile-phone-title">
+      <h3 class="settings-block__title" id="profile-phone-title">Телефон</h3>
+      <label class="field"><span class="label">Для связи с тренером</span>
+        <input class="input" id="profile-phone" type="tel" inputmode="tel"
+               maxlength="32" autocomplete="tel" placeholder="+7 999 123-45-67">
+        <span class="hint hint--tight">Виден только тренеру. Можно поделиться контактом через /phone в боте.</span></label>
+    </section>
+
     <section class="settings-block" aria-labelledby="profile-privacy-title">
       <h3 class="settings-block__title" id="profile-privacy-title">Приватность</h3>
       <label class="field"><span class="label">Как показываться в списке участников</span>
@@ -393,6 +401,9 @@ document.getElementById('schedule').addEventListener('click', async (ev) => {
     await loadSchedule();
   } catch (e) {
     hapticNotify('error');
+    if (e.status === 403 && /телефон/i.test(e.message)) {
+      openProfile();
+    }
     toast(e.message);
   }
 });
@@ -435,6 +446,7 @@ const profileAbout = document.getElementById('profile-about');
 const profileAboutCount = document.getElementById('profile-about-count');
 const profileDisplay = document.getElementById('profile-display');
 const profileUsername = document.getElementById('profile-username');
+const profilePhone = document.getElementById('profile-phone');
 const profileNotifyAll = document.getElementById('profile-notify-all');
 const profileNotifyMatches = document.getElementById('profile-notify-matches');
 const profileNotifyTrainings = document.getElementById('profile-notify-trainings');
@@ -535,6 +547,7 @@ function openProfile() {
   updateProfileAboutCount();
   profileDisplay.value = APP.me.display_mode || 'name';
   profileUsername.checked = !!APP.me.show_username;
+  profilePhone.value = APP.me.phone || '';
   syncNotificationControls();
   updateProfilePreview();
   profileSheet.querySelector('.sheet__body').scrollTop = 0;
@@ -559,6 +572,7 @@ document.getElementById('profile-save').addEventListener('click', async () => {
       about: profileAbout.value.trim(),
       display_mode: profileDisplay.value,
       show_username: profileUsername.checked,
+      phone: profilePhone.value.trim(),
       notifications_enabled: profileNotifyAll.checked,
       notify_matches: profileNotifyMatches.checked,
       notify_trainings: profileNotifyTrainings.checked,

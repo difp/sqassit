@@ -161,3 +161,17 @@ def test_database_helpers_and_queue_branches(tmp_path):
             await db.close()
 
     asyncio.run(scenario())
+
+
+def test_set_user_phone(tmp_path):
+    async def scenario() -> None:
+        await db.connect(str(tmp_path / "phone.db"))
+        try:
+            await db.upsert_user(1, "u", "User", is_coach=False)
+            await db.set_user_phone(1, "+79991234567")
+            row = await db.get_user(1)
+            assert row is not None and row["phone"] == "+79991234567"
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())

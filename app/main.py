@@ -13,6 +13,7 @@ import asyncio
 import hmac
 import html
 import logging
+import re
 import time
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
@@ -349,6 +350,22 @@ def sanitize_bio(value: str) -> str:
     return (value or "").strip()[:450]
 
 
+def normalize_phone(value: str) -> str:
+    """Оставляет цифры и ведущий плюс; проверяет длину номера."""
+    raw = (value or "").strip()
+    cleaned = re.sub(r"[^\d+]", "", raw)
+    plus = cleaned.startswith("+")
+    digits = cleaned[1:] if plus else cleaned
+    if not digits.isdigit() or not 10 <= len(digits) <= 15:
+        raise ValueError("Введите телефон из 10–15 цифр.")
+    return ("+" if plus else "") + digits
+
+
+def _phone_required_for_new_events() -> bool:
+    moment = settings.phone_required_from
+    return moment is not None and datetime.now(tz=settings.timezone) >= moment
+
+
 def _escape_ics(value: str) -> str:
     """Экранирование спецсимволов по RFC 5545."""
     return (
@@ -482,6 +499,7 @@ class PlayerProfileIn(BaseModel):
     about: str = Field(default="", max_length=450)
     display_mode: Literal["name", "animal"] = "name"
     show_username: bool = False
+    phone: str | None = Field(default=None, max_length=32)
     notifications_enabled: bool | None = None
     notify_matches: bool | None = None
     notify_trainings: bool | None = None
@@ -697,6 +715,7 @@ async def api_me(user: Annotated[dict, Depends(current_user)]):
             "is_owner": bool(user.get("is_owner")),
             "is_manager": bool(user.get("is_manager")),
             "notifications_enabled": bool(user["notifications_enabled"]),
+            "phone": user["phone"] or "",
             "notify_matches": bool(user["notify_matches"]),
             "notify_trainings": bool(user["notify_trainings"]),
             "notify_messages": bool(user["notify_messages"]),
@@ -747,11 +766,15 @@ async def api_set_player_profile(
 ):
     """Сохраняет «о себе» и настройки показа в списке участников."""
     try:
+        phone = None
+        if payload.phone is not None:
+            phone = normalize_phone(payload.phone) if payload.phone.strip() else ""
         await db.set_player_profile(
             user["telegram_id"],
             about=sanitize_bio(payload.about),
             display_mode=payload.display_mode,
             show_username=payload.show_username,
+            phone=phone,
             notifications_enabled=payload.notifications_enabled,
             notify_matches=payload.notify_matches,
             notify_trainings=payload.notify_trainings,
@@ -766,6 +789,7 @@ async def api_set_player_profile(
                 "about": updated["about"] or "",
                 "display_mode": updated["display_mode"] or "name",
                 "show_username": bool(updated["show_username"]),
+                "phone": updated["phone"] or "",
                 "notifications_enabled": bool(updated["notifications_enabled"]),
                 "notify_matches": bool(updated["notify_matches"]),
                 "notify_trainings": bool(updated["notify_trainings"]),
@@ -773,6 +797,8 @@ async def api_set_player_profile(
                 "animal": animal_identity(user["telegram_id"]),
             },
         }
+    except ValueError as exc:
+        return error_json(str(exc), 422)
     except HTTPException:
         raise
     except Exception:
@@ -834,6 +860,7 @@ async def api_export_me(user: Annotated[dict, Depends(current_user)]):
             "telegram_id": user["telegram_id"],
             "username": user["username"],
             "first_name": user["first_name"],
+            "phone": user["phone"] or "",
             "notifications_enabled": bool(user["notifications_enabled"]),
             "notify_matches": bool(user["notify_matches"]),
             "notify_trainings": bool(user["notify_trainings"]),
@@ -941,6 +968,8 @@ async def api_book(training_id: int, user: Annotated[dict, Depends(current_user)
             return error_json("Тренировка не найдена", 404)
         if training["start_at"] <= int(time.time()):
             return error_json("Тренировка уже началась", 400)
+        if _phone_required_for_new_events() and not user["phone"]:
+            return error_json("Укажите телефон в настройках профиля, чтобы записаться.", 403)
 
         status = await db.book_training(training_id, user["telegram_id"], training["capacity"])
         _spawn(_notify_training_event(training, user["telegram_id"], status))
@@ -960,7 +989,9 @@ async def api_cancel(training_id: int, user: Annotated[dict, Depends(current_use
             return error_json("Тренировка не найдена", 404)
 
         booking = await db.get_booking(training_id, user["telegram_id"])
-        if booking is None or booking["status"] not in {"booked", "waitlist"}:
+        if booking is None or booking["status"] not in {
+            "pending", "booked", "waitlist"
+        }:
             return error_json("Вы не записаны на эту тренировку", 400)
 
         seconds_left = training["start_at"] - int(time.time())
@@ -1064,6 +1095,8 @@ async def api_create_match(
 ):
     _match_create_limiter.check(str(user["telegram_id"]))
     try:
+        if _phone_required_for_new_events() and not user["phone"]:
+            return error_json("Укажите телефон в настройках профиля, чтобы создать матч.", 403)
         start_at = _parse_local_epoch(payload.date, payload.time)
         if start_at <= int(time.time()):
             return error_json("Нельзя создать матч в прошлом", 400)
@@ -1104,6 +1137,8 @@ async def api_join_match(
             return error_json("Матч не найден", 404)
         if match["start_at"] <= int(time.time()):
             return error_json("Матч уже начался", 400)
+        if _phone_required_for_new_events() and not user["phone"]:
+            return error_json("Укажите телефон в настройках профиля, чтобы присоединиться.", 403)
         status = await db.join_match(
             match_id, user["telegram_id"], match["max_players"]
         )

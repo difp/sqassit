@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import html
 import logging
+import re
 import time
 from datetime import datetime, timedelta
 from typing import cast
@@ -23,7 +24,10 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
     Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     WebAppInfo,
 )
 
@@ -54,7 +58,7 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-WEB_APP_VERSION = "25"
+WEB_APP_VERSION = "26"
 
 
 def _web_app_url() -> str:
@@ -138,6 +142,62 @@ def _main_keyboard() -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def _phone_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[
+            KeyboardButton(text="📱 Поделиться телефоном", request_contact=True)
+        ]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def _normalize_contact_phone(value: str) -> str:
+    cleaned = re.sub(r"[^\d+]", "", (value or "").strip())
+    plus = cleaned.startswith("+")
+    digits = cleaned[1:] if plus else cleaned
+    if not digits.isdigit() or not 10 <= len(digits) <= 15:
+        return ""
+    return ("+" if plus else "") + digits
+
+
+async def cmd_phone(message: Message) -> None:
+    """Просит телефон отдельной reply-кнопкой Telegram."""
+    try:
+        await message.answer(
+            "📱 Поделитесь телефоном, чтобы тренер мог связаться с вами. "
+            "Можно также ввести номер вручную в настройках профиля.",
+            reply_markup=_phone_keyboard(),
+        )
+    except Exception:
+        logger.exception("Ошибка запроса телефона")
+
+
+async def handle_contact(message: Message) -> None:
+    """Сохраняет только собственный контакт отправителя (не чужой)."""
+    try:
+        if message.from_user is None or message.contact is None:
+            return
+        contact = message.contact
+        if contact.user_id != message.from_user.id:
+            await message.answer("Поделитесь, пожалуйста, своим контактом.")
+            return
+        phone = _normalize_contact_phone(contact.phone_number)
+        if not phone:
+            await message.answer(
+                "Не удалось распознать номер. Введите телефон в настройках профиля."
+            )
+            return
+        await db.set_user_phone(message.from_user.id, phone)
+        await message.answer(
+            "✅ Телефон сохранён. Его увидит только тренер.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await message.answer("Меню:", reply_markup=_main_keyboard())
+    except Exception:
+        logger.exception("Ошибка сохранения телефона")
 
 
 def _slot_label(training) -> str:
@@ -346,13 +406,24 @@ async def cb_attendees_show(callback: CallbackQuery) -> None:
         participants = await db.get_participants(training_id)
         booked = [p for p in participants if p["status"] == "booked"]
         waitlist = [p for p in participants if p["status"] == "waitlist"]
+        user_id = callback.from_user.id
+        is_coach = user_id == settings.coach_telegram_id or await db.is_coach_id(user_id)
         lines = [f"👥 <b>Кто записался</b> · {html.escape(training['training_type'] or 'Тренировка')}"]
+
+        def person(p) -> str:
+            name = html.escape(_player_name(p))
+            if not is_coach:
+                return name
+            username = f"@{p['username']}" if p["username"] else "без username"
+            phone = p["phone"] or "телефон не указан"
+            return f"{name} · {html.escape(username)} · {html.escape(phone)}"
+
         lines.append("Записаны: " + (", ".join(
-            html.escape(_player_name(p)) for p in booked[:40]
+            person(p) for p in booked[:40]
         ) if booked else "пока никого"))
         if waitlist:
             lines.append("В очереди: " + ", ".join(
-                html.escape(_player_name(p)) for p in waitlist[:20]
+                person(p) for p in waitlist[:20]
             ))
         await message.answer("\n".join(lines))
     except Exception:
@@ -398,6 +469,13 @@ async def cmd_start(message: Message) -> None:
             "Нажми кнопку ниже, чтобы открыть приложение.",
             reply_markup=keyboard,
         )
+        profile = await db.get_user(user.id)
+        if profile is not None and not profile["phone"]:
+            await message.answer(
+                "📱 Телефон нужен тренеру для связи и модерации. "
+                "Поделитесь контактом кнопкой ниже или введите номер в профиле.",
+                reply_markup=_phone_keyboard(),
+            )
     except Exception:
         # Один сбойный апдейт не должен ронять бота.
         logger.exception("Ошибка в обработчике /start")
@@ -578,6 +656,8 @@ def create_dispatcher() -> Dispatcher:
     # Порядок важен: команды/кнопки должны проверяться раньше fallback.
     router.message.register(cmd_start, CommandStart())
     router.message.register(cmd_slots, Command("slots"))
+    router.message.register(cmd_phone, Command("phone"))
+    router.message.register(handle_contact, F.contact)
     router.callback_query.register(cb_reply, F.data.startswith("reply:"))
     router.message.register(cmd_inbox, Command("inbox"))
     router.message.register(coach_reply_text, F.text, PendingReplyFilter())
