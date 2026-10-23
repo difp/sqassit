@@ -883,12 +883,12 @@ def test_coach_message_hides_player_id(client, monkeypatch):
     )
 
     assert sent["chat_id"] == 123
-    assert "Иван" in sent["text"]
-    assert "Не смогу прийти в субботу" in sent["text"]
+    assert "Новое сообщение" in sent["text"]
+    assert "Иван" not in sent["text"]
+    assert "Не смогу прийти в субботу" not in sent["text"]
     assert "555" not in sent["text"]
-    assert "id:" not in sent["text"].lower()
     button = sent["reply_markup"].inline_keyboard[0][0]
-    assert button.callback_data == "reply:555"
+    assert button.web_app.url
 
 
 def test_inbox_hides_player_id(monkeypatch):
@@ -1052,13 +1052,13 @@ def test_message_to_coach_uses_animal_name(client, monkeypatch):
         json={"text": "Не смогу прийти", "training_id": tid},
     ).json()["ok"] is True
 
-    animal = botmod.animal_identity(555)
     for _ in range(30):
         if sent:
             break
         time.sleep(0.05)
     assert sent
-    assert animal["name"] in sent[0][1]
+    assert "Новое сообщение" in sent[0][1]
+    assert "Сова" not in sent[0][1]
     assert "Иван" not in sent[0][1]
     assert "555" not in sent[0][1]
 
@@ -3175,3 +3175,63 @@ def test_coauthor_notification_loops(monkeypatch):
     calls.clear()
     asyncio.run(mainmod._notify_match_event(match, 555, "joined"))
     assert calls
+
+
+def test_in_app_chat_threads_and_notifications(client, monkeypatch):
+    assert client.get("/api/messages/thread", headers=PLAYER).json()["messages"] == []
+    assert client.post(
+        "/api/messages/coach", headers=PLAYER, json={"text": "Привет, тренер"}
+    ).json()["ok"] is True
+    assert client.post(
+        "/api/messages/coach", headers=PLAYER, json={"text": "Второе сообщение"}
+    ).status_code == 200
+
+    thread = client.get("/api/messages/thread", headers=PLAYER).json()["messages"]
+    assert [m["text"] for m in thread] == ["Привет, тренер", "Второе сообщение"]
+    assert thread[0]["from_me"] is True
+
+    conversations = client.get("/api/coach/messages", headers=COACH).json()["conversations"]
+    assert conversations and conversations[0]["telegram_id"] == 555
+    assert conversations[0]["last_text"] == "Второе сообщение"
+
+    coach_thread = client.get("/api/coach/messages/555", headers=COACH).json()["messages"]
+    assert len(coach_thread) == 2 and coach_thread[0]["from_me"] is False
+    assert client.post(
+        "/api/coach/messages/555", headers=COACH, json={"text": "Ответ тренера"}
+    ).json()["ok"] is True
+    assert client.post(
+        "/api/coach/messages/555", headers=COACH, json={"text": "   "}
+    ).status_code == 422
+    assert client.post(
+        "/api/coach/messages/999", headers=COACH, json={"text": "нет"}
+    ).status_code == 404
+
+    player_thread = client.get("/api/messages/thread", headers=PLAYER).json()["messages"]
+    assert player_thread[-1]["text"] == "Ответ тренера"
+    assert player_thread[-1]["from_me"] is False
+
+    sent = []
+
+    async def fake_send(chat_id, text, **kwargs):
+        sent.append((chat_id, text, kwargs))
+
+    monkeypatch.setattr(mainmod.app.state, "bot", SimpleNamespace(send_message=fake_send))
+    asyncio.run(mainmod._notify_new_chat_message(555, 123))
+    assert sent and "Новое сообщение" in sent[0][1]
+    assert "Ответ тренера" not in sent[0][1]
+
+    async def disabled(telegram_id, category):
+        return False
+
+    monkeypatch.setattr(mainmod.db, "notification_enabled", disabled)
+    asyncio.run(mainmod._notify_new_chat_message(555, 123))
+
+    async def failing(*args, **kwargs):
+        raise RuntimeError("telegram")
+
+    async def enabled(telegram_id, category):
+        return True
+
+    monkeypatch.setattr(mainmod.db, "notification_enabled", enabled)
+    monkeypatch.setattr(mainmod.app.state, "bot", SimpleNamespace(send_message=failing))
+    asyncio.run(mainmod._notify_new_chat_message(555, 123))

@@ -57,11 +57,11 @@
   <div class="sheet__backdrop" data-msg-close></div>
   <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="msg-title">
     <div class="sheet__handle"></div>
-    <h2 class="sheet__title" id="msg-title">Сообщение тренеру</h2>
-    <p class="hint form-note">Уйдёт тренеру в чат с ботом — ответ придёт вам сюда же.</p>
-    <textarea class="input" id="msg-text" rows="4" maxlength="1000"
+    <h2 class="sheet__title" id="msg-title">Чат с тренером</h2>
+    <div class="chat-log" id="msg-log"><div class="chat-empty">Загружаем переписку…</div></div>
+    <textarea class="input" id="msg-text" rows="3" maxlength="1000"
               aria-label="Сообщение тренеру"
-              placeholder="Например: не смогу прийти в субботу, можно перенести?"></textarea>
+              placeholder="Напишите тренеру…"></textarea>
     <button class="btn btn--primary btn--block" id="msg-send" style="margin-top:12px">Отправить</button>
   </div>
 </div>
@@ -413,10 +413,24 @@ document.getElementById('schedule').addEventListener('click', async (ev) => {
 // ===== Личное сообщение тренеру =====
 const msgSheet = document.getElementById('msg-sheet');
 let MSG_TRAINING = null;
+async function loadMsgThread() {
+  const log = document.getElementById('msg-log');
+  log.innerHTML = '<div class="chat-empty">Загружаем переписку…</div>';
+  try {
+    const data = await api('/api/messages/thread');
+    log.innerHTML = data.messages.length
+      ? data.messages.map(m => `<div class="chat-bubble ${m.from_me ? 'chat-bubble--me' : ''}">${esc(m.text)}</div>`).join('')
+      : '<div class="chat-empty">Напишите тренеру — ответ появится здесь.</div>';
+    log.scrollTop = log.scrollHeight;
+  } catch (e) {
+    log.innerHTML = `<div class="chat-empty">${esc(e.message)}</div>`;
+  }
+}
 function openMsg(trainingId) {
   MSG_TRAINING = trainingId || null;
   msgSheet.classList.add('is-open');
   haptic('light');
+  loadMsgThread();
   setTimeout(() => document.getElementById('msg-text').focus(), 150);
 }
 function closeMsg() { msgSheet.classList.remove('is-open'); }
@@ -431,9 +445,9 @@ document.getElementById('msg-send').addEventListener('click', async () => {
   try {
     await api('/api/messages/coach', 'POST', { text, training_id: MSG_TRAINING });
     hapticNotify('success');
-    toast('Сообщение отправлено тренеру');
+    toast('Сообщение отправлено');
     ta.value = '';
-    closeMsg();
+    await loadMsgThread();
   } catch (e) {
     hapticNotify('error');
     toast(e.message);

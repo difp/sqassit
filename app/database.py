@@ -1330,6 +1330,56 @@ async def add_message(from_user: int, to_user: int, text: str) -> int:
     )
 
 
+async def list_user_thread(user_id: int) -> list[aiosqlite.Row]:
+    """Вся переписка пользователя (с любым тренером) для чата в приложении."""
+    return await _fetchall(
+        """
+        SELECT m.id, m.from_user, m.to_user, m.text, m.created_at
+          FROM messages m
+         WHERE m.from_user = ? OR m.to_user = ?
+         ORDER BY m.id ASC
+        """,
+        (user_id, user_id),
+    )
+
+
+async def list_coach_thread(coach_id: int, user_id: int) -> list[aiosqlite.Row]:
+    return await _fetchall(
+        """
+        SELECT m.id, m.from_user, m.to_user, m.text, m.created_at
+          FROM messages m
+         WHERE (m.from_user = ? AND m.to_user = ?)
+            OR (m.from_user = ? AND m.to_user = ?)
+         ORDER BY m.id ASC
+        """,
+        (user_id, coach_id, coach_id, user_id),
+    )
+
+
+async def list_coach_conversations(coach_id: int) -> list[dict[str, Any]]:
+    """Последнее сообщение по каждому игроку для панели тренера."""
+    rows = await _fetchall(
+        """
+        SELECT m.*, u.first_name, u.display_mode, u.avatar_file_id
+          FROM messages m
+          JOIN users u ON u.telegram_id = CASE
+              WHEN m.from_user = ? THEN m.to_user ELSE m.from_user END
+         WHERE m.from_user = ? OR m.to_user = ?
+         ORDER BY m.id DESC
+        """,
+        (coach_id, coach_id, coach_id),
+    )
+    seen: set[int] = set()
+    result = []
+    for row in rows:
+        other = row["to_user"] if row["from_user"] == coach_id else row["from_user"]
+        if other in seen:
+            continue
+        seen.add(other)
+        result.append({**dict(row), "other_id": other})
+    return result
+
+
 async def list_inbox(to_user: int, limit: int = 20) -> list[aiosqlite.Row]:
     """Последние входящие сообщения (для тренера)."""
     return await _fetchall(

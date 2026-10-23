@@ -89,7 +89,7 @@ def test_web_app_url_keeps_existing_query(monkeypatch):
         "settings",
         replace(settings, webhook_base_url="https://example.test/app?x=1"),
     )
-    assert botmod._web_app_url() == "https://example.test/app?x=1&v=29"
+    assert botmod._web_app_url() == "https://example.test/app?x=1&v=30"
 
 
 def test_web_app_url_falls_back_to_telegram(monkeypatch):
@@ -136,7 +136,7 @@ def test_cmd_start_escapes_name_and_hides_id(monkeypatch):
     assert "&lt;Иван&gt;" in text
     assert "<Иван>" not in text
     assert "1001" not in text
-    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=29")
+    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=30")
     assert calls["user"]["telegram_id"] == 1001
 
 
@@ -323,7 +323,7 @@ def test_fallback_opens_web_app(monkeypatch):
     asyncio.run(botmod.fallback(message))
     text, markup = answers[0]
     assert "Открой приложение" in text
-    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=29")
+    assert markup.inline_keyboard[0][0].web_app.url.endswith("?v=30")
 
 
 def test_cache_avatar_uses_largest_photo(monkeypatch):
@@ -625,7 +625,7 @@ def test_bot_main_keyboard_slot_label_and_names(monkeypatch):
         replace(settings, webhook_base_url="https://example.test"),
     )
     keyboard = botmod._main_keyboard()
-    assert keyboard.inline_keyboard[0][0].web_app.url.endswith("?v=29")
+    assert keyboard.inline_keyboard[0][0].web_app.url.endswith("?v=30")
     assert keyboard.inline_keyboard[1][0].callback_data == "slots:list"
     assert keyboard.inline_keyboard[1][1].callback_data == "attendees:list"
     label = botmod._slot_label(_training())

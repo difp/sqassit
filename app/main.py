@@ -1802,6 +1802,94 @@ async def api_message_coach(payload: MessageIn, user: Annotated[dict, Depends(cu
     return {"ok": True}
 
 
+@app.get("/api/messages/thread")
+async def api_player_thread(user: Annotated[dict, Depends(current_user)]):
+    rows = await db.list_user_thread(user["telegram_id"])
+    return {
+        "ok": True,
+        "messages": [
+            {
+                "id": r["id"],
+                "from_me": r["from_user"] == user["telegram_id"],
+                "text": r["text"],
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.get("/api/coach/messages")
+async def api_coach_messages(coach: Annotated[dict, Depends(require_coach)]):
+    rows = await db.list_coach_conversations(coach["telegram_id"])
+    return {
+        "ok": True,
+        "conversations": [
+            {
+                "telegram_id": r["other_id"],
+                "first_name": animal_identity(r["other_id"])["name"]
+                if r["display_mode"] == "animal"
+                else (r["first_name"] or "Игрок"),
+                "avatar_url": "" if r["display_mode"] == "animal" else _avatar_url(r["other_id"], real=True),
+                "last_text": r["text"],
+                "last_at": r["created_at"],
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.get("/api/coach/messages/{user_id}")
+async def api_coach_thread(user_id: int, coach: Annotated[dict, Depends(require_coach)]):
+    rows = await db.list_coach_thread(coach["telegram_id"], user_id)
+    return {
+        "ok": True,
+        "messages": [
+            {
+                "id": r["id"],
+                "from_me": r["from_user"] == coach["telegram_id"],
+                "text": r["text"],
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.post("/api/coach/messages/{user_id}")
+async def api_coach_reply(
+    user_id: int, payload: MessageIn, coach: Annotated[dict, Depends(require_coach)]
+):
+    _message_limiter.check(str(coach["telegram_id"]))
+    text = (payload.text or "").strip()
+    if not text:
+        return error_json("Пустое сообщение.", 422)
+    if await db.get_user(user_id) is None:
+        return error_json("Игрок не найден.", 404)
+    await db.add_message(coach["telegram_id"], user_id, text)
+    _spawn(_notify_new_chat_message(user_id, coach["telegram_id"]))
+    return {"ok": True}
+
+
+async def _notify_new_chat_message(telegram_id: int, author_id: int) -> None:
+    """Уведомление о сообщении без текста: переписка остаётся в приложении."""
+    if not await _notifications_allowed(telegram_id, "messages"):
+        return
+    try:
+        await app.state.bot.send_message(
+            telegram_id,
+            "✉️ Новое сообщение от тренера в приложении.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="Открыть чат",
+                    web_app=WebAppInfo(url=bot_module._web_app_url()),
+                )
+            ]]),
+        )
+    except Exception:
+        logger.info("Не удалось уведомить о сообщении %s", telegram_id, exc_info=True)
+
+
 async def _notify_feedback(
     user: dict[str, Any], kind: str, text: str, page: str
 ) -> None:
@@ -1836,16 +1924,15 @@ async def _deliver_to_coach(coach_id: int, sender_id: int, sender_name: str, tex
     if not await _notifications_allowed(coach_id, "messages"):
         return
     try:
-        sender = html.escape(sender_name)
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[[
-                InlineKeyboardButton(text="✍️ Ответить", callback_data=f"reply:{sender_id}")
-            ]]
-        )
         await app.state.bot.send_message(
             coach_id,
-            f"✉️ <b>Сообщение от {sender}</b>\n\n{html.escape(text)}",
-            reply_markup=keyboard,
+            "✉️ Новое сообщение в приложении.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="Открыть чат",
+                    web_app=WebAppInfo(url=bot_module._web_app_url()),
+                )
+            ]]),
         )
     except Exception:
         logger.warning("Не удалось доставить сообщение тренеру", exc_info=True)

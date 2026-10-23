@@ -58,7 +58,7 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-WEB_APP_VERSION = "29"
+WEB_APP_VERSION = "30"
 
 
 def _web_app_url() -> str:
@@ -658,9 +658,6 @@ def create_dispatcher() -> Dispatcher:
     router.message.register(cmd_slots, Command("slots"))
     router.message.register(cmd_phone, Command("phone"))
     router.message.register(handle_contact, F.contact)
-    router.callback_query.register(cb_reply, F.data.startswith("reply:"))
-    router.message.register(cmd_inbox, Command("inbox"))
-    router.message.register(coach_reply_text, F.text, PendingReplyFilter())
     router.callback_query.register(cb_apply, F.data.startswith("apply:"))
     router.callback_query.register(cb_slots, F.data == "slots:list")
     router.callback_query.register(cb_slot_show, F.data.startswith("slots:show:"))
