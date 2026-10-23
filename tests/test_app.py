@@ -3211,6 +3211,21 @@ def test_in_app_chat_threads_and_notifications(client, monkeypatch):
     assert player_thread[-1]["text"] == "Ответ тренера"
     assert player_thread[-1]["from_me"] is False
 
+    # У тренера отдельный диалог с каждым игроком; чужие сообщения не смешиваются.
+    assert client.post(
+        "/api/coach/coaches", headers=COACH, json={"telegram_id": 777}
+    ).status_code == 200
+    assert client.post(
+        "/api/messages/coach", headers=PLAYER2, json={"text": "Я Мария"}
+    ).json()["ok"] is True
+    conversations = client.get("/api/coach/messages", headers=COACH).json()["conversations"]
+    assert {c["telegram_id"] for c in conversations} == {555, 556}
+    thread_555 = client.get("/api/coach/messages/555", headers=COACH).json()["messages"]
+    thread_556 = client.get("/api/coach/messages/556", headers=COACH).json()["messages"]
+    assert all(m["text"] != "Я Мария" for m in thread_555)
+    assert [m["text"] for m in thread_556] == ["Я Мария"]
+    assert client.get("/api/coach/messages/555", headers=COACH2).json()["messages"] == []
+
     sent = []
 
     async def fake_send(chat_id, text, **kwargs):

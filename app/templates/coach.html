@@ -55,7 +55,7 @@
 
   <!-- Сообщения -->
   <section class="section" id="messages-section">
-    <h2 class="section-title">Сообщения</h2>
+    <h2 class="section-title">Чаты с игроками</h2>
     <div id="messages-list"><div class="skeleton skeleton--row"></div></div>
   </section>
 
@@ -259,6 +259,7 @@
   <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="coach-chat-title">
     <div class="sheet__handle"></div>
     <h2 class="sheet__title" id="coach-chat-title">Чат</h2>
+    <p class="hint form-note">Личный чат. Виден только вам и игроку.</p>
     <div class="chat-log" id="coach-chat-log"></div>
     <textarea class="input" id="coach-chat-text" rows="3" maxlength="1000"
               placeholder="Напишите игроку…"></textarea>
@@ -301,6 +302,7 @@ let COAUTH_TID = null;
 const coachChatSheet = document.getElementById('coach-chat-sheet');
 const coachChatLog = document.getElementById('coach-chat-log');
 let CHAT_USER = null;
+let CHAT_NAME = '';
 const dateInput = sheet.querySelector('[name="date"]');
 const timeField = dateInput.closest('.row2').querySelectorAll('.field')[1];
 const periodStart = sheet.querySelector('[name="period_start"]');
@@ -632,7 +634,9 @@ async function loadView() {
     if (!cached) list.innerHTML = '';
   }
 }
-function emptyState(text) { return `<div class="empty"><div>${esc(text)}</div></div>`; }
+function emptyState(text) {
+  return `<div class="empty"><svg class="empty-art" viewBox="0 0 240 150" aria-hidden="true" focusable="false"><use href="#ill-empty-schedule"/></svg><div>${esc(text)}</div></div>`;
+}
 function renderList() {
   const list = document.getElementById('list');
   if (!TRAININGS.length) {
@@ -1180,18 +1184,20 @@ async function loadMessages() {
     const data = await api('/api/coach/messages');
     box.innerHTML = data.conversations.length
       ? data.conversations.map(c => `
-        <button type="button" class="card player-open" data-chat-user="${c.telegram_id}">
+        <button type="button" class="card player-open chat-row" data-chat-user="${c.telegram_id}" data-chat-name="${esc(c.first_name)}">
           ${avatarHtml(c.first_name, c.avatar_url, false)}
           <div style="flex:1;min-width:0">
             <div style="font-weight:600">${esc(c.first_name)}</div>
             <div class="hint" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.last_text)}</div>
           </div>
         </button>`).join('')
-      : '<div class="empty empty--inline"><div>Сообщений пока нет.</div></div>';
+      : '<div class="empty empty--inline"><svg class="empty-art" viewBox="0 0 160 110" aria-hidden="true" focusable="false"><use href="#ill-chat"/></svg><div>Личных чатов пока нет. Напишите игроку из карточки.</div></div>';
   } catch (e) { box.innerHTML = `<div class="hint">${esc(e.message)}</div>`; }
 }
-async function openCoachChat(userId) {
+async function openCoachChat(userId, name) {
   CHAT_USER = userId;
+  CHAT_NAME = name || 'Игрок';
+  document.getElementById('coach-chat-title').textContent = `Чат: ${CHAT_NAME}`;
   coachChatSheet.classList.add('is-open');
   await loadCoachChat();
   setTimeout(() => document.getElementById('coach-chat-text').focus(), 150);
@@ -1202,14 +1208,14 @@ async function loadCoachChat() {
     const data = await api(`/api/coach/messages/${CHAT_USER}`);
     coachChatLog.innerHTML = data.messages.length
       ? data.messages.map(m => `<div class="chat-bubble ${m.from_me ? 'chat-bubble--me' : ''}">${esc(m.text)}</div>`).join('')
-      : '<div class="chat-empty">Сообщений пока нет.</div>';
+      : '<div class="chat-empty"><svg class="chat-empty__art" viewBox="0 0 160 110" aria-hidden="true" focusable="false"><use href="#ill-chat"/></svg><span>Сообщений пока нет. Напишите первым.</span></div>';
     coachChatLog.scrollTop = coachChatLog.scrollHeight;
   } catch (e) { coachChatLog.innerHTML = `<div class="chat-empty">${esc(e.message)}</div>`; }
 }
 document.querySelector('[data-coach-chat-close]').addEventListener('click', () => coachChatSheet.classList.remove('is-open'));
 document.getElementById('messages-list').addEventListener('click', (ev) => {
-  const id = ev.target.closest('[data-chat-user]')?.getAttribute('data-chat-user');
-  if (id) openCoachChat(parseInt(id, 10));
+  const el = ev.target.closest('[data-chat-user]');
+  if (el) openCoachChat(parseInt(el.getAttribute('data-chat-user'), 10), el.getAttribute('data-chat-name') || '');
 });
 document.getElementById('coach-chat-send').addEventListener('click', async () => {
   const ta = document.getElementById('coach-chat-text');
@@ -1241,6 +1247,7 @@ function playerRow(p) {
         <div style="font-size:12px;color:var(--hint)">${handle} · уведомления: ${notif}</div>
       </div>
     </button>
+    <button type="button" class="btn btn--sm player-chat-btn" data-chat-user="${p.telegram_id}" data-chat-name="${esc(p.first_name || 'Игрок')}" aria-label="Написать игроку: ${esc(p.first_name || 'Игрок')}">Написать</button>
     ${p.about ? `<div class="player-about">${esc(p.about)}</div>` : ''}
     <details class="disclosure">
       <summary><span class="disclosure__dot" aria-hidden="true"></span>Заметки тренера</summary>
@@ -1260,6 +1267,11 @@ async function loadPlayers() {
   } catch (e) { toast(e.message); }
 }
 document.getElementById('players').addEventListener('click', async (ev) => {
+  const chat = ev.target.closest('[data-chat-user]');
+  if (chat) {
+    openCoachChat(parseInt(chat.getAttribute('data-chat-user'), 10), chat.getAttribute('data-chat-name') || '');
+    return;
+  }
   const profileToken = ev.target.closest('[data-profile-token]')?.getAttribute('data-profile-token');
   if (profileToken) { openPlayerProfile(profileToken); return; }
   const btn = ev.target.closest('[data-save]');

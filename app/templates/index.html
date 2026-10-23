@@ -38,15 +38,14 @@
 </div>
 
 <div id="empty" class="empty" hidden>
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-    <rect x="3" y="4.5" width="18" height="16" rx="3.5"/><path d="M8 2.8v3.4M16 2.8v3.4M3.2 9.5h17.6"/>
-  </svg>
+  <svg class="empty-art" viewBox="0 0 240 150" aria-hidden="true" focusable="false"><use href="#ill-empty-schedule"/></svg>
   <div>На ближайшие 7 дней тренировок нет</div>
 </div>
 
 <div id="schedule"></div>
 
 <section class="quote-card" aria-label="Цитата профессионального игрока">
+  <svg class="quote-art" viewBox="0 0 160 140" aria-hidden="true" focusable="false"><use href="#ill-quote"/></svg>
   <div class="quote-card__label">Цитата</div>
   <blockquote id="training-quote"></blockquote>
   <cite id="training-quote-author"></cite>
@@ -58,6 +57,7 @@
   <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="msg-title">
     <div class="sheet__handle"></div>
     <h2 class="sheet__title" id="msg-title">Чат с тренером</h2>
+    <p class="hint form-note">Личный чат. Виден только вам и тренеру.</p>
     <div class="chat-log" id="msg-log"><div class="chat-empty">Загружаем переписку…</div></div>
     <textarea class="input" id="msg-text" rows="3" maxlength="1000"
               aria-label="Сообщение тренеру"
@@ -170,6 +170,12 @@
   <div class="sheet__backdrop" data-onboarding-close></div>
   <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
     <div class="sheet__handle"></div>
+    <div class="onboarding-hero" id="onboarding-hero-guide" aria-hidden="true">
+      <svg viewBox="0 0 260 150" focusable="false"><use href="#ill-onboarding"/></svg>
+    </div>
+    <div class="onboarding-hero" id="onboarding-hero-privacy" aria-hidden="true" hidden>
+      <svg viewBox="0 0 260 150" focusable="false"><use href="#ill-privacy"/></svg>
+    </div>
     <h2 class="sheet__title" id="onboarding-title">Как пользоваться</h2>
 
     <div id="onboarding-guide">
@@ -420,7 +426,7 @@ async function loadMsgThread() {
     const data = await api('/api/messages/thread');
     log.innerHTML = data.messages.length
       ? data.messages.map(m => `<div class="chat-bubble ${m.from_me ? 'chat-bubble--me' : ''}">${esc(m.text)}</div>`).join('')
-      : '<div class="chat-empty">Напишите тренеру — ответ появится здесь.</div>';
+      : '<div class="chat-empty"><svg class="chat-empty__art" viewBox="0 0 160 110" aria-hidden="true" focusable="false"><use href="#ill-chat"/></svg><span>Напишите тренеру — ответ появится здесь.</span></div>';
     log.scrollTop = log.scrollHeight;
   } catch (e) {
     log.innerHTML = `<div class="chat-empty">${esc(e.message)}</div>`;
@@ -492,6 +498,8 @@ const onboardingPrivacy = document.getElementById('onboarding-privacy');
 function showOnboarding() {
   if (!APP.me || APP.me.onboarding_seen) return;
   onboardingTitle.textContent = 'Как пользоваться';
+  document.getElementById('onboarding-hero-guide').hidden = false;
+  document.getElementById('onboarding-hero-privacy').hidden = true;
   onboardingGuide.hidden = false;
   onboardingPrivacy.hidden = true;
   onboardingSheet.classList.add('is-open');
@@ -501,6 +509,8 @@ function showOnboarding() {
 
 function showOnboardingPrivacy() {
   onboardingTitle.textContent = 'Приватность';
+  document.getElementById('onboarding-hero-guide').hidden = true;
+  document.getElementById('onboarding-hero-privacy').hidden = false;
   onboardingGuide.hidden = true;
   onboardingPrivacy.hidden = false;
   haptic('light');
