@@ -766,11 +766,19 @@ async function refreshParticipants(id) {
 function participantRow(tid, p, own) {
   const badge = p.status === 'booked' ? '<span class="badge badge--success">Записан</span>'
     : p.status === 'waitlist' ? '<span class="badge badge--warn">Очередь</span>'
-      : '<span class="badge badge--muted">Снят</span>';
+      : p.status === 'pending' ? '<span class="badge badge--warn">Заявка</span>'
+        : p.status === 'rejected' ? '<span class="badge badge--muted">Отклонён</span>'
+          : '<span class="badge badge--muted">Снят</span>';
   const action = !own ? ''
-    : p.status === 'cancelled'
-      ? `<button class="btn btn--sm" data-prestore="${p.telegram_id}">Вернуть</button>`
-      : `<button class="btn btn--danger btn--sm" data-premove="${p.telegram_id}">Снять</button>`;
+    : p.status === 'pending'
+      ? `<div style="display:flex;gap:6px;flex:none">
+           <button class="btn btn--primary btn--sm" data-papprove="${p.telegram_id}">Одобрить</button>
+           <button class="btn btn--danger btn--sm" data-preject="${p.telegram_id}">Отклонить</button>
+         </div>`
+      : p.status === 'cancelled'
+        ? `<button class="btn btn--sm" data-prestore="${p.telegram_id}">Вернуть</button>`
+        : p.status === 'rejected' ? ''
+          : `<button class="btn btn--danger btn--sm" data-premove="${p.telegram_id}">Снять</button>`;
   return `
   <div class="p-row" data-ptid="${tid}" data-uid="${p.telegram_id}">
     <button type="button" class="participant-open" data-profile-token="${esc(p.profile_token || '')}" aria-label="Профиль: ${esc(p.first_name)}">
@@ -799,6 +807,8 @@ document.getElementById('list').addEventListener('click', async (ev) => {
   const purge = ev.target.closest('[data-purge]')?.getAttribute('data-purge');
   const premove = ev.target.closest('[data-premove]')?.getAttribute('data-premove');
   const prestore = ev.target.closest('[data-prestore]')?.getAttribute('data-prestore');
+  const papprove = ev.target.closest('[data-papprove]')?.getAttribute('data-papprove');
+  const preject = ev.target.closest('[data-preject]')?.getAttribute('data-preject');
   const cal = ev.target.closest('[data-cal]')?.getAttribute('data-cal');
   const xfer = ev.target.closest('[data-xfer]')?.getAttribute('data-xfer');
   const row = ev.target.closest('.p-row');
@@ -828,6 +838,17 @@ document.getElementById('list').addEventListener('click', async (ev) => {
       await api(`/api/coach/trainings/${purge}/purge`, 'DELETE');
       hapticNotify('success');
       toast('Удалено навсегда');
+      cacheClear();
+      loadView();
+    } else if ((papprove || preject) && row) {
+      const uid = papprove || preject, tid = row.dataset.ptid;
+      const action = papprove ? 'approve' : 'reject';
+      const result = await api(`/api/coach/trainings/${tid}/participants/${uid}/${action}`, 'POST');
+      hapticNotify('success');
+      toast(action === 'approve'
+        ? (result.status === 'waitlist' ? 'Мест нет — игрок в очереди' : 'Заявка одобрена')
+        : 'Заявка отклонена');
+      refreshParticipants(tid);
       cacheClear();
       loadView();
     } else if (premove && row) {

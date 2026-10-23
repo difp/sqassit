@@ -50,6 +50,7 @@ class Settings:
     allow_dev_init_data: bool
     enable_api_docs: bool
     phone_required_from: datetime | None
+    require_event_approval: bool
 
 
 def load_settings() -> Settings:
@@ -101,6 +102,8 @@ def load_settings() -> Settings:
         enable_api_docs=_optional("ENABLE_API_DOCS", "false").lower()
         in ("1", "true", "yes", "on"),
         phone_required_from=phone_required_from,
+        require_event_approval=_optional("REQUIRE_EVENT_APPROVAL", "false").lower()
+        in ("1", "true", "yes", "on"),
     )
 
 

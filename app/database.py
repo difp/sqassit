@@ -126,6 +126,9 @@ CREATE TABLE IF NOT EXISTS match_players (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     match_id    INTEGER NOT NULL,
     user_id     INTEGER NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'booked', -- pending | booked | waitlist | rejected
+    decided_by  INTEGER,
+    decided_at  INTEGER,
     created_at  INTEGER NOT NULL,
     UNIQUE (match_id, user_id)
 );
@@ -179,6 +182,7 @@ async def _migrate() -> None:
     trainings_cols = await columns_of("trainings")
     users_cols = await columns_of("users")
     coaches_cols = await columns_of("coaches")
+    match_players_cols = await columns_of("match_players")
     onboarding_was_present = "onboarding_seen" in users_cols
 
     additions = {
@@ -208,8 +212,22 @@ async def _migrate() -> None:
         ),
         ("users", "phone"): "ALTER TABLE users ADD COLUMN phone TEXT NOT NULL DEFAULT ''",
         ("coaches", "is_manager"): "ALTER TABLE coaches ADD COLUMN is_manager INTEGER NOT NULL DEFAULT 0",
+        ("match_players", "status"): (
+            "ALTER TABLE match_players ADD COLUMN status TEXT NOT NULL DEFAULT 'booked'"
+        ),
+        ("match_players", "decided_by"): (
+            "ALTER TABLE match_players ADD COLUMN decided_by INTEGER"
+        ),
+        ("match_players", "decided_at"): (
+            "ALTER TABLE match_players ADD COLUMN decided_at INTEGER"
+        ),
     }
-    present = {"trainings": trainings_cols, "users": users_cols, "coaches": coaches_cols}
+    present = {
+        "trainings": trainings_cols,
+        "users": users_cols,
+        "coaches": coaches_cols,
+        "match_players": match_players_cols,
+    }
     for (table, column), ddl in additions.items():
         if column not in present[table]:
             await _conn.execute(ddl)
@@ -899,7 +917,7 @@ async def get_participants(training_id: int) -> list[aiosqlite.Row]:
                u.avatar_file_id, u.display_mode
           FROM bookings b
           JOIN users u ON u.telegram_id = b.user_id
-         WHERE b.training_id = ? AND b.status IN ('booked', 'waitlist')
+         WHERE b.training_id = ? AND b.status IN ('pending', 'booked', 'waitlist')
          ORDER BY CASE b.status WHEN 'booked' THEN 0 ELSE 1 END, b.position ASC
         """,
         (training_id,),
@@ -921,7 +939,7 @@ async def get_participants_for_trainings(
           FROM bookings b
           JOIN users u ON u.telegram_id = b.user_id
          WHERE b.training_id IN (SELECT value FROM json_each(?))
-           AND b.status IN ('booked', 'waitlist')
+           AND b.status IN ('pending', 'booked', 'waitlist')
          ORDER BY b.training_id,
                   CASE b.status WHEN 'booked' THEN 0 ELSE 1 END,
                   b.position ASC
@@ -972,10 +990,16 @@ async def get_participants_full(training_id: int) -> list[aiosqlite.Row]:
     )
 
 
-async def book_training(training_id: int, user_id: int, capacity: int) -> str:
+async def book_training(
+    training_id: int,
+    user_id: int,
+    capacity: int,
+    *,
+    requires_approval: bool = False,
+) -> str:
     """
-    Записывает игрока. Если мест нет — ставит в лист ожидания (FIFO).
-    Возвращает итоговый статус: 'booked' или 'waitlist'.
+    Записывает игрока. С подтверждением — создаёт pending, без него —
+    сразу booked/waitlist (FIFO).
     """
     db = _db()
     now = int(time.time())
@@ -988,28 +1012,33 @@ async def book_training(training_id: int, user_id: int, capacity: int) -> str:
             (training_id, user_id),
         ) as cur:
             existing = await cur.fetchone()
-        if existing is not None and existing["status"] in {"booked", "waitlist"}:
+        if existing is not None and existing["status"] in {
+            "pending", "booked", "waitlist"
+        }:
             return existing["status"]
 
-        # Считаем занятые места.
-        async with db.execute(
-            "SELECT COUNT(*) FROM bookings WHERE training_id = ? AND status = 'booked'",
-            (training_id,),
-        ) as cur:
-            row = await cur.fetchone()
-            booked = int(row[0]) if row is not None else 0
-
-        if booked < capacity:
-            status = "booked"
+        if requires_approval:
+            # Заявка не занимает место до решения тренера/соавтора.
+            status = "pending"
             position = 0
         else:
-            status = "waitlist"
             async with db.execute(
-                "SELECT COALESCE(MAX(position), 0) + 1 FROM bookings "
-                "WHERE training_id = ? AND status = 'waitlist'",
+                "SELECT COUNT(*) FROM bookings WHERE training_id = ? AND status = 'booked'",
                 (training_id,),
             ) as cur:
-                position_row = await cur.fetchone()
+                row = await cur.fetchone()
+            booked = int(row[0]) if row is not None else 0
+            if booked < capacity:
+                status = "booked"
+                position = 0
+            else:
+                status = "waitlist"
+                async with db.execute(
+                    "SELECT COALESCE(MAX(position), 0) + 1 FROM bookings "
+                    "WHERE training_id = ? AND status = 'waitlist'",
+                    (training_id,),
+                ) as cur:
+                    position_row = await cur.fetchone()
                 position = int(position_row[0]) if position_row is not None else 1
 
         await db.execute(
@@ -1027,6 +1056,59 @@ async def book_training(training_id: int, user_id: int, capacity: int) -> str:
     return status
 
 
+async def approve_booking(training_id: int, user_id: int) -> str:
+    """Одобряет заявку и выдаёт место либо ставит в очередь."""
+    db = _db()
+    async with _lock:
+        async with db.execute(
+            "SELECT status FROM bookings WHERE training_id = ? AND user_id = ?",
+            (training_id, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None or row["status"] != "pending":
+            return row["status"] if row is not None else ""
+        async with db.execute(
+            "SELECT capacity FROM trainings WHERE id = ?", (training_id,)
+        ) as cur:
+            capacity_row = await cur.fetchone()
+        capacity = int(capacity_row[0]) if capacity_row is not None else 0
+        async with db.execute(
+            "SELECT COUNT(*) FROM bookings WHERE training_id = ? AND status = 'booked'",
+            (training_id,),
+        ) as cur:
+            booked_row = await cur.fetchone()
+        booked = int(booked_row[0]) if booked_row is not None else 0
+        if booked < capacity:
+            status = "booked"
+            position = 0
+        else:
+            status = "waitlist"
+            async with db.execute(
+                "SELECT COALESCE(MAX(position), 0) + 1 FROM bookings "
+                "WHERE training_id = ? AND status = 'waitlist'",
+                (training_id,),
+            ) as cur:
+                position_row = await cur.fetchone()
+            position = int(position_row[0]) if position_row is not None else 1
+        await db.execute(
+            "UPDATE bookings SET status = ?, position = ? "
+            "WHERE training_id = ? AND user_id = ?",
+            (status, position, training_id, user_id),
+        )
+        await db.commit()
+    return status
+
+
+async def reject_booking(training_id: int, user_id: int) -> bool:
+    """Отклоняет заявку (не удаляя историю)."""
+    changed = await _execute_rowcount(
+        "UPDATE bookings SET status = 'rejected', position = 0 "
+        "WHERE training_id = ? AND user_id = ? AND status = 'pending'",
+        (training_id, user_id),
+    )
+    return bool(changed)
+
+
 async def cancel_booking(training_id: int, user_id: int) -> str:
     """
     Отменяет запись игрока и продвигает первого из листа ожидания (FIFO).
@@ -1038,7 +1120,7 @@ async def cancel_booking(training_id: int, user_id: int) -> str:
         cursor = await db.execute(
             "UPDATE bookings SET status = 'cancelled', position = 0 "
             "WHERE training_id = ? AND user_id = ? "
-            "AND status IN ('booked', 'waitlist')",
+            "AND status IN ('pending', 'booked', 'waitlist')",
             (training_id, user_id),
         )
         if cursor.rowcount == 0:
@@ -1239,7 +1321,7 @@ async def list_upcoming_matches(now: int, until: int) -> list[aiosqlite.Row]:
         """
         SELECT m.*,
                (SELECT COUNT(*) FROM match_players mp
-                 WHERE mp.match_id = m.id) AS players_count
+                 WHERE mp.match_id = m.id AND mp.status = 'booked') AS players_count
           FROM matches m
          WHERE m.start_at >= ? AND m.start_at <= ? AND m.deleted_at IS NULL
          ORDER BY m.start_at ASC
@@ -1253,7 +1335,7 @@ async def get_match(match_id: int) -> aiosqlite.Row | None:
         """
         SELECT m.*,
                (SELECT COUNT(*) FROM match_players mp
-                 WHERE mp.match_id = m.id) AS players_count
+                 WHERE mp.match_id = m.id AND mp.status = 'booked') AS players_count
           FROM matches m
          WHERE m.id = ?
         """,
@@ -1264,7 +1346,7 @@ async def get_match(match_id: int) -> aiosqlite.Row | None:
 async def get_match_players(match_id: int) -> list[aiosqlite.Row]:
     return await _fetchall(
         """
-        SELECT mp.created_at, u.telegram_id, u.first_name, u.username,
+        SELECT mp.created_at, mp.status, u.telegram_id, u.first_name, u.username,
                u.show_username, u.avatar_file_id, u.about, u.display_mode
           FROM match_players mp
           JOIN users u ON u.telegram_id = mp.user_id
@@ -1282,7 +1364,7 @@ async def get_match_players_for_matches(
         return {}
     rows = await _fetchall(
         """
-        SELECT mp.match_id, mp.created_at, u.telegram_id, u.first_name,
+        SELECT mp.match_id, mp.created_at, mp.status, u.telegram_id, u.first_name,
                u.username, u.show_username, u.avatar_file_id, u.about,
                u.display_mode
           FROM match_players mp
@@ -1298,29 +1380,87 @@ async def get_match_players_for_matches(
     return grouped
 
 
-async def join_match(match_id: int, user_id: int, max_players: int) -> str:
-    """Возвращает joined либо full. Повторный вход идемпотентен."""
+async def join_match(
+    match_id: int,
+    user_id: int,
+    max_players: int,
+    *,
+    approved: bool = False,
+    requires_approval: bool = False,
+) -> str:
+    """Создаёт заявку или сразу добавляет игрока. Повторный вход идемпотентен."""
     db = _db()
     async with _lock:
         async with db.execute(
-            "SELECT 1 FROM match_players WHERE match_id = ? AND user_id = ?",
+            "SELECT status FROM match_players WHERE match_id = ? AND user_id = ?",
             (match_id, user_id),
         ) as cur:
-            if await cur.fetchone() is not None:
-                return "joined"
-        async with db.execute(
-            "SELECT COUNT(*) FROM match_players WHERE match_id = ?", (match_id,)
-        ) as cur:
-            row = await cur.fetchone()
+            existing = await cur.fetchone()
+        if existing is not None:
+            return existing["status"]
+        if approved:
+            status = "booked"
+        elif not requires_approval:
+            async with db.execute(
+                "SELECT COUNT(*) FROM match_players "
+                "WHERE match_id = ? AND status = 'booked'",
+                (match_id,),
+            ) as cur:
+                row = await cur.fetchone()
             count = int(row[0]) if row is not None else 0
-        if count >= max_players:
-            return "full"
+            if count >= max_players:
+                return "full"
+            status = "booked"
+        else:
+            status = "pending"
         await db.execute(
-            "INSERT INTO match_players (match_id, user_id, created_at) VALUES (?, ?, ?)",
-            (match_id, user_id, int(time.time())),
+            "INSERT INTO match_players (match_id, user_id, status, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (match_id, user_id, status, int(time.time())),
         )
         await db.commit()
-    return "joined"
+    return status
+
+
+async def approve_match_player(match_id: int, user_id: int, decided_by: int) -> str:
+    """Одобряет заявку на матч: место или очередь."""
+    db = _db()
+    async with _lock:
+        async with db.execute(
+            "SELECT status FROM match_players WHERE match_id = ? AND user_id = ?",
+            (match_id, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None or row["status"] != "pending":
+            return row["status"] if row is not None else ""
+        async with db.execute(
+            "SELECT max_players FROM matches WHERE id = ?", (match_id,)
+        ) as cur:
+            cap = await cur.fetchone()
+        max_players = int(cap[0]) if cap is not None else 0
+        async with db.execute(
+            "SELECT COUNT(*) FROM match_players WHERE match_id = ? AND status = 'booked'",
+            (match_id,),
+        ) as cur:
+            booked_row = await cur.fetchone()
+        booked = int(booked_row[0]) if booked_row is not None else 0
+        status = "booked" if booked < max_players else "waitlist"
+        await db.execute(
+            "UPDATE match_players SET status = ?, decided_by = ?, decided_at = ? "
+            "WHERE match_id = ? AND user_id = ?",
+            (status, decided_by, int(time.time()), match_id, user_id),
+        )
+        await db.commit()
+    return status
+
+
+async def reject_match_player(match_id: int, user_id: int, decided_by: int) -> bool:
+    changed = await _execute_rowcount(
+        "UPDATE match_players SET status = 'rejected', decided_by = ?, decided_at = ? "
+        "WHERE match_id = ? AND user_id = ? AND status = 'pending'",
+        (decided_by, int(time.time()), match_id, user_id),
+    )
+    return bool(changed)
 
 
 async def leave_match(match_id: int, user_id: int) -> bool:

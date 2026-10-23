@@ -107,8 +107,11 @@ function matchParticipantsLine(list) {
 function matchCard(m) {
   const free = Math.max(0, m.max_players - m.players_count);
   const joined = m.is_joined;
+  const pending = m.is_pending;
   let actions = '';
-  if (!joined) {
+  if (pending) {
+    actions = `<button class="btn btn--danger btn--block" data-match-leave="${m.id}">Отменить заявку</button>`;
+  } else if (!joined) {
     actions = free
       ? `<button class="btn btn--primary btn--block" data-match-join="${m.id}">Присоединиться</button>`
       : '<button class="btn btn--block" disabled>Мест нет</button>';
@@ -141,8 +144,20 @@ function matchCard(m) {
     </div>
     ${m.location ? `<div class="t-meta" style="margin-top:8px">📍 ${esc(m.location)}</div>` : ''}
     ${m.description ? `<div class="player-about">${esc(m.description)}</div>` : ''}
+    ${pending ? '<div class="t-badges"><span class="badge badge--warn">Ожидает подтверждения</span></div>' : ''}
     ${creator}
     <div class="t-people" style="margin-top:10px">${matchParticipantsLine(m.participants)}</div>
+    ${m.pending_requests && m.pending_requests.length ? `
+      <div class="section-title" style="margin:14px 0 4px">Заявки</div>
+      ${m.pending_requests.map(p => `
+        <div class="p-row">
+          ${avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)}
+          <div class="p-row__name">${esc(p.first_name)}</div>
+          <div class="p-row__actions">
+            <button class="btn btn--primary btn--sm" data-match-approve="${m.id}:${p.telegram_id}">Одобрить</button>
+            <button class="btn btn--danger btn--sm" data-match-reject="${m.id}:${p.telegram_id}">Отклонить</button>
+          </div>
+        </div>`).join('')}` : ''}
     <div class="t-actions-col" style="margin-top:12px">${actions}</div>
   </div>`;
 }
@@ -238,16 +253,35 @@ document.getElementById('matches').addEventListener('click', async (ev) => {
   const join = ev.target.closest('[data-match-join]')?.getAttribute('data-match-join');
   const leave = ev.target.closest('[data-match-leave]')?.getAttribute('data-match-leave');
   const remove = ev.target.closest('[data-match-delete]')?.getAttribute('data-match-delete');
-  if (!join && !leave && !remove) return;
+  const approve = ev.target.closest('[data-match-approve]')?.getAttribute('data-match-approve');
+  const reject = ev.target.closest('[data-match-reject]')?.getAttribute('data-match-reject');
+  if (!join && !leave && !remove && !approve && !reject) return;
   try {
-    if (join) await api(`/api/matches/${join}/join`, 'POST');
-    if (leave) await api(`/api/matches/${leave}/leave`, 'POST');
+    let actionMessage = '';
+    if (join) {
+      const result = await api(`/api/matches/${join}/join`, 'POST');
+      actionMessage = result.status === 'pending' ? 'Заявка отправлена организатору' : 'Вы присоединились';
+    }
+    if (leave) {
+      const wasPending = MATCHES[leave] && MATCHES[leave].is_pending;
+      await api(`/api/matches/${leave}/leave`, 'POST');
+      actionMessage = wasPending ? 'Заявка отменена' : 'Вы вышли из матча';
+    }
+    if (approve || reject) {
+      const [mid, uid] = (approve || reject).split(':');
+      const action = approve ? 'approve' : 'reject';
+      const result = await api(`/api/matches/${mid}/requests/${uid}/${action}`, 'POST');
+      actionMessage = action === 'approve'
+        ? (result.status === 'waitlist' ? 'Мест нет — игрок в очереди' : 'Заявка одобрена')
+        : 'Заявка отклонена';
+    }
     if (remove) {
       if (!confirm('Удалить матч?')) return;
       await api(`/api/matches/${remove}`, 'DELETE');
+      actionMessage = 'Матч удалён';
     }
     hapticNotify('success');
-    toast(remove ? 'Матч удалён' : (join ? 'Вы присоединились' : 'Вы вышли из матча'));
+    toast(actionMessage);
     cacheClear();
     loadMatches();
   } catch (e) { hapticNotify('error'); toast(e.message); }

@@ -2001,10 +2001,10 @@ def test_match_create_list_join_leave_and_delete(client, monkeypatch):
 
     assert client.post(
         f"/api/matches/{match_id}/join", headers=PLAYER2
-    ).json()["status"] == "joined"
+    ).json()["status"] == "booked"
     assert client.post(
         f"/api/matches/{match_id}/join", headers=PLAYER2
-    ).json()["status"] == "joined"
+    ).json()["status"] == "booked"
 
     third = {"X-Init-Data": _init({"id": 559, "first_name": "Третий"})}
     assert client.get("/api/me", headers=third).status_code == 200
@@ -2738,3 +2738,217 @@ def test_phone_normalization():
     assert mainmod.normalize_phone("8 999 123 45 67") == "89991234567"
     with pytest.raises(ValueError):
         mainmod.normalize_phone("123")
+
+
+def test_training_and_match_approval_flow(client, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(
+        mainmod, "settings", replace(settings, require_event_approval=True)
+    )
+    coach = client.get("/api/me", headers=COACH).json()["user"]
+    assert coach["is_coach"] is True
+
+    training = client.post(
+        "/api/coach/trainings",
+        headers=COACH,
+        json={**_future(10, "18:00"), "capacity": 1},
+    ).json()["id"]
+
+    request = client.post(f"/api/trainings/{training}/book", headers=PLAYER)
+    assert request.status_code == 200
+    assert request.json()["status"] == "pending"
+    mine = client.get("/api/trainings?days=31", headers=PLAYER).json()["trainings"]
+    assert next(t for t in mine if t["id"] == training)["is_pending"] is True
+
+    participants = client.get(
+        f"/api/coach/trainings/{training}/participants", headers=COACH
+    ).json()["participants"]
+    assert next(p for p in participants if p["telegram_id"] == 555)["status"] == "pending"
+
+    approved = client.post(
+        f"/api/coach/trainings/{training}/participants/555/approve", headers=COACH
+    )
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "booked"
+
+    # Второй игрок при отсутствии места после одобрения попадает в очередь.
+    assert client.post(f"/api/trainings/{training}/book", headers=PLAYER2).json()["status"] == "pending"
+    waitlisted = client.post(
+        f"/api/coach/trainings/{training}/participants/556/approve", headers=COACH
+    )
+    assert waitlisted.json()["status"] == "waitlist"
+
+    third = {"X-Init-Data": _init({"id": 559, "first_name": "Третий"})}
+    assert client.get("/api/me", headers=third).status_code == 200
+    assert client.post(f"/api/trainings/{training}/book", headers=third).json()["status"] == "pending"
+    rejected = client.post(
+        f"/api/coach/trainings/{training}/participants/559/reject", headers=COACH
+    )
+    assert rejected.status_code == 200
+    assert client.post(
+        f"/api/coach/trainings/{training}/participants/559/reject", headers=COACH
+    ).status_code == 404
+    assert client.post(
+        f"/api/coach/trainings/{training}/participants/559/approve", headers=COACH
+    ).json()["status"] == "rejected"
+
+    # Матч: создатель подтверждён сразу, остальные — заявки.
+    match_id = client.post(
+        "/api/matches",
+        headers=PLAYER,
+        json={**_future(11, "19:00"), "title": "Матч с заявками", "max_players": 2},
+    ).json()["id"]
+    joined = client.post(f"/api/matches/{match_id}/join", headers=PLAYER2)
+    assert joined.json()["status"] == "pending"
+    listing = client.get("/api/matches?days=31", headers=PLAYER).json()["matches"]
+    item = next(m for m in listing if m["id"] == match_id)
+    assert item["pending_requests"] and item["pending_requests"][0]["telegram_id"] == 556
+
+    match_approved = client.post(
+        f"/api/matches/{match_id}/requests/556/approve", headers=PLAYER
+    )
+    assert match_approved.json()["status"] == "booked"
+
+    third_join = client.post(f"/api/matches/{match_id}/join", headers=third)
+    assert third_join.json()["status"] == "pending"
+    match_rejected = client.post(
+        f"/api/matches/{match_id}/requests/559/reject", headers=PLAYER
+    )
+    assert match_rejected.status_code == 200
+    assert client.post(
+        f"/api/matches/{match_id}/requests/559/reject", headers=PLAYER
+    ).status_code == 404
+
+    # Чужая тренировка/матч не даёт подтверждать заявки.
+    assert client.post(
+        f"/api/coach/trainings/{training}/participants/556/approve", headers=COACH2
+    ).status_code == 403
+    assert client.post(
+        f"/api/matches/{match_id}/requests/559/approve", headers=PLAYER2
+    ).status_code == 404
+
+
+def test_approval_not_found_and_error_branches(client, monkeypatch):
+    training = client.post(
+        "/api/coach/trainings",
+        headers=COACH,
+        json={**_future(12, "18:00"), "capacity": 2},
+    ).json()["id"]
+    # Цели нет среди записей — обе операции дают 404.
+    assert client.post(
+        f"/api/coach/trainings/{training}/participants/999/approve", headers=COACH
+    ).status_code == 404
+    assert client.post(
+        f"/api/coach/trainings/{training}/participants/999/reject", headers=COACH
+    ).status_code == 404
+
+    # Второй тренер не является создателем занятия.
+    assert client.post(
+        "/api/coach/coaches", headers=COACH, json={"telegram_id": 777}
+    ).status_code == 200
+    assert client.post(
+        f"/api/coach/trainings/{training}/participants/555/approve", headers=COACH2
+    ).status_code == 404
+    assert client.post(
+        f"/api/coach/trainings/{training}/participants/555/reject", headers=COACH2
+    ).status_code == 404
+
+    match_id = client.post(
+        "/api/matches",
+        headers=PLAYER,
+        json={**_future(13, "18:00"), "title": "Ошибки", "max_players": 2},
+    ).json()["id"]
+    assert client.post(
+        f"/api/matches/{match_id}/requests/999/approve", headers=PLAYER
+    ).status_code == 404
+    assert client.post(
+        f"/api/matches/{match_id}/requests/999/reject", headers=PLAYER
+    ).status_code == 404
+    assert client.post(
+        f"/api/matches/{match_id}/requests/555/reject", headers=PLAYER2
+    ).status_code == 404
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "approve_booking", broken)
+    assert client.post(
+        f"/api/coach/trainings/{training}/participants/555/approve", headers=COACH
+    ).status_code == 500
+    monkeypatch.setattr(mainmod.db, "reject_booking", broken)
+    assert client.post(
+        f"/api/coach/trainings/{training}/participants/555/reject", headers=COACH
+    ).status_code == 500
+    monkeypatch.setattr(mainmod.db, "approve_match_player", broken)
+    assert client.post(
+        f"/api/matches/{match_id}/requests/555/approve", headers=PLAYER
+    ).status_code == 500
+    monkeypatch.setattr(mainmod.db, "reject_match_player", broken)
+    assert client.post(
+        f"/api/matches/{match_id}/requests/555/reject", headers=PLAYER
+    ).status_code == 500
+
+    # Пустые клавиатуры и текст ожидания.
+    assert mainmod._pending_booking_keyboard([]).inline_keyboard == []
+    assert mainmod._match_request_keyboard(0).inline_keyboard == []
+    match = {
+        "id": 1,
+        "title": "Матч",
+        "start_at": int(time.time()) + 3600,
+        "max_players": 2,
+        "location": "",
+        "created_by": 1,
+        "deleted_at": None,
+    }
+    assert "листе ожидания" in mainmod._match_personal_text(match, "waitlist")
+
+
+def test_notify_match_event_with_pending(monkeypatch):
+    match = {
+        "id": 7,
+        "title": "Матч",
+        "start_at": int(time.time()) + 3600,
+        "max_players": 2,
+        "location": "",
+        "created_by": 1,
+        "deleted_at": None,
+    }
+    players = [
+        {"telegram_id": 1, "first_name": "Автор", "status": "booked", "display_mode": "name"},
+        {"telegram_id": 2, "first_name": "Заявка", "status": "pending", "display_mode": "name"},
+    ]
+    calls = []
+
+    async def fake_players(match_id):
+        return players
+
+    async def notifications_on(telegram_id, category):
+        return True
+
+    async def fake_send(kind, entity_id, chat_id, user_id, text, **kwargs):
+        calls.append((chat_id, user_id, kwargs))
+
+    monkeypatch.setattr(mainmod.db, "get_match_players", fake_players)
+    monkeypatch.setattr(mainmod.db, "notification_enabled", notifications_on)
+    monkeypatch.setattr(mainmod, "_send_event_notification", fake_send)
+    asyncio.run(mainmod._notify_match_event(match, 1, "joined"))
+    assert calls
+    assert any(kwargs.get("reply_markup") for _, _, kwargs in calls)
+    asyncio.run(mainmod._notify_match_request(match, 2))
+    assert any(c[1] == 2 for c in calls)
+
+
+def test_match_approve_again_returns_status(client):
+    match_id = client.post(
+        "/api/matches",
+        headers=PLAYER,
+        json={**_future(14, "18:00"), "title": "Повтор", "max_players": 2},
+    ).json()["id"]
+    assert client.post(f"/api/matches/{match_id}/join", headers=PLAYER2).status_code == 200
+    # Повторное одобрение идемпотентно и возвращает текущий статус.
+    repeated = client.post(
+        f"/api/matches/{match_id}/requests/556/approve", headers=PLAYER
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["status"] == "booked"

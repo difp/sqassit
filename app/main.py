@@ -226,6 +226,14 @@ def _local_time(epoch: int) -> datetime:
     return datetime.fromtimestamp(epoch, tz=settings.timezone)
 
 
+def _row_status(row: Any, default: str = "booked") -> str:
+    """Статус участника с совместимостью со старыми/тестовыми строками."""
+    try:
+        return str(row["status"] or default)
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
 def serialize_training(
     row: aiosqlite.Row, *, viewer_id: int | None = None
 ) -> dict[str, Any]:
@@ -250,6 +258,7 @@ def serialize_training(
         "can_self_cancel": True,
         "is_booked": False,
         "is_waitlisted": False,
+        "is_pending": False,
     }
     seconds_left = row["start_at"] - int(time.time())
     data["is_past"] = seconds_left <= 0
@@ -309,9 +318,11 @@ def serialize_match(
 ) -> dict[str, Any]:
     """Публичная карточка матча без Telegram ID участников."""
     start = _local_time(row["start_at"])
+    booked = [p for p in participants if _row_status(p) == "booked"]
+    pending = [p for p in participants if _row_status(p) == "pending"]
     participant_data = [
         {**participant_identity(p), "joined_at": p["created_at"]}
-        for p in participants
+        for p in booked
     ]
     return {
         "id": row["id"],
@@ -326,8 +337,22 @@ def serialize_match(
         "max_players": row["max_players"],
         "players_count": int(row["players_count"] or 0),
         "level": row["level"] or "",
-        "is_joined": any(p["telegram_id"] == viewer_id for p in participants),
+        "is_joined": any(p["telegram_id"] == viewer_id for p in booked),
+        "is_pending": any(p["telegram_id"] == viewer_id for p in pending),
         "is_creator": row["created_by"] == viewer_id,
+        "pending_count": len(pending),
+        "pending_requests": (
+            [
+                {
+                    **participant_identity(p),
+                    "telegram_id": p["telegram_id"],
+                    "joined_at": p["created_at"],
+                }
+                for p in pending
+            ]
+            if row["created_by"] == viewer_id
+            else []
+        ),
         "creator": participant_identity(creator_row) if creator_row else None,
         "participants": participant_data,
     }
@@ -944,7 +969,7 @@ async def api_trainings(user: Annotated[dict, Depends(current_user)], days: int 
         item["participants"] = [
             serialize_participant(p)
             for p in participants
-            if p["status"] == "booked"
+            if _row_status(p) == "booked"
         ]
         item["waitlist_count"] = sum(
             1 for p in participants if p["status"] == "waitlist"
@@ -955,6 +980,8 @@ async def api_trainings(user: Annotated[dict, Depends(current_user)], days: int 
             item["is_booked"] = True
         elif my_status == "waitlist":
             item["is_waitlisted"] = True
+        elif my_status == "pending":
+            item["is_pending"] = True
         result.append(item)
     return {"ok": True, "trainings": result}
 
@@ -971,9 +998,19 @@ async def api_book(training_id: int, user: Annotated[dict, Depends(current_user)
         if _phone_required_for_new_events() and not user["phone"]:
             return error_json("Укажите телефон в настройках профиля, чтобы записаться.", 403)
 
-        status = await db.book_training(training_id, user["telegram_id"], training["capacity"])
+        status = await db.book_training(
+            training_id,
+            user["telegram_id"],
+            training["capacity"],
+            requires_approval=settings.require_event_approval,
+        )
         _spawn(_notify_training_event(training, user["telegram_id"], status))
-        msg = "Вы записаны!" if status == "booked" else "Мест нет — вы в листе ожидания."
+        if status == "pending":
+            msg = "Заявка отправлена тренеру."
+        elif status == "booked":
+            msg = "Вы записаны!"
+        else:
+            msg = "Мест нет — вы в листе ожидания."
         return {"ok": True, "status": status, "message": msg}
     except Exception:
         logger.exception("Ошибка записи на тренировку")
@@ -1113,7 +1150,9 @@ async def api_create_match(
             level=level,
             created_by=user["telegram_id"],
         )
-        await db.join_match(match_id, user["telegram_id"], payload.max_players)
+        await db.join_match(
+        match_id, user["telegram_id"], payload.max_players, approved=True
+    )
         created_match = await db.get_match(match_id)
         if created_match is not None:
             _spawn(_notify_match_event(created_match, user["telegram_id"], "joined"))
@@ -1140,14 +1179,57 @@ async def api_join_match(
         if _phone_required_for_new_events() and not user["phone"]:
             return error_json("Укажите телефон в настройках профиля, чтобы присоединиться.", 403)
         status = await db.join_match(
-            match_id, user["telegram_id"], match["max_players"]
+            match_id,
+            user["telegram_id"],
+            match["max_players"],
+            requires_approval=settings.require_event_approval,
         )
         if status == "full":
             return error_json("Мест нет", 409)
-        _spawn(_notify_match_event(match, user["telegram_id"], "joined"))
+        if status == "pending":
+            _spawn(_notify_match_request(match, user["telegram_id"]))
+        else:
+            _spawn(_notify_match_event(match, user["telegram_id"], "joined"))
         return {"ok": True, "status": status}
     except Exception:
         logger.exception("Ошибка входа в матч")
+        return error_json("Внутренняя ошибка сервера", 500)
+
+
+@app.post("/api/matches/{match_id}/requests/{user_id}/approve")
+async def api_approve_match_request(
+    match_id: int, user_id: int, user: Annotated[dict, Depends(current_user)]
+):
+    try:
+        match = await db.get_match(match_id)
+        if match is None or match["deleted_at"] or match["created_by"] != user["telegram_id"]:
+            return error_json("Матч не найден", 404)
+        status = await db.approve_match_player(match_id, user_id, user["telegram_id"])
+        if not status:
+            return error_json("Заявка не найдена", 404)
+        _spawn(_notify_match_event(match, user_id, status))
+        return {"ok": True, "status": status}
+    except Exception:
+        logger.exception("Ошибка подтверждения заявки на матч")
+        return error_json("Внутренняя ошибка сервера", 500)
+
+
+@app.post("/api/matches/{match_id}/requests/{user_id}/reject")
+async def api_reject_match_request(
+    match_id: int, user_id: int, user: Annotated[dict, Depends(current_user)]
+):
+    try:
+        match = await db.get_match(match_id)
+        if match is None or match["deleted_at"] or match["created_by"] != user["telegram_id"]:
+            return error_json("Матч не найден", 404)
+        if not await db.reject_match_player(
+            match_id, user_id, user["telegram_id"]
+        ):
+            return error_json("Заявка не найдена", 404)
+        _spawn(_notify_match_event(match, user_id, "rejected"))
+        return {"ok": True}
+    except Exception:
+        logger.exception("Ошибка отклонения заявки на матч")
         return error_json("Внутренняя ошибка сервера", 500)
 
 
@@ -1457,6 +1539,51 @@ async def api_coach_participants(training_id: int, coach: Annotated[dict, Depend
         return error_json("Внутренняя ошибка сервера", 500)
 
 
+@app.post("/api/coach/trainings/{training_id}/participants/{user_id}/approve")
+async def api_coach_approve_participant(
+    training_id: int, user_id: int, coach: Annotated[dict, Depends(require_coach)]
+):
+    """Подтверждает заявку: выдаёт место или ставит в очередь."""
+    try:
+        training = await db.get_training(training_id)
+        if (
+            training is None
+            or training["deleted_at"]
+            or training["created_by"] != coach["telegram_id"]
+        ):
+            return error_json("Тренировка не найдена", 404)
+        status = await db.approve_booking(training_id, user_id)
+        if not status:
+            return error_json("Заявка не найдена", 404)
+        _spawn(_notify_training_event(training, user_id, status))
+        return {"ok": True, "status": status}
+    except Exception:
+        logger.exception("Ошибка подтверждения заявки")
+        return error_json("Внутренняя ошибка сервера", 500)
+
+
+@app.post("/api/coach/trainings/{training_id}/participants/{user_id}/reject")
+async def api_coach_reject_participant(
+    training_id: int, user_id: int, coach: Annotated[dict, Depends(require_coach)]
+):
+    """Отклоняет заявку на тренировку."""
+    try:
+        training = await db.get_training(training_id)
+        if (
+            training is None
+            or training["deleted_at"]
+            or training["created_by"] != coach["telegram_id"]
+        ):
+            return error_json("Тренировка не найдена", 404)
+        if not await db.reject_booking(training_id, user_id):
+            return error_json("Заявка не найдена", 404)
+        _spawn(_notify_training_event(training, user_id, "rejected"))
+        return {"ok": True}
+    except Exception:
+        logger.exception("Ошибка отклонения заявки")
+        return error_json("Внутренняя ошибка сервера", 500)
+
+
 @app.post("/api/coach/trainings/{training_id}/participants/{user_id}/cancel")
 async def api_coach_cancel_participant(
     training_id: int, user_id: int, coach: Annotated[dict, Depends(require_coach)]
@@ -1694,7 +1821,12 @@ async def _send_user_message(telegram_id: int, text: str) -> None:
 
 
 async def _send_event_notification(
-    kind: str, entity_id: int, chat_id: int, user_id: int, text: str
+    kind: str,
+    entity_id: int,
+    chat_id: int,
+    user_id: int,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
     """
     Одно обновляемое сообщение на событие и чат.
@@ -1705,12 +1837,20 @@ async def _send_event_notification(
     try:
         record = await db.get_event_notification(kind, entity_id, chat_id, user_id)
         message_id = int(record["message_id"] or 0) if record is not None else 0
-        if message_id and record is not None and record["text"] == text:
+        if (
+            message_id
+            and record is not None
+            and record["text"] == text
+            and reply_markup is None
+        ):
             return
         if message_id:
             try:
                 await app.state.bot.edit_message_text(
-                    text=text, chat_id=chat_id, message_id=message_id
+                    text=text,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    reply_markup=reply_markup,
                 )
                 await db.save_event_notification(
                     kind, entity_id, chat_id, user_id, message_id, text
@@ -1723,7 +1863,9 @@ async def _send_event_notification(
                     )
                     return
                 logger.info("Не удалось обновить сообщение %s", chat_id, exc_info=True)
-        sent = await app.state.bot.send_message(chat_id, text)
+        sent = await app.state.bot.send_message(
+            chat_id, text, reply_markup=reply_markup
+        )
         new_id = int(getattr(sent, "message_id", 0) or 0)
         await db.save_event_notification(
             kind, entity_id, chat_id, user_id, new_id, text
@@ -1733,8 +1875,9 @@ async def _send_event_notification(
 
 
 def _training_participants_text(training: aiosqlite.Row, participants: list[aiosqlite.Row]) -> str:
-    booked = [p for p in participants if p["status"] == "booked"]
+    booked = [p for p in participants if _row_status(p) == "booked"]
     waitlist = [p for p in participants if p["status"] == "waitlist"]
+    pending = [p for p in participants if _row_status(p) == "pending"]
     names = ", ".join(
         html.escape(participant_identity(p)["first_name"]) for p in booked[:25]
     )
@@ -1749,6 +1892,8 @@ def _training_participants_text(training: aiosqlite.Row, participants: list[aios
         lines.append(names)
     if waitlist:
         lines.append(f"⏳ В очереди: {len(waitlist)}")
+    if pending:
+        lines.append(f"📝 Заявок на подтверждение: {len(pending)}")
     if training["deleted_at"]:
         lines.append("❌ Тренировка отменена")
     return "\n".join(lines)
@@ -1767,22 +1912,44 @@ def _training_personal_text(training: aiosqlite.Row, status: str) -> str:
         return "Тренировка отменена.\n\n" + header
     if status == "waitlist":
         return "⏳ Вы в листе ожидания.\n\n" + header
+    if status == "pending":
+        return "📝 Заявка отправлена тренеру. Ждём подтверждения.\n\n" + header
+    if status == "rejected":
+        return "К сожалению, заявка отклонена.\n\n" + header
     return "✅ Вы записаны.\n\n" + header
+
+
+def _pending_booking_keyboard(pending: list[aiosqlite.Row]) -> InlineKeyboardMarkup:
+    if not pending:
+        return InlineKeyboardMarkup(inline_keyboard=[])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(
+                text=f"Открыть заявки · {len(pending)}",
+                web_app=WebAppInfo(url=bot_module._web_app_url()),
+            )
+        ]]
+    )
 
 
 async def _notify_training_event(
     training: aiosqlite.Row, user_id: int | None = None, status: str = ""
 ) -> None:
     participants = await db.get_participants(training["id"])
+    pending = [p for p in participants if _row_status(p) == "pending"]
     if training["created_by"] and await _notifications_allowed(
         training["created_by"], "trainings"
     ):
+        kwargs = (
+            {"reply_markup": _pending_booking_keyboard(pending)} if pending else {}
+        )
         await _send_event_notification(
             "training",
             training["id"],
             training["created_by"],
             0,
             _training_participants_text(training, participants),
+            **kwargs,
         )
     if user_id is not None and await _notifications_allowed(user_id, "trainings"):
         if not status:
@@ -1871,6 +2038,12 @@ def _match_personal_text(match: aiosqlite.Row, status: str) -> str:
         return "Вы вышли из матча.\n\n" + header
     if status == "deleted":
         return "Матч отменён организатором.\n\n" + header
+    if status == "pending":
+        return "📝 Заявка на матч отправлена организатору.\n\n" + header
+    if status == "rejected":
+        return "К сожалению, заявка на матч отклонена.\n\n" + header
+    if status == "waitlist":
+        return "⏳ Вы в листе ожидания матча.\n\n" + header
     return "✅ Вы присоединились к матчу.\n\n" + header
 
 
@@ -1891,24 +2064,83 @@ def _match_update_text(
     return prefix + "\n\n" + _match_participants_text(match, players)
 
 
-async def _notify_match_event(
-    match: aiosqlite.Row, user_id: int | None = None, status: str = "joined"
-) -> None:
+def _match_request_keyboard(pending_count: int) -> InlineKeyboardMarkup:
+    if not pending_count:
+        return InlineKeyboardMarkup(inline_keyboard=[])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(
+                text=f"Открыть заявки · {pending_count}",
+                web_app=WebAppInfo(url=bot_module._web_app_url()),
+            )
+        ]]
+    )
+
+
+async def _notify_match_request(match: aiosqlite.Row, user_id: int) -> None:
+    """Заявка на матч: организатор видит её в приложении, игрок — статус."""
     players = await db.get_match_players(match["id"])
+    booked = [p for p in players if _row_status(p) == "booked"]
+    pending = [p for p in players if _row_status(p) == "pending"]
     if match["created_by"] and await _notifications_allowed(
         match["created_by"], "matches"
     ):
+        text = _match_participants_text(match, booked)
+        if pending:
+            text += f"\n📝 Заявок: {len(pending)}"
+        kwargs = (
+            {"reply_markup": _match_request_keyboard(len(pending))}
+            if pending else {}
+        )
         await _send_event_notification(
             "match",
             match["id"],
             match["created_by"],
             0,
-            _match_participants_text(match, players),
+            text,
+            **kwargs,
+        )
+    if user_id != match["created_by"] and await _notifications_allowed(
+        user_id, "matches"
+    ):
+        await _send_event_notification(
+            "match",
+            match["id"],
+            user_id,
+            user_id,
+            _match_personal_text(match, "pending"),
         )
 
-    # Остальные участники видят, кто присоединился или вышел, в одном
-    # редактируемом сообщении на матч. Автор уже получил сводку выше.
-    for player in players:
+
+async def _notify_match_event(
+    match: aiosqlite.Row, user_id: int | None = None, status: str = "joined"
+) -> None:
+    players = await db.get_match_players(match["id"])
+    booked = [p for p in players if _row_status(p) == "booked"]
+    pending = [p for p in players if _row_status(p) == "pending"]
+
+    if match["created_by"] and await _notifications_allowed(
+        match["created_by"], "matches"
+    ):
+        text = _match_participants_text(match, booked)
+        if pending:
+            text += f"\n📝 Заявок: {len(pending)}"
+        kwargs = (
+            {"reply_markup": _match_request_keyboard(len(pending))}
+            if pending else {}
+        )
+        await _send_event_notification(
+            "match",
+            match["id"],
+            match["created_by"],
+            0,
+            text,
+            **kwargs,
+        )
+
+    # Все подтверждённые участники видят актуальный состав в одном
+    # редактируемом сообщении на матч.
+    for player in booked:
         player_id = int(player["telegram_id"])
         if player_id == match["created_by"] or player_id == user_id:
             continue
@@ -1919,7 +2151,7 @@ async def _notify_match_event(
             match["id"],
             player_id,
             player_id,
-            _match_update_text(match, players),
+            _match_update_text(match, booked),
         )
 
     if (
@@ -1927,12 +2159,16 @@ async def _notify_match_event(
         and user_id != match["created_by"]
         and await _notifications_allowed(user_id, "matches")
     ):
+        if status in {"joined", "left"}:
+            text = _match_update_text(match, booked, status)
+        else:
+            text = _match_personal_text(match, status)
         await _send_event_notification(
             "match",
             match["id"],
             user_id,
             user_id,
-            _match_update_text(match, players, status),
+            text,
         )
 
 

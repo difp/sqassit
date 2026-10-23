@@ -245,6 +245,7 @@ function trainingCard(t) {
   let badges = '';
   if (t.is_booked) badges += '<span class="badge badge--success">Вы записаны</span>';
   if (t.is_waitlisted) badges += '<span class="badge badge--warn">Лист ожидания</span>';
+  if (t.is_pending) badges += '<span class="badge badge--warn">Ожидает подтверждения</span>';
   if (t.waitlist_count) badges += `<span class="badge badge--muted">В очереди: ${t.waitlist_count}</span>`;
   if (t.is_past) badges += '<span class="badge badge--muted">Завершена</span>';
   if (!t.is_past && !t.can_self_cancel && (t.is_booked || t.is_waitlisted)) {
@@ -254,11 +255,12 @@ function trainingCard(t) {
   // Действия: основная кнопка + «Добавить в календарь» — обе на всю ширину,
   // одна под другой, поэтому иконка календаря не «плавает» отдельно.
   let buttons = '';
-  if (!t.is_past && !t.is_booked && !t.is_waitlisted) {
+  if (!t.is_past && !t.is_booked && !t.is_waitlisted && !t.is_pending) {
     const label = free > 0 ? 'Записаться' : 'В лист ожидания';
     buttons += `<button class="btn btn--primary btn--block" data-book="${t.id}">${label}</button>`;
-  } else if (!t.is_past && t.can_self_cancel && (t.is_booked || t.is_waitlisted)) {
-    buttons += `<button class="btn btn--danger btn--block" data-cancel="${t.id}">Отменить запись</button>`;
+  } else if (!t.is_past && t.can_self_cancel && (t.is_booked || t.is_waitlisted || t.is_pending)) {
+    const label = t.is_pending ? 'Отменить заявку' : 'Отменить запись';
+    buttons += `<button class="btn btn--danger btn--block" data-cancel="${t.id}">${label}</button>`;
   }
   if (!t.is_past) {
     buttons += `<button class="btn btn--block" data-cal="${t.id}">
@@ -395,7 +397,7 @@ document.getElementById('schedule').addEventListener('click', async (ev) => {
     } else {
       const r = await api(`/api/trainings/${cancelId}/cancel`, 'POST');
       hapticNotify('success');
-      toast(r.promoted ? 'Отменено. Следующий из очереди повышен.' : 'Запись отменена');
+      toast(r.promoted ? 'Отменено. Следующий из очереди повышен.' : 'Заявка отменена');
     }
     cacheClear();
     await loadSchedule();
