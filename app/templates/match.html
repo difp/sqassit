@@ -74,6 +74,20 @@
     </form>
   </div>
 </div>
+<!-- Bottom sheet: соавторы матча -->
+<div class="sheet" id="match-coauthors-sheet">
+  <div class="sheet__backdrop" data-match-coauthors-close></div>
+  <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="match-coauthors-title">
+    <div class="sheet__handle"></div>
+    <h2 class="sheet__title" id="match-coauthors-title">Соавторы матча</h2>
+    <p class="hint" style="margin:-8px 0 14px">Соавтор может подтверждать и отклонять заявки.</p>
+    <div id="match-coauthors-list"></div>
+    <label class="field"><span class="label">Добавить игрока</span>
+      <input class="input" id="match-coauthor-input" placeholder="@username" autocomplete="off"></label>
+    <button class="btn btn--primary btn--block" id="match-coauthor-add" type="button">Добавить соавтора</button>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -82,6 +96,9 @@ const MATCHES = {};
 let MATCH_LEVELS_LOADED = false;
 const matchSheet = document.getElementById('match-sheet');
 const matchForm = document.getElementById('match-form');
+const matchCoauthorsSheet = document.getElementById('match-coauthors-sheet');
+const matchCoauthorsList = document.getElementById('match-coauthors-list');
+let MATCH_COAUTH_ID = null;
 
 function matchIsoDate(days = 0) {
   const d = new Date();
@@ -119,6 +136,7 @@ function matchCard(m) {
     actions = `<button class="btn btn--danger btn--block" data-match-leave="${m.id}">Выйти из матча</button>`;
   }
   if (m.is_creator) {
+    actions += `<button class="btn btn--block" data-match-coauthors="${m.id}" style="margin-top:8px">Соавторы матча</button>`;
     actions += `<button class="btn btn--block" data-match-delete="${m.id}" style="margin-top:8px">Удалить матч</button>`;
   }
   const creator = m.creator
@@ -255,7 +273,9 @@ document.getElementById('matches').addEventListener('click', async (ev) => {
   const remove = ev.target.closest('[data-match-delete]')?.getAttribute('data-match-delete');
   const approve = ev.target.closest('[data-match-approve]')?.getAttribute('data-match-approve');
   const reject = ev.target.closest('[data-match-reject]')?.getAttribute('data-match-reject');
-  if (!join && !leave && !remove && !approve && !reject) return;
+  const coauthors = ev.target.closest('[data-match-coauthors]')?.getAttribute('data-match-coauthors');
+  if (!join && !leave && !remove && !approve && !reject && !coauthors) return;
+  if (coauthors) { openMatchCoauthors(coauthors); return; }
   try {
     let actionMessage = '';
     if (join) {
@@ -317,6 +337,49 @@ matchForm.addEventListener('submit', async (ev) => {
   } finally {
     btn.disabled = false;
   }
+});
+
+async function openMatchCoauthors(matchId) {
+  MATCH_COAUTH_ID = matchId;
+  matchCoauthorsList.innerHTML = loaderHtml('Загружаем соавторов…');
+  matchCoauthorsSheet.classList.add('is-open');
+  try {
+    const data = await api(`/api/matches/${matchId}/coauthors`);
+    const list = data.coauthors || [];
+    matchCoauthorsList.innerHTML = list.length
+      ? list.map(c => `
+        <div class="p-row">
+          ${avatarHtml(c.first_name, c.avatar_url, true)}
+          <div class="p-row__name">${esc(c.first_name)}</div>
+          <button class="btn btn--danger btn--sm" data-match-coauthor-remove="${c.telegram_id}">Убрать</button>
+        </div>`).join('')
+      : '<div class="hint" style="padding:8px 0">Соавторов пока нет.</div>';
+  } catch (e) {
+    matchCoauthorsList.innerHTML = `<div class="hint" style="padding:8px 0">${esc(e.message)}</div>`;
+  }
+}
+document.querySelector('[data-match-coauthors-close]').addEventListener('click', () => matchCoauthorsSheet.classList.remove('is-open'));
+document.getElementById('match-coauthor-add').addEventListener('click', async () => {
+  const input = document.getElementById('match-coauthor-input');
+  const value = input.value.trim();
+  if (!value || !MATCH_COAUTH_ID) return;
+  try {
+    const payload = value.startsWith('@') ? { username: value.slice(1) } : { username: value };
+    await api(`/api/matches/${MATCH_COAUTH_ID}/coauthors`, 'POST', payload);
+    input.value = '';
+    hapticNotify('success');
+    toast('Соавтор добавлен');
+    openMatchCoauthors(MATCH_COAUTH_ID);
+  } catch (e) { hapticNotify('error'); toast(e.message); }
+});
+matchCoauthorsList.addEventListener('click', async (ev) => {
+  const uid = ev.target.closest('[data-match-coauthor-remove]')?.getAttribute('data-match-coauthor-remove');
+  if (!uid || !MATCH_COAUTH_ID) return;
+  try {
+    await api(`/api/matches/${MATCH_COAUTH_ID}/coauthors/${uid}`, 'DELETE');
+    toast('Соавтор убран');
+    openMatchCoauthors(MATCH_COAUTH_ID);
+  } catch (e) { toast(e.message); }
 });
 
 window.PAGE_REFRESH = loadMatches;

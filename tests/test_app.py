@@ -2197,7 +2197,11 @@ def test_training_notification_texts_and_targets(monkeypatch):
     async def notifications_on(telegram_id, category):
         return True
 
+    async def no_coauthors(*args):
+        return []
+
     monkeypatch.setattr(mainmod.db, "get_participants", fake_participants)
+    monkeypatch.setattr(mainmod.db, "list_event_coauthors", no_coauthors)
     monkeypatch.setattr(mainmod.db, "notification_enabled", notifications_on)
     monkeypatch.setattr(mainmod, "_send_event_notification", fake_send)
     asyncio.run(mainmod._notify_training_event(training, 555))
@@ -2252,7 +2256,11 @@ def test_match_notification_texts_and_targets(monkeypatch):
     async def notifications_on(telegram_id, category):
         return True
 
+    async def no_coauthors(*args):
+        return []
+
     monkeypatch.setattr(mainmod.db, "get_match_players", fake_players)
+    monkeypatch.setattr(mainmod.db, "list_event_coauthors", no_coauthors)
     monkeypatch.setattr(mainmod.db, "notification_enabled", notifications_on)
     monkeypatch.setattr(mainmod, "_send_event_notification", fake_send)
     asyncio.run(mainmod._notify_match_event(match, 555, "joined"))
@@ -2300,7 +2308,11 @@ def test_match_notification_skips_disabled_participant(monkeypatch):
     async def fake_send(kind, entity_id, chat_id, user_id, text):
         calls.append((chat_id, user_id))
 
+    async def no_coauthors(*args):
+        return []
+
     monkeypatch.setattr(mainmod.db, "get_match_players", fake_players)
+    monkeypatch.setattr(mainmod.db, "list_event_coauthors", no_coauthors)
     monkeypatch.setattr(mainmod.db, "notification_enabled", allowed)
     monkeypatch.setattr(mainmod, "_send_event_notification", fake_send)
     asyncio.run(mainmod._notify_match_event(match, 123, "joined"))
@@ -2929,7 +2941,11 @@ def test_notify_match_event_with_pending(monkeypatch):
     async def fake_send(kind, entity_id, chat_id, user_id, text, **kwargs):
         calls.append((chat_id, user_id, kwargs))
 
+    async def no_coauthors(*args):
+        return []
+
     monkeypatch.setattr(mainmod.db, "get_match_players", fake_players)
+    monkeypatch.setattr(mainmod.db, "list_event_coauthors", no_coauthors)
     monkeypatch.setattr(mainmod.db, "notification_enabled", notifications_on)
     monkeypatch.setattr(mainmod, "_send_event_notification", fake_send)
     asyncio.run(mainmod._notify_match_event(match, 1, "joined"))
@@ -2952,3 +2968,210 @@ def test_match_approve_again_returns_status(client):
     )
     assert repeated.status_code == 200
     assert repeated.json()["status"] == "booked"
+
+
+def test_training_coauthors_and_permissions(client, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(
+        mainmod, "settings", replace(settings, require_event_approval=True)
+    )
+    assert client.post(
+        "/api/coach/coaches", headers=COACH, json={"telegram_id": 777}
+    ).status_code == 200
+    tid = client.post(
+        "/api/coach/trainings",
+        headers=COACH,
+        json={**_future(15, "18:00"), "capacity": 2},
+    ).json()["id"]
+
+    added = client.post(
+        f"/api/coach/trainings/{tid}/coauthors",
+        headers=COACH,
+        json={"telegram_id": 777},
+    )
+    assert added.status_code == 200 and added.json()["created"] is True
+    duplicate = client.post(
+        f"/api/coach/trainings/{tid}/coauthors",
+        headers=COACH,
+        json={"telegram_id": 777},
+    )
+    assert duplicate.json()["created"] is False
+    assert client.post(
+        f"/api/coach/trainings/{tid}/coauthors",
+        headers=COACH,
+        json={"telegram_id": 123},
+    ).status_code == 400
+    assert client.post(
+        f"/api/coach/trainings/{tid}/coauthors",
+        headers=COACH,
+        json={"telegram_id": 556},
+    ).status_code == 400
+    assert client.post(
+        f"/api/coach/trainings/{tid}/coauthors",
+        headers=COACH2,
+        json={"telegram_id": 777},
+    ).status_code == 403
+
+    listed = client.get(
+        f"/api/coach/trainings/{tid}/coauthors", headers=COACH2
+    ).json()
+    assert listed["can_manage"] is False
+    assert any(c["telegram_id"] == 777 for c in listed["coauthors"])
+    assert client.get(
+        f"/api/coach/trainings/{tid}/coauthors", headers=COACH
+    ).json()["can_manage"] is True
+
+    # Соавтор видит занятие в своей активной вкладке и может одобрить заявку.
+    coach2_trainings = client.get("/api/coach/trainings", headers=COACH2).json()["trainings"]
+    row = next(t for t in coach2_trainings if t["id"] == tid)
+    assert row["is_owner"] is False and row["can_manage"] is True
+    assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER).json()["status"] == "pending"
+    approved = client.post(
+        f"/api/coach/trainings/{tid}/participants/555/approve", headers=COACH2
+    )
+    assert approved.status_code == 200 and approved.json()["status"] == "booked"
+
+    assert client.delete(
+        f"/api/coach/trainings/{tid}/coauthors/777", headers=COACH2
+    ).status_code == 403
+    removed = client.delete(
+        f"/api/coach/trainings/{tid}/coauthors/777", headers=COACH
+    )
+    assert removed.json()["removed"] is True
+
+
+def test_match_coauthors_and_permissions(client, monkeypatch):
+    match_id = client.post(
+        "/api/matches",
+        headers=PLAYER,
+        json={**_future(16, "18:00"), "title": "Соавторы", "max_players": 3},
+    ).json()["id"]
+    added = client.post(
+        f"/api/matches/{match_id}/coauthors",
+        headers=PLAYER,
+        json={"telegram_id": 556},
+    )
+    assert added.status_code == 200 and added.json()["created"] is True
+    assert client.post(
+        f"/api/matches/{match_id}/coauthors", headers=PLAYER, json={"telegram_id": 555}
+    ).status_code == 400
+    assert client.post(
+        f"/api/matches/{match_id}/coauthors", headers=PLAYER2, json={"telegram_id": 559}
+    ).status_code == 403
+    assert client.get(
+        f"/api/matches/{match_id}/coauthors", headers=PLAYER2
+    ).json()["can_manage"] is False
+    assert client.delete(
+        f"/api/matches/{match_id}/coauthors/556", headers=PLAYER2
+    ).status_code == 403
+    assert client.delete(
+        f"/api/matches/{match_id}/coauthors/556", headers=PLAYER
+    ).json()["removed"] is True
+
+    # Добавление по username (пользователь должен уже существовать).
+    assert client.post(
+        "/api/matches", headers=PLAYER, json={**_future(17, "18:00"), "title": "Username"}
+    ).status_code == 200
+    match2 = client.get("/api/matches?days=31", headers=PLAYER).json()["matches"][-1]["id"]
+    async def find_user(username):
+        return {"telegram_id": 556}
+    monkeypatch.setattr(mainmod.db, "find_user_by_username", find_user)
+    assert client.post(
+        f"/api/matches/{match2}/coauthors", headers=PLAYER, json={"username": "@masha"}
+    ).status_code == 200
+
+
+def test_coauthor_error_branches(client):
+    tid = client.post(
+        "/api/coach/trainings",
+        headers=COACH,
+        json={**_future(18, "18:00")},
+    ).json()["id"]
+    assert client.get("/api/coach/trainings/999/coauthors", headers=COACH).status_code == 404
+    assert client.post(
+        "/api/coach/trainings/999/coauthors", headers=COACH, json={"telegram_id": 777}
+    ).status_code == 404
+    assert client.post(
+        f"/api/coach/trainings/{tid}/coauthors", headers=COACH, json={}
+    ).status_code == 404
+    assert client.delete(
+        "/api/coach/trainings/999/coauthors/777", headers=COACH
+    ).status_code == 404
+
+    mid = client.post(
+        "/api/matches",
+        headers=PLAYER,
+        json={**_future(19, "18:00"), "title": "Ошибки соавторов"},
+    ).json()["id"]
+    assert client.get("/api/matches/999/coauthors", headers=PLAYER).status_code == 404
+    assert client.post(
+        "/api/matches/999/coauthors", headers=PLAYER, json={"telegram_id": 556}
+    ).status_code == 404
+    assert client.post(
+        f"/api/matches/{mid}/coauthors", headers=PLAYER, json={}
+    ).status_code == 404
+    assert client.delete(
+        "/api/matches/999/coauthors/556", headers=PLAYER
+    ).status_code == 404
+
+
+def test_coauthor_notification_loops(monkeypatch):
+    training = {
+        "id": 21,
+        "training_type": "Тренировка",
+        "start_at": int(time.time()) + 3600,
+        "capacity": 2,
+        "created_by": 123,
+        "deleted_at": None,
+    }
+    participants = [
+        {"telegram_id": 123, "first_name": "Тренер", "status": "booked", "display_mode": "name"},
+        {"telegram_id": 555, "first_name": "Иван", "status": "pending", "display_mode": "name"},
+    ]
+    match = {
+        "id": 22,
+        "title": "Матч",
+        "start_at": int(time.time()) + 3600,
+        "max_players": 2,
+        "location": "",
+        "created_by": 123,
+        "deleted_at": None,
+    }
+    calls = []
+
+    async def participants_for(_id):
+        return participants
+
+    async def match_players(_id):
+        return [{"telegram_id": 123, "first_name": "Автор", "status": "booked", "display_mode": "name"}]
+
+    async def coauthors(*args):
+        return [{"telegram_id": 123}, {"telegram_id": 777}]
+
+    async def allowed(user_id, category):
+        return user_id != 777
+
+    async def send(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(mainmod.db, "get_participants", participants_for)
+    monkeypatch.setattr(mainmod.db, "get_match_players", match_players)
+    monkeypatch.setattr(mainmod.db, "list_event_coauthors", coauthors)
+    monkeypatch.setattr(mainmod.db, "notification_enabled", allowed)
+    monkeypatch.setattr(mainmod, "_send_event_notification", send)
+    asyncio.run(mainmod._notify_training_event(training, 555, "pending"))
+    assert calls
+    asyncio.run(mainmod._notify_match_request(match, 555))
+    asyncio.run(mainmod._notify_match_event(match, 555, "joined"))
+
+    async def allow_all(user_id, category):
+        return True
+
+    monkeypatch.setattr(mainmod.db, "notification_enabled", allow_all)
+    calls.clear()
+    asyncio.run(mainmod._notify_match_request(match, 555))
+    assert calls
+    calls.clear()
+    asyncio.run(mainmod._notify_match_event(match, 555, "joined"))
+    assert calls

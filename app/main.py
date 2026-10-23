@@ -315,6 +315,7 @@ def serialize_match(
     participants: list[aiosqlite.Row],
     creator_row: aiosqlite.Row | None,
     viewer_id: int,
+    is_coauthor: bool = False,
 ) -> dict[str, Any]:
     """Публичная карточка матча без Telegram ID участников."""
     start = _local_time(row["start_at"])
@@ -340,6 +341,8 @@ def serialize_match(
         "is_joined": any(p["telegram_id"] == viewer_id for p in booked),
         "is_pending": any(p["telegram_id"] == viewer_id for p in pending),
         "is_creator": row["created_by"] == viewer_id,
+        "is_coauthor": is_coauthor,
+        "can_manage": row["created_by"] == viewer_id or is_coauthor,
         "pending_count": len(pending),
         "pending_requests": (
             [
@@ -350,7 +353,7 @@ def serialize_match(
                 }
                 for p in pending
             ]
-            if row["created_by"] == viewer_id
+            if row["created_by"] == viewer_id or is_coauthor
             else []
         ),
         "creator": participant_identity(creator_row) if creator_row else None,
@@ -536,6 +539,11 @@ class CoachIn(BaseModel):
     username: str | None = Field(default=None, max_length=64)
 
 
+class CoauthorIn(BaseModel):
+    telegram_id: int | None = None
+    username: str | None = Field(default=None, max_length=64)
+
+
 class ManagerIn(BaseModel):
     enabled: bool
 
@@ -563,6 +571,27 @@ class MatchIn(BaseModel):
 async def _notifications_allowed(telegram_id: int, category: str) -> bool:
     """Учитывает общий тумблер и категорию уведомлений."""
     return await db.notification_enabled(telegram_id, category)
+
+
+async def _can_manage_training(training: aiosqlite.Row, user_id: int) -> bool:
+    return training["created_by"] == user_id or await db.is_event_coauthor(
+        "training", training["id"], user_id
+    )
+
+
+async def _can_manage_match(match: aiosqlite.Row, user_id: int) -> bool:
+    return match["created_by"] == user_id or await db.is_event_coauthor(
+        "match", match["id"], user_id
+    )
+
+
+async def _resolve_user_id(payload: CoachIn | CoauthorIn) -> int | None:
+    if payload.telegram_id is not None:
+        return payload.telegram_id
+    if payload.username:
+        found = await db.find_user_by_username(payload.username)
+        return int(found["telegram_id"]) if found is not None else None
+    return None
 
 
 _TRAINING_BATCH_MAX_DAYS = 92
@@ -1121,6 +1150,7 @@ async def api_matches(user: Annotated[dict, Depends(current_user)], days: int = 
                 participants.get(row["id"], []),
                 creator_cache[creator_id],
                 user["telegram_id"],
+                await db.is_event_coauthor("match", row["id"], user["telegram_id"]),
             )
         )
     return {"ok": True, "matches": result}
@@ -1202,7 +1232,11 @@ async def api_approve_match_request(
 ):
     try:
         match = await db.get_match(match_id)
-        if match is None or match["deleted_at"] or match["created_by"] != user["telegram_id"]:
+        if (
+            match is None
+            or match["deleted_at"]
+            or not await _can_manage_match(match, user["telegram_id"])
+        ):
             return error_json("Матч не найден", 404)
         status = await db.approve_match_player(match_id, user_id, user["telegram_id"])
         if not status:
@@ -1220,7 +1254,11 @@ async def api_reject_match_request(
 ):
     try:
         match = await db.get_match(match_id)
-        if match is None or match["deleted_at"] or match["created_by"] != user["telegram_id"]:
+        if (
+            match is None
+            or match["deleted_at"]
+            or not await _can_manage_match(match, user["telegram_id"])
+        ):
             return error_json("Матч не найден", 404)
         if not await db.reject_match_player(
             match_id, user_id, user["telegram_id"]
@@ -1288,7 +1326,15 @@ async def api_coach_trainings(coach: Annotated[dict, Depends(require_coach)]):
     return {
         "ok": True,
         "trainings": [
-            serialize_training(r, viewer_id=coach["telegram_id"]) for r in rows
+            {
+                **serialize_training(r, viewer_id=coach["telegram_id"]),
+                "is_owner": r["created_by"] == coach["telegram_id"],
+                "can_manage": (
+                    r["created_by"] == coach["telegram_id"]
+                    or await db.is_event_coauthor("training", r["id"], coach["telegram_id"])
+                ),
+            }
+            for r in rows
         ],
     }
 
@@ -1549,7 +1595,7 @@ async def api_coach_approve_participant(
         if (
             training is None
             or training["deleted_at"]
-            or training["created_by"] != coach["telegram_id"]
+            or not await _can_manage_training(training, coach["telegram_id"])
         ):
             return error_json("Тренировка не найдена", 404)
         status = await db.approve_booking(training_id, user_id)
@@ -1572,7 +1618,7 @@ async def api_coach_reject_participant(
         if (
             training is None
             or training["deleted_at"]
-            or training["created_by"] != coach["telegram_id"]
+            or not await _can_manage_training(training, coach["telegram_id"])
         ):
             return error_json("Тренировка не найдена", 404)
         if not await db.reject_booking(training_id, user_id):
@@ -1951,6 +1997,23 @@ async def _notify_training_event(
             _training_participants_text(training, participants),
             **kwargs,
         )
+    for coauthor in await db.list_event_coauthors("training", training["id"]):
+        coauthor_id = int(coauthor["telegram_id"])
+        if coauthor_id == training["created_by"]:
+            continue
+        if not await _notifications_allowed(coauthor_id, "trainings"):
+            continue
+        kwargs = (
+            {"reply_markup": _pending_booking_keyboard(pending)} if pending else {}
+        )
+        await _send_event_notification(
+            "training",
+            training["id"],
+            coauthor_id,
+            0,
+            _training_participants_text(training, participants),
+            **kwargs,
+        )
     if user_id is not None and await _notifications_allowed(user_id, "trainings"):
         if not status:
             found = next(
@@ -2082,20 +2145,34 @@ async def _notify_match_request(match: aiosqlite.Row, user_id: int) -> None:
     players = await db.get_match_players(match["id"])
     booked = [p for p in players if _row_status(p) == "booked"]
     pending = [p for p in players if _row_status(p) == "pending"]
+    text = _match_participants_text(match, booked)
+    if pending:
+        text += f"\n📝 Заявок: {len(pending)}"
+    kwargs = (
+        {"reply_markup": _match_request_keyboard(len(pending))}
+        if pending else {}
+    )
     if match["created_by"] and await _notifications_allowed(
         match["created_by"], "matches"
     ):
-        text = _match_participants_text(match, booked)
-        if pending:
-            text += f"\n📝 Заявок: {len(pending)}"
-        kwargs = (
-            {"reply_markup": _match_request_keyboard(len(pending))}
-            if pending else {}
-        )
         await _send_event_notification(
             "match",
             match["id"],
             match["created_by"],
+            0,
+            text,
+            **kwargs,
+        )
+    for coauthor in await db.list_event_coauthors("match", match["id"]):
+        coauthor_id = int(coauthor["telegram_id"])
+        if coauthor_id == match["created_by"]:
+            continue
+        if not await _notifications_allowed(coauthor_id, "matches"):
+            continue
+        await _send_event_notification(
+            "match",
+            match["id"],
+            coauthor_id,
             0,
             text,
             **kwargs,
@@ -2118,21 +2195,35 @@ async def _notify_match_event(
     players = await db.get_match_players(match["id"])
     booked = [p for p in players if _row_status(p) == "booked"]
     pending = [p for p in players if _row_status(p) == "pending"]
+    text = _match_participants_text(match, booked)
+    if pending:
+        text += f"\n📝 Заявок: {len(pending)}"
+    kwargs = (
+        {"reply_markup": _match_request_keyboard(len(pending))}
+        if pending else {}
+    )
 
     if match["created_by"] and await _notifications_allowed(
         match["created_by"], "matches"
     ):
-        text = _match_participants_text(match, booked)
-        if pending:
-            text += f"\n📝 Заявок: {len(pending)}"
-        kwargs = (
-            {"reply_markup": _match_request_keyboard(len(pending))}
-            if pending else {}
-        )
         await _send_event_notification(
             "match",
             match["id"],
             match["created_by"],
+            0,
+            text,
+            **kwargs,
+        )
+    for coauthor in await db.list_event_coauthors("match", match["id"]):
+        coauthor_id = int(coauthor["telegram_id"])
+        if coauthor_id == match["created_by"]:
+            continue
+        if not await _notifications_allowed(coauthor_id, "matches"):
+            continue
+        await _send_event_notification(
+            "match",
+            match["id"],
+            coauthor_id,
             0,
             text,
             **kwargs,
@@ -2237,6 +2328,122 @@ async def _notify_training_transferred(new_coach_id: int, training: aiosqlite.Ro
         "Вам передали занятие.\n\n"
         f"🏸 {_training_brief(training)}",
     )
+
+
+@app.get("/api/coach/trainings/{training_id}/coauthors")
+async def api_training_coauthors(
+    training_id: int, coach: Annotated[dict, Depends(require_coach)]
+):
+    training = await db.get_training(training_id)
+    if training is None or training["deleted_at"]:
+        return error_json("Тренировка не найдена", 404)
+    rows = await db.list_event_coauthors("training", training_id)
+    return {
+        "ok": True,
+        "can_manage": training["created_by"] == coach["telegram_id"],
+        "coauthors": [
+            {
+                "telegram_id": r["telegram_id"],
+                "first_name": r["first_name"] or "Тренер",
+                "username": r["username"],
+                "avatar_url": _avatar_url(r["telegram_id"], real=True),
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.post("/api/coach/trainings/{training_id}/coauthors")
+async def api_add_training_coauthor(
+    training_id: int,
+    payload: CoauthorIn,
+    coach: Annotated[dict, Depends(require_coach)],
+):
+    training = await db.get_training(training_id)
+    if training is None or training["deleted_at"]:
+        return error_json("Тренировка не найдена", 404)
+    if training["created_by"] != coach["telegram_id"]:
+        return error_json("Добавлять соавторов может только создатель.", 403)
+    target = await _resolve_user_id(payload)
+    if target is None:
+        return error_json("Тренер не найден.", 404)
+    if target == training["created_by"]:
+        return error_json("Создатель уже управляет занятием.", 400)
+    if not await db.is_coach_id(target):
+        return error_json("Соавтором тренировки может быть только тренер.", 400)
+    created = await db.add_event_coauthor(
+        "training", training_id, target, coach["telegram_id"]
+    )
+    return {"ok": True, "created": created, "telegram_id": target}
+
+
+@app.delete("/api/coach/trainings/{training_id}/coauthors/{user_id}")
+async def api_remove_training_coauthor(
+    training_id: int, user_id: int, coach: Annotated[dict, Depends(require_coach)]
+):
+    training = await db.get_training(training_id)
+    if training is None or training["deleted_at"]:
+        return error_json("Тренировка не найдена", 404)
+    if training["created_by"] != coach["telegram_id"]:
+        return error_json("Снимать соавторов может только создатель.", 403)
+    removed = await db.remove_event_coauthor("training", training_id, user_id)
+    return {"ok": True, "removed": removed}
+
+
+@app.get("/api/matches/{match_id}/coauthors")
+async def api_match_coauthors(
+    match_id: int, user: Annotated[dict, Depends(current_user)]
+):
+    match = await db.get_match(match_id)
+    if match is None or match["deleted_at"]:
+        return error_json("Матч не найден", 404)
+    rows = await db.list_event_coauthors("match", match_id)
+    return {
+        "ok": True,
+        "can_manage": match["created_by"] == user["telegram_id"],
+        "coauthors": [
+            {
+                "telegram_id": r["telegram_id"],
+                "first_name": r["first_name"] or "Игрок",
+                "username": r["username"],
+                "avatar_url": _avatar_url(r["telegram_id"], real=True),
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.post("/api/matches/{match_id}/coauthors")
+async def api_add_match_coauthor(
+    match_id: int, payload: CoauthorIn, user: Annotated[dict, Depends(current_user)]
+):
+    match = await db.get_match(match_id)
+    if match is None or match["deleted_at"]:
+        return error_json("Матч не найден", 404)
+    if match["created_by"] != user["telegram_id"]:
+        return error_json("Добавлять соавторов может только организатор.", 403)
+    target = await _resolve_user_id(payload)
+    if target is None:
+        return error_json("Игрок не найден. Попросите его запустить бота.", 404)
+    if target == match["created_by"]:
+        return error_json("Организатор уже управляет матчем.", 400)
+    created = await db.add_event_coauthor(
+        "match", match_id, target, user["telegram_id"]
+    )
+    return {"ok": True, "created": created, "telegram_id": target}
+
+
+@app.delete("/api/matches/{match_id}/coauthors/{user_id}")
+async def api_remove_match_coauthor(
+    match_id: int, user_id: int, user: Annotated[dict, Depends(current_user)]
+):
+    match = await db.get_match(match_id)
+    if match is None or match["deleted_at"]:
+        return error_json("Матч не найден", 404)
+    if match["created_by"] != user["telegram_id"]:
+        return error_json("Снимать соавторов может только организатор.", 403)
+    removed = await db.remove_event_coauthor("match", match_id, user_id)
+    return {"ok": True, "removed": removed}
 
 
 # --------------------------------------------------------------------------- #

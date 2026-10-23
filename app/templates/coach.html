@@ -231,6 +231,22 @@
   </div>
 </div>
 
+<!-- Bottom sheet: соавторы -->
+<div class="sheet" id="coauthors-sheet">
+  <div class="sheet__backdrop" data-coauthors-close></div>
+  <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="coauthors-title">
+    <div class="sheet__handle"></div>
+    <h2 class="sheet__title" id="coauthors-title">Соавторы</h2>
+    <p class="hint" style="margin:-8px 0 14px">Соавтор может подтверждать и отклонять заявки, видеть участников.</p>
+    <div id="coauthors-list"></div>
+    <div id="coauthors-add-wrap" hidden>
+      <label class="field"><span class="label">Добавить тренера</span>
+        <select class="input" id="coauthor-select"></select></label>
+      <button class="btn btn--primary btn--block" id="coauthor-add" type="button">Добавить соавтора</button>
+    </div>
+  </div>
+</div>
+
 <!-- Bottom sheet: передача занятия -->
 <div class="sheet" id="transfer-sheet">
   <div class="sheet__backdrop" data-xclose></div>
@@ -258,6 +274,11 @@ const WEEKDAY_NAMES = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 const sheet = document.getElementById('create-sheet');
 const profileSheet = document.getElementById('profile-sheet');
 const transferSheet = document.getElementById('transfer-sheet');
+const coauthorsSheet = document.getElementById('coauthors-sheet');
+const coauthorsList = document.getElementById('coauthors-list');
+const coauthorSelect = document.getElementById('coauthor-select');
+const coauthorsAddWrap = document.getElementById('coauthors-add-wrap');
+let COAUTH_TID = null;
 const dateInput = sheet.querySelector('[name="date"]');
 const timeField = dateInput.closest('.row2').querySelectorAll('.field')[1];
 const periodStart = sheet.querySelector('[name="period_start"]');
@@ -637,6 +658,7 @@ function iconBtn(attr, label, path, color) {
 const ICON_CAL = '<rect x="3" y="4.5" width="18" height="16" rx="3.5"/><path d="M8 2.8v3.4M16 2.8v3.4M3.2 9.5h17.6"/>';
 const ICON_XFER = '<path d="M4 12h13M12 7l5 5-5 5"/>';
 const ICON_DEL = '<path d="M4 7h16M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7M6.5 7l.8 11.2A2 2 0 0 0 9.3 20h5.4a2 2 0 0 0 2-1.8L17.5 7"/>';
+const ICON_USERS = '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>';
 
 function activeRow(t) {
   const pct = t.capacity ? Math.min(100, Math.round((t.booked_count / t.capacity) * 100)) : 0;
@@ -656,8 +678,9 @@ function activeRow(t) {
       <div class="t-meta">${dateAndLevel(t.date, t.level)}</div>
       <div class="t-toolbar__actions">
         ${iconBtn(`data-cal="${t.id}"`, 'В календарь', ICON_CAL, 'var(--link)')}
-        ${iconBtn(`data-del="${t.id}"`, 'Удалить', ICON_DEL)}
-        ${iconBtn(`data-xfer="${t.id}"`, 'Передать', ICON_XFER, 'var(--link)')}
+        ${t.is_owner ? iconBtn(`data-coauthors="${t.id}"`, 'Соавторы', ICON_USERS, 'var(--link)') : ''}
+        ${t.is_owner ? iconBtn(`data-del="${t.id}"`, 'Удалить', ICON_DEL) : ''}
+        ${t.is_owner ? iconBtn(`data-xfer="${t.id}"`, 'Передать', ICON_XFER, 'var(--link)') : ''}
       </div>
     </div>
     <div class="bar"><div class="bar__fill" style="width:${pct}%"></div></div>
@@ -811,6 +834,7 @@ document.getElementById('list').addEventListener('click', async (ev) => {
   const preject = ev.target.closest('[data-preject]')?.getAttribute('data-preject');
   const cal = ev.target.closest('[data-cal]')?.getAttribute('data-cal');
   const xfer = ev.target.closest('[data-xfer]')?.getAttribute('data-xfer');
+  const coauthors = ev.target.closest('[data-coauthors]')?.getAttribute('data-coauthors');
   const row = ev.target.closest('.p-row');
 
   if (cal) {
@@ -819,6 +843,7 @@ document.getElementById('list').addEventListener('click', async (ev) => {
     return;
   }
   if (xfer) { openTransfer(xfer); return; }
+  if (coauthors) { openCoauthors(coauthors); return; }
 
   try {
     if (del) {
@@ -916,6 +941,59 @@ document.getElementById('list').addEventListener('change', async ev => {
     cacheClear();
     toast('Напоминание: ' + fmtOffset(min));
   } catch (e) { hapticNotify('error'); toast(e.message); loadView(); }
+});
+
+// ===== Соавторы =====
+async function openCoauthors(tid) {
+  COAUTH_TID = tid;
+  coauthorsList.innerHTML = loaderHtml('Загружаем соавторов…');
+  coauthorsAddWrap.hidden = true;
+  coauthorsSheet.classList.add('is-open');
+  try {
+    const [data, coaches] = await Promise.all([
+      api(`/api/coach/trainings/${tid}/coauthors`),
+      api('/api/coach/coaches'),
+    ]);
+    const list = data.coauthors || [];
+    coauthorsList.innerHTML = list.length
+      ? list.map(c => `
+        <div class="p-row">
+          ${avatarHtml(c.first_name, c.avatar_url, true)}
+          <div class="p-row__name">${esc(c.first_name)}</div>
+          ${data.can_manage ? `<button class="btn btn--danger btn--sm" data-coauthor-remove="${c.telegram_id}">Убрать</button>` : ''}
+        </div>`).join('')
+      : '<div class="hint" style="padding:8px 0">Соавторов пока нет.</div>';
+    if (data.can_manage) {
+      const current = new Set(list.map(c => c.telegram_id));
+      const me = APP.me ? APP.me.telegram_id : null;
+      const options = (coaches.coaches || []).filter(c => c.telegram_id !== me && !current.has(c.telegram_id));
+      coauthorSelect.innerHTML = options.length
+        ? options.map(c => `<option value="${c.telegram_id}">${esc(c.first_name)}${c.is_owner ? ' (администратор)' : ''}</option>`).join('')
+        : '<option value="">Нет доступных тренеров</option>';
+      coauthorsAddWrap.hidden = !options.length;
+    }
+  } catch (e) {
+    coauthorsList.innerHTML = `<div class="hint" style="padding:8px 0">${esc(e.message)}</div>`;
+  }
+}
+document.querySelector('[data-coauthors-close]').addEventListener('click', () => coauthorsSheet.classList.remove('is-open'));
+document.getElementById('coauthor-add').addEventListener('click', async () => {
+  if (!COAUTH_TID || !coauthorSelect.value) return;
+  try {
+    await api(`/api/coach/trainings/${COAUTH_TID}/coauthors`, 'POST', { telegram_id: parseInt(coauthorSelect.value, 10) });
+    hapticNotify('success');
+    toast('Соавтор добавлен');
+    openCoauthors(COAUTH_TID);
+  } catch (e) { hapticNotify('error'); toast(e.message); }
+});
+coauthorsList.addEventListener('click', async (ev) => {
+  const uid = ev.target.closest('[data-coauthor-remove]')?.getAttribute('data-coauthor-remove');
+  if (!uid || !COAUTH_TID) return;
+  try {
+    await api(`/api/coach/trainings/${COAUTH_TID}/coauthors/${uid}`, 'DELETE');
+    toast('Соавтор убран');
+    openCoauthors(COAUTH_TID);
+  } catch (e) { toast(e.message); }
 });
 
 // ===== Передача занятия =====

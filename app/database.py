@@ -145,6 +145,15 @@ CREATE TABLE IF NOT EXISTS event_notifications (
     UNIQUE (kind, entity_id, chat_id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS event_coauthors (
+    event_type  TEXT NOT NULL,
+    event_id    INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    added_by    INTEGER,
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (event_type, event_id, user_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_matches_start ON matches(start_at);
 CREATE INDEX IF NOT EXISTS idx_match_players_match ON match_players(match_id);
 
@@ -672,10 +681,53 @@ async def delete_user_data(telegram_id: int) -> None:
         "DELETE FROM coach_applications WHERE telegram_id = ?", (telegram_id,)
     )
     await _execute("DELETE FROM feedback WHERE user_id = ?", (telegram_id,))
+    await _execute(
+        "DELETE FROM event_coauthors WHERE user_id = ? OR added_by = ?",
+        (telegram_id, telegram_id),
+    )
     # Активные записи уже отменены вызывающим кодом; удаляем и историю, чтобы
     # в БД не оставался telegram_id удалённого пользователя.
     await _execute("DELETE FROM bookings WHERE user_id = ?", (telegram_id,))
     await _execute("DELETE FROM users WHERE telegram_id = ?", (telegram_id,))
+
+
+async def list_event_coauthors(event_type: str, event_id: int) -> list[aiosqlite.Row]:
+    return await _fetchall(
+        """
+        SELECT u.telegram_id, u.first_name, u.username, u.phone,
+               u.avatar_file_id, u.display_mode, u.show_username
+          FROM event_coauthors c
+          JOIN users u ON u.telegram_id = c.user_id
+         WHERE c.event_type = ? AND c.event_id = ?
+         ORDER BY c.created_at ASC
+        """,
+        (event_type, event_id),
+    )
+
+
+async def is_event_coauthor(event_type: str, event_id: int, user_id: int) -> bool:
+    return await _fetchone(
+        "SELECT 1 FROM event_coauthors "
+        "WHERE event_type = ? AND event_id = ? AND user_id = ?",
+        (event_type, event_id, user_id),
+    ) is not None
+
+
+async def add_event_coauthor(
+    event_type: str, event_id: int, user_id: int, added_by: int
+) -> bool:
+    return bool(await _execute_rowcount(
+        "INSERT OR IGNORE INTO event_coauthors "
+        "(event_type, event_id, user_id, added_by, created_at) VALUES (?, ?, ?, ?, ?)",
+        (event_type, event_id, user_id, added_by, int(time.time())),
+    ))
+
+
+async def remove_event_coauthor(event_type: str, event_id: int, user_id: int) -> bool:
+    return bool(await _execute_rowcount(
+        "DELETE FROM event_coauthors WHERE event_type = ? AND event_id = ? AND user_id = ?",
+        (event_type, event_id, user_id),
+    ))
 
 
 async def list_all_users() -> list[aiosqlite.Row]:
@@ -784,10 +836,17 @@ async def list_active_trainings(now: int, owner_id: int) -> list[aiosqlite.Row]:
                (SELECT COUNT(*) FROM bookings b
                  WHERE b.training_id = t.id AND b.status = 'waitlist') AS waitlist_count
           FROM trainings t
-         WHERE t.start_at >= ? AND t.deleted_at IS NULL AND t.created_by = ?
+         WHERE t.start_at >= ? AND t.deleted_at IS NULL
+           AND (
+               t.created_by = ?
+               OR EXISTS (
+                   SELECT 1 FROM event_coauthors c
+                    WHERE c.event_type = 'training' AND c.event_id = t.id AND c.user_id = ?
+               )
+           )
          ORDER BY t.start_at ASC
         """,
-        (now, owner_id),
+        (now, owner_id, owner_id),
     )
 
 
