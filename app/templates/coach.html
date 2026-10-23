@@ -710,7 +710,7 @@ function activeRow(t) {
       <span>Записано ${t.booked_count} из ${t.capacity}</span>
       <span>${wait ? 'Очередь: ' + wait : 'Очередь пуста'}</span>
     </div>
-    ${reminderEditor(t)}
+    ${t.is_owner ? reminderEditor(t) : ''}
     <details class="disclosure" data-pid="${t.id}">
       <summary><span class="disclosure__dot" aria-hidden="true"></span>Участники</summary>
       <div data-plist="${t.id}"><div class="hint" style="padding:10px 0">Загрузка…</div></div>
