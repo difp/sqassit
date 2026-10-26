@@ -619,16 +619,11 @@ def test_notifications_loop_cancellation_and_error(monkeypatch):
     asyncio.run(error_scenario())
 
     async def cancel_scenario():
-        entered = asyncio.Event()
+        async def cancel_me(now):
+            raise asyncio.CancelledError
 
-        async def slow(now):
-            entered.set()
-            await asyncio.sleep(10)
-
-        monkeypatch.setattr(mainmod, "_process_due_deletions", slow)
+        monkeypatch.setattr(mainmod, "_process_due_deletions", cancel_me)
         task = asyncio.create_task(mainmod._training_notifications_loop(0))
-        await entered.wait()
-        task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
 

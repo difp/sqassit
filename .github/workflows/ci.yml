@@ -42,6 +42,13 @@ jobs:
 
           path = pathlib.Path("pytest.log")
           if path.exists():
-              for line in path.read_text(errors="replace").splitlines()[-60:]:
+              lines = path.read_text(errors="replace").splitlines()
+              for line in lines:
+                  if any(token in line for token in (
+                      "FAILED", "ERROR", "Missing", "app/main.py",
+                      "TOTAL", "AssertionError",
+                  )):
+                      print(f"::error::{line}")
+              for line in lines[-20:]:
                   print(f"::error::{line}")
           PY
