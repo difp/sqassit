@@ -629,6 +629,29 @@ def test_notifications_loop_cancellation_and_error(monkeypatch):
 
     asyncio.run(cancel_scenario())
 
+    async def normal_scenario():
+        finished = asyncio.Event()
+
+        async def deletions(now):
+            return None
+
+        async def finals(now):
+            finished.set()
+
+        async def cleanup(now):
+            return None
+
+        monkeypatch.setattr(mainmod, "_process_due_deletions", deletions)
+        monkeypatch.setattr(mainmod, "_process_due_final_enrollments", finals)
+        monkeypatch.setattr(mainmod, "_cleanup_stale_preliminary", cleanup)
+        task = asyncio.create_task(mainmod._training_notifications_loop(0))
+        await finished.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(normal_scenario())
+
 
 def test_notify_training_restored(monkeypatch):
     training = _training()
