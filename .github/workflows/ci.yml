@@ -45,7 +45,7 @@ jobs:
               lines = path.read_text(errors="replace").splitlines()
               for line in lines:
                   if any(token in line for token in (
-                      "FAILED", "ERROR", "Missing", "app/main.py",
+                      "FAILED", "ERROR", "Missing", "app/", ".py",
                       "TOTAL", "AssertionError",
                   )):
                       print(f"::error::{line}")
