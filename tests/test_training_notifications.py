@@ -596,12 +596,6 @@ def test_transient_delete_error():
 
 
 def test_notifications_loop_cancellation_and_error(monkeypatch):
-    async def boom(now):
-        raise RuntimeError("boom")
-
-    async def slow(now):
-        await asyncio.sleep(10)
-
     async def noop(now):
         return None
 
@@ -609,10 +603,15 @@ def test_notifications_loop_cancellation_and_error(monkeypatch):
     monkeypatch.setattr(mainmod, "_cleanup_stale_preliminary", noop)
 
     async def error_scenario():
+        entered = asyncio.Event()
+
+        async def boom(now):
+            entered.set()
+            raise RuntimeError("boom")
+
         monkeypatch.setattr(mainmod, "_process_due_deletions", boom)
         task = asyncio.create_task(mainmod._training_notifications_loop(0))
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        await entered.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -620,10 +619,15 @@ def test_notifications_loop_cancellation_and_error(monkeypatch):
     asyncio.run(error_scenario())
 
     async def cancel_scenario():
+        entered = asyncio.Event()
+
+        async def slow(now):
+            entered.set()
+            await asyncio.sleep(10)
+
         monkeypatch.setattr(mainmod, "_process_due_deletions", slow)
         task = asyncio.create_task(mainmod._training_notifications_loop(0))
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        await entered.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

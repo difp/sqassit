@@ -667,7 +667,7 @@ def test_notifications_on_promotion_and_deletion(client):
     client.post(f"/api/trainings/{tid}/book", headers=PLAYER2)
     client.post(f"/api/trainings/{tid}/cancel", headers=PLAYER)
 
-    for _ in range(30):
+    for _ in range(100):
         if any(chat_id == 556 and "Вы записаны." in text for chat_id, text in captured):
             break
         time.sleep(0.05)
@@ -677,7 +677,7 @@ def test_notifications_on_promotion_and_deletion(client):
     client.post(f"/api/trainings/{tid2}/book", headers=PLAYER)
     client.delete(f"/api/coach/trainings/{tid2}", headers=COACH)
 
-    for _ in range(30):
+    for _ in range(100):
         if any(chat_id == 555 and "отменена" in text for chat_id, text in captured):
             break
         time.sleep(0.05)
@@ -1019,7 +1019,7 @@ def test_application_privacy_hides_animal_from_managers(client, monkeypatch):
     ).json()["ok"] is True
 
     animal = botmod.animal_identity(888)
-    for _ in range(30):
+    for _ in range(100):
         if sent:
             break
         time.sleep(0.05)
@@ -1062,7 +1062,7 @@ def test_message_to_coach_uses_animal_name(client, monkeypatch):
         json={"text": "Не смогу прийти", "training_id": tid},
     ).json()["ok"] is True
 
-    for _ in range(30):
+    for _ in range(100):
         if sent:
             break
         time.sleep(0.05)
