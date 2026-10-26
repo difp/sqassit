@@ -93,7 +93,7 @@ async def _bot_is_ready() -> bool:
     global _bot_check_cache
     now = time.monotonic()
     cached_at, cached_ok = _bot_check_cache
-    if now - cached_at < _BOT_CHECK_TTL_SECONDS:
+    if cached_at and now - cached_at < _BOT_CHECK_TTL_SECONDS:
         return cached_ok
     try:
         me = await app.state.bot.get_me()

@@ -719,6 +719,47 @@ def test_clear_event_notification_message_db(tmp_path):
     asyncio.run(scenario())
 
 
+def test_notification_queries_for_scheduler(tmp_path):
+    now = int(time.time())
+
+    async def scenario():
+        await db.connect(str(tmp_path / "scheduler.db"))
+        try:
+            await db.upsert_user(123, None, "Тренер", is_coach=True)
+            future_id = await db.create_training(
+                title="Группа", training_type="Группа",
+                start_at=now + 10 * 86400, capacity=6, duration_min=60,
+                reminder_offset_min=270, reminder_enabled=True,
+                created_by=123, level="Новичок",
+            )
+            past_id = await db.create_training(
+                title="Прошлая", training_type="Группа",
+                start_at=now - 60, capacity=6, duration_min=60,
+                reminder_offset_min=270, reminder_enabled=True,
+                created_by=123,
+            )
+            await db.save_event_notification(
+                "training_booked", future_id, 555, 555, 10, "text",
+                delete_at=now - 10, phase="preliminary",
+                sent_at=now - 100, final_at=now - 5,
+            )
+            await db.save_event_notification(
+                "training_booked", past_id, 555, 555, 11, "old",
+                delete_at=now - 10, phase="preliminary",
+                sent_at=now - 100, final_at=now - 5,
+            )
+            due = await db.list_due_event_notifications(now)
+            assert {int(row["entity_id"]) for row in due} == {future_id, past_id}
+            finals = await db.list_due_final_enrollments(now)
+            assert [int(row["entity_id"]) for row in finals] == [future_id]
+            stale = await db.list_stale_preliminary_enrollments(now)
+            assert [int(row["entity_id"]) for row in stale] == [past_id]
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
 def test_event_notification_migration_adds_columns(tmp_path):
     import sqlite3
 
