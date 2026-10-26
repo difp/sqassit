@@ -628,6 +628,10 @@ async function loadView() {
     cacheWrite(cacheName, data.trainings);
     TRAININGS = data.trainings;
     renderList();
+    if (VIEW === 'active' && typeof window.setCoachIndicator === 'function') {
+      window.setCoachIndicator(
+        TRAININGS.reduce((sum, t) => sum + (t.pending_count || 0), 0));
+    }
   } catch (e) {
     hapticNotify('error');
     toast(e.message, { label: 'Повторить', onClick: loadView });
@@ -650,7 +654,18 @@ function renderList() {
     : VIEW === 'history' ? historyRow
       : VIEW === 'deleted' ? deletedRow : clubRow;
   list.innerHTML = TRAININGS.map(render).join('');
+  hydrateParticipants();
   hideAppLoader();
+}
+
+// Списки участников раскрыты сразу: догружаем их без клика по <summary>.
+function hydrateParticipants() {
+  document.querySelectorAll('#list details[data-pid][open]').forEach(details => {
+    const box = details.querySelector('[data-plist]');
+    if (!box || box.dataset.loaded === '1') return;
+    box.dataset.loaded = '1';
+    refreshParticipants(details.dataset.pid);
+  });
 }
 
 // ---------- Своё занятие ----------
@@ -687,6 +702,7 @@ const ICON_USERS = '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 
 function activeRow(t) {
   const pct = t.capacity ? Math.min(100, Math.round((t.booked_count / t.capacity) * 100)) : 0;
   const wait = t.waitlist_count || 0;
+  const pending = t.pending_count || 0;
   return `
   <div class="card">
     <div class="t-top">
@@ -695,7 +711,7 @@ function activeRow(t) {
         <div class="t-duration">${t.duration_min} мин</div>
       </div>
       <div class="t-info">
-        <div class="t-title">${esc(t.type)}</div>
+        <div class="t-title">${esc(t.type)}${pending ? ` <span class="badge badge--warn">Заявки: ${pending}</span>` : ''}</div>
       </div>
     </div>
     <div class="t-toolbar">
@@ -713,8 +729,8 @@ function activeRow(t) {
       <span>${wait ? 'Очередь: ' + wait : 'Очередь пуста'}</span>
     </div>
     ${t.is_owner ? reminderEditor(t) : ''}
-    <details class="disclosure" data-pid="${t.id}">
-      <summary><span class="disclosure__dot" aria-hidden="true"></span>Участники</summary>
+    <details class="disclosure" data-pid="${t.id}" open>
+      <summary><span class="disclosure__dot" aria-hidden="true"></span>Участники${pending ? ` · заявок ${pending}` : ''}</summary>
       <div data-plist="${t.id}"><div class="hint" style="padding:10px 0">Загрузка…</div></div>
     </details>
   </div>`;
@@ -771,6 +787,7 @@ function deletedRow(t) {
 function clubRow(t) {
   const coach = t.coach ? esc(t.coach.first_name) : 'Тренер';
   const avatar = t.coach ? avatarHtml(t.coach.first_name, t.coach.avatar_url, true) : '';
+  const pending = t.pending_count || 0;
   return `
   <div class="card">
     <div class="t-top">
@@ -779,7 +796,7 @@ function clubRow(t) {
         <div class="t-duration">${t.duration_min} мин</div>
       </div>
       <div class="t-info">
-        <div class="t-title">${esc(t.type)}</div>
+        <div class="t-title">${esc(t.type)}${pending ? ` <span class="badge badge--warn">Заявки: ${pending}</span>` : ''}</div>
         <div class="t-meta">${dateAndLevel(t.date, t.level)}</div>
       </div>
       <div class="t-occ"><b>${t.booked_count}</b><span style="color:var(--hint)">/${t.capacity}</span><span class="lbl">записано</span></div>
@@ -789,8 +806,8 @@ function clubRow(t) {
       <div class="t-coach__text"><div class="t-coach__name">Тренер · ${coach}</div></div>
       <span class="badge badge--muted">Только чтение</span>
     </div>
-    <details class="disclosure" data-pid="${t.id}">
-      <summary><span class="disclosure__dot" aria-hidden="true"></span>Участники</summary>
+    <details class="disclosure" data-pid="${t.id}" open>
+      <summary><span class="disclosure__dot" aria-hidden="true"></span>Участники${pending ? ` · заявок ${pending}` : ''}</summary>
       <div data-plist="${t.id}"><div class="hint" style="padding:10px 0">Загрузка…</div></div>
     </details>
   </div>`;

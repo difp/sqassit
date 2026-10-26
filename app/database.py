@@ -135,13 +135,17 @@ CREATE TABLE IF NOT EXISTS match_players (
 
 CREATE TABLE IF NOT EXISTS event_notifications (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind        TEXT NOT NULL,             -- training | match
+    kind        TEXT NOT NULL,             -- training | training_booked | ...
     entity_id   INTEGER NOT NULL,
     chat_id     INTEGER NOT NULL,
     user_id     INTEGER NOT NULL DEFAULT 0, -- 0 = сводка организатору
     message_id  INTEGER NOT NULL DEFAULT 0,
     text        TEXT NOT NULL DEFAULT '',
     updated_at  INTEGER NOT NULL,
+    delete_at   INTEGER,                    -- когда удалить сообщение
+    phase       TEXT NOT NULL DEFAULT '',   -- preliminary | final | status
+    sent_at     INTEGER NOT NULL DEFAULT 0, -- время последней отправки
+    final_at    INTEGER,                    -- когда заменить предварительное
     UNIQUE (kind, entity_id, chat_id, user_id)
 );
 
@@ -192,6 +196,7 @@ async def _migrate() -> None:
     users_cols = await columns_of("users")
     coaches_cols = await columns_of("coaches")
     match_players_cols = await columns_of("match_players")
+    event_notifications_cols = await columns_of("event_notifications")
     onboarding_was_present = "onboarding_seen" in users_cols
 
     additions = {
@@ -230,16 +235,35 @@ async def _migrate() -> None:
         ("match_players", "decided_at"): (
             "ALTER TABLE match_players ADD COLUMN decided_at INTEGER"
         ),
+        ("event_notifications", "delete_at"): (
+            "ALTER TABLE event_notifications ADD COLUMN delete_at INTEGER"
+        ),
+        ("event_notifications", "phase"): (
+            "ALTER TABLE event_notifications ADD COLUMN phase TEXT NOT NULL DEFAULT ''"
+        ),
+        ("event_notifications", "sent_at"): (
+            "ALTER TABLE event_notifications ADD COLUMN sent_at INTEGER NOT NULL DEFAULT 0"
+        ),
+        ("event_notifications", "final_at"): (
+            "ALTER TABLE event_notifications ADD COLUMN final_at INTEGER"
+        ),
     }
     present = {
         "trainings": trainings_cols,
         "users": users_cols,
         "coaches": coaches_cols,
         "match_players": match_players_cols,
+        "event_notifications": event_notifications_cols,
     }
     for (table, column), ddl in additions.items():
         if column not in present[table]:
             await _conn.execute(ddl)
+
+    # Индекс создаём после миграции: в старой БД колонки delete_at ещё нет.
+    await _conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_event_notifications_delete "
+        "ON event_notifications(delete_at)"
+    )
 
     # Памятку показываем только новым пользователям. При обновлении старой БД
     # существующие аккаунты не должны внезапно получить онбординг.
@@ -953,6 +977,15 @@ async def purge_training(training_id: int) -> None:
     async with _lock:
         await db.execute("DELETE FROM bookings WHERE training_id = ?", (training_id,))
         await db.execute("DELETE FROM trainings WHERE id = ?", (training_id,))
+        await db.execute(
+            """
+            DELETE FROM event_notifications
+             WHERE entity_id = ?
+               AND kind IN ('training', 'training_booked',
+                            'training_waitlist', 'training_rejected')
+            """,
+            (training_id,),
+        )
         await db.commit()
 
 
@@ -1610,18 +1643,135 @@ async def save_event_notification(
     user_id: int,
     message_id: int,
     text: str,
+    *,
+    delete_at: int | None = None,
+    phase: str = "",
+    sent_at: int | None = None,
+    final_at: int | None = None,
 ) -> None:
+    now = int(time.time())
     await _execute(
         """
         INSERT INTO event_notifications
-            (kind, entity_id, chat_id, user_id, message_id, text, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            (kind, entity_id, chat_id, user_id, message_id, text, updated_at,
+             delete_at, phase, sent_at, final_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(kind, entity_id, chat_id, user_id) DO UPDATE SET
             message_id = excluded.message_id,
             text = excluded.text,
-            updated_at = excluded.updated_at
+            updated_at = excluded.updated_at,
+            delete_at = excluded.delete_at,
+            phase = excluded.phase,
+            sent_at = excluded.sent_at,
+            final_at = excluded.final_at
         """,
-        (kind, entity_id, chat_id, user_id, message_id, text, int(time.time())),
+        (
+            kind,
+            entity_id,
+            chat_id,
+            user_id,
+            message_id,
+            text,
+            now,
+            delete_at,
+            phase,
+            now if sent_at is None else sent_at,
+            final_at,
+        ),
+    )
+
+
+async def update_event_notification_text(
+    kind: str, entity_id: int, chat_id: int, user_id: int, text: str
+) -> None:
+    """Обновляет только текст, сохраняя таймеры и время отправки."""
+    await _execute(
+        """
+        UPDATE event_notifications
+           SET text = ?, updated_at = ?
+         WHERE kind = ? AND entity_id = ? AND chat_id = ? AND user_id = ?
+        """,
+        (text, int(time.time()), kind, entity_id, chat_id, user_id),
+    )
+
+
+async def clear_event_notification_message(row_id: int) -> None:
+    """Сообщение удалено, но запись нужна для финальной отправки."""
+    await _execute(
+        "UPDATE event_notifications SET message_id = 0, delete_at = NULL WHERE id = ?",
+        (row_id,),
+    )
+
+
+async def delete_event_notification_by_id(row_id: int) -> None:
+    await _execute("DELETE FROM event_notifications WHERE id = ?", (row_id,))
+
+
+async def list_event_notifications_for_training(
+    training_id: int,
+) -> list[aiosqlite.Row]:
+    return await _fetchall(
+        "SELECT * FROM event_notifications WHERE entity_id = ?",
+        (training_id,),
+    )
+
+
+async def list_event_notifications_for_player(
+    training_id: int, user_id: int
+) -> list[aiosqlite.Row]:
+    return await _fetchall(
+        """
+        SELECT * FROM event_notifications
+         WHERE entity_id = ? AND (chat_id = ? OR user_id = ?)
+        """,
+        (training_id, user_id, user_id),
+    )
+
+
+async def list_due_event_notifications(now: int) -> list[aiosqlite.Row]:
+    return await _fetchall(
+        """
+        SELECT * FROM event_notifications
+         WHERE delete_at IS NOT NULL AND delete_at <= ?
+         ORDER BY delete_at ASC
+        """,
+        (now,),
+    )
+
+
+async def list_due_final_enrollments(now: int) -> list[aiosqlite.Row]:
+    """Предварительные подтверждения, которым пора стать финальными."""
+    return await _fetchall(
+        """
+        SELECT n.*, t.start_at, t.duration_min, t.training_type, t.level,
+               t.created_by, t.capacity, t.deleted_at
+          FROM event_notifications n
+          JOIN trainings t ON t.id = n.entity_id
+         WHERE n.kind = 'training_booked'
+           AND n.phase = 'preliminary'
+           AND n.final_at IS NOT NULL
+           AND n.final_at <= ?
+           AND t.deleted_at IS NULL
+           AND t.start_at > ?
+         ORDER BY n.final_at ASC
+        """,
+        (now, now),
+    )
+
+
+async def list_stale_preliminary_enrollments(now: int) -> list[aiosqlite.Row]:
+    """Предварительные записи, чьё занятие уже прошло или удалено."""
+    return await _fetchall(
+        """
+        SELECT n.* FROM event_notifications n
+          LEFT JOIN trainings t ON t.id = n.entity_id
+         WHERE n.kind = 'training_booked'
+           AND n.phase = 'preliminary'
+           AND n.final_at IS NOT NULL
+           AND n.final_at <= ?
+           AND (t.id IS NULL OR t.deleted_at IS NOT NULL OR t.start_at <= ?)
+        """,
+        (now, now),
     )
 
 

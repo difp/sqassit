@@ -42,3 +42,25 @@ def test_disclosures_use_aligned_dots() -> None:
     for tag in re.findall(r"<details[^>]*>", coach):
         assert 'class="disclosure"' in tag
     assert coach.count('class="disclosure__dot"') >= 3
+
+
+def test_coach_participants_open_by_default() -> None:
+    coach = (TEMPLATES / "coach.html").read_text()
+
+    # Своё и чужое занятие: список участников раскрыт сразу после загрузки.
+    assert coach.count('data-pid="${t.id}" open') == 2
+    assert "hydrateParticipants();" in coach
+    # Заявки видны на карточке, а не только внутри раскрытого списка.
+    assert coach.count('badge badge--warn">Заявки: ${pending}') == 2
+
+
+def test_coach_tab_has_pending_badge() -> None:
+    base = BASE.read_text()
+    coach = (TEMPLATES / "coach.html").read_text()
+
+    assert 'id="tab-coach-pin"' in base
+    assert ".tab__pin" in base
+    assert "width: 9px; height: 9px" in base
+    assert "setCoachIndicator" in base
+    assert "refreshCoachIndicator" in base
+    assert "window.setCoachIndicator(" in coach

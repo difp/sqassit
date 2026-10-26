@@ -422,6 +422,14 @@
     }
     .tab svg { width: 23px; height: 23px; }
     .tab.is-active { color: var(--accent-ink); }
+    .tab__icon { position: relative; display: inline-flex; }
+    .tab__pin {
+      position: absolute; top: -2px; right: -4px;
+      width: 9px; height: 9px; border-radius: 50%;
+      background: #ff3b30;
+      box-shadow: 0 0 0 2px var(--header-bg);
+    }
+    .tab__pin[hidden] { display: none; }
 
     /* ===== Bottom sheet ===== */
     .sheet { position: fixed; inset: 0; z-index: 50; display: none; }
@@ -792,9 +800,12 @@
       <span>Матч</span>
     </a>
     <a class="tab" href="/coach" data-tab="coach" id="tab-coach">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="5" y="3.5" width="14" height="17.5" rx="3"/><path d="M9.2 3.5h5.6M8.5 9h7M8.5 13h7M8.5 17h4.5"/>
-      </svg>
+      <span class="tab__icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="5" y="3.5" width="14" height="17.5" rx="3"/><path d="M9.2 3.5h5.6M8.5 9h7M8.5 13h7M8.5 17h4.5"/>
+        </svg>
+        <span class="tab__pin" id="tab-coach-pin" hidden></span>
+      </span>
       <span>Тренер</span>
     </a>
   </nav>
@@ -1355,6 +1366,41 @@
         return APP.me;
       },
     };
+
+    // Индикатор на вкладке «Тренер»: есть новые заявки на занятия.
+    const coachPin = document.getElementById('tab-coach-pin');
+    const coachTab = document.getElementById('tab-coach');
+    function setCoachIndicator(count) {
+      if (!coachPin) return;
+      const n = Math.max(0, Number(count) || 0);
+      coachPin.hidden = n === 0;
+      coachPin.textContent = '';
+      if (coachTab) {
+        if (n) coachTab.setAttribute('aria-label', `Тренер, новых заявок: ${n}`);
+        else coachTab.removeAttribute('aria-label');
+      }
+    }
+    window.setCoachIndicator = setCoachIndicator;
+
+    async function refreshCoachIndicator() {
+      if (!APP.me || !APP.me.is_coach) {
+        setCoachIndicator(0);
+        return;
+      }
+      try {
+        const data = await api('/api/coach/pending');
+        setCoachIndicator(data.pending_count);
+      } catch (e) {
+        // Индикатор не должен мешать загрузке страницы.
+      }
+    }
+    window.refreshCoachIndicator = refreshCoachIndicator;
+
+    APP.ready.then(refreshCoachIndicator);
+    setInterval(() => { if (!document.hidden) refreshCoachIndicator(); }, 60000);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) refreshCoachIndicator();
+    });
   </script>
   {% block scripts %}{% endblock %}
 </body>

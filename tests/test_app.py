@@ -79,7 +79,15 @@ def client(monkeypatch):
         async def _noop_send(*args, **kwargs):
             return None
 
+        async def _noop_edit(*args, **kwargs):
+            return None
+
+        async def _noop_delete(*args, **kwargs):
+            return True
+
         mainmod.app.state.bot.send_message = _noop_send
+        mainmod.app.state.bot.edit_message_text = _noop_edit
+        mainmod.app.state.bot.delete_message = _noop_delete
         yield c
 
 
@@ -369,8 +377,10 @@ def test_club_readonly_and_transfer(client):
         **_future(10, "18:00"), "training_type": "Владельца", "capacity": 2}).json()["id"]
 
     # другой тренер видит его в «Оке» и может читать участников
-    club = [x["id"] for x in client.get("/api/coach/club/trainings", headers=COACH2).json()["trainings"]]
+    club_rows = client.get("/api/coach/club/trainings", headers=COACH2).json()["trainings"]
+    club = [x["id"] for x in club_rows]
     assert t in club
+    assert next(x for x in club_rows if x["id"] == t)["pending_count"] == 0
     assert client.get(f"/api/coach/trainings/{t}/participants", headers=COACH2).status_code == 200
     # но не может менять чужое
     assert client.patch(f"/api/coach/trainings/{t}/reminder", headers=COACH2,
@@ -658,10 +668,10 @@ def test_notifications_on_promotion_and_deletion(client):
     client.post(f"/api/trainings/{tid}/cancel", headers=PLAYER)
 
     for _ in range(30):
-        if any(chat_id == 556 and "Освободилось место" in text for chat_id, text in captured):
+        if any(chat_id == 556 and "Вы записаны." in text for chat_id, text in captured):
             break
         time.sleep(0.05)
-    assert any(chat_id == 556 and "Освободилось место" in text for chat_id, text in captured)
+    assert any(chat_id == 556 and "Вы записаны." in text for chat_id, text in captured)
 
     tid2 = _create_training(client, day=17, time_str="16:00", capacity=2)
     client.post(f"/api/trainings/{tid2}/book", headers=PLAYER)
@@ -1585,6 +1595,7 @@ def test_message_training_not_found_and_notification_edges(client, monkeypatch):
         "start_at": int(time.time()) + 3600,
         "training_type": "Тренировка",
         "capacity": 2,
+        "duration_min": 60,
         "created_by": 123,
         "deleted_at": None,
     }
@@ -2115,7 +2126,9 @@ def test_event_notification_edit_and_send_branches(client, monkeypatch):
 
     monkeypatch.setattr(mainmod.db, "save_event_notification", fake_save)
     monkeypatch.setattr(mainmod.db, "get_event_notification", no_record)
-    asyncio.run(mainmod._send_event_notification("training", 1, 123, 0, "one"))
+    assert asyncio.run(
+        mainmod._send_event_notification("training", 1, 123, 0, "one")
+    ) == "sent"
     assert sent == [(123, "one")]
     assert saves[-1][4] == 101
 
@@ -2123,14 +2136,18 @@ def test_event_notification_edit_and_send_branches(client, monkeypatch):
         return {"message_id": 101, "text": "one"}
 
     monkeypatch.setattr(mainmod.db, "get_event_notification", same_record)
-    asyncio.run(mainmod._send_event_notification("training", 1, 123, 0, "one"))
+    assert asyncio.run(
+        mainmod._send_event_notification("training", 1, 123, 0, "one")
+    ) == "same"
     assert len(sent) == 1
 
     async def changed_record(*args):
         return {"message_id": 101, "text": "old"}
 
     monkeypatch.setattr(mainmod.db, "get_event_notification", changed_record)
-    asyncio.run(mainmod._send_event_notification("training", 1, 123, 0, "new"))
+    assert asyncio.run(
+        mainmod._send_event_notification("training", 1, 123, 0, "new")
+    ) == "edited"
     assert edited and edited[-1]["text"] == "new"
 
     class NotModifiedBot(FakeBot):
@@ -2138,7 +2155,9 @@ def test_event_notification_edit_and_send_branches(client, monkeypatch):
             raise RuntimeError("message is not modified")
 
     monkeypatch.setattr(mainmod.app.state, "bot", NotModifiedBot())
-    asyncio.run(mainmod._send_event_notification("training", 1, 123, 0, "same?"))
+    assert asyncio.run(
+        mainmod._send_event_notification("training", 1, 123, 0, "same?")
+    ) == "same"
     assert len(sent) == 1
 
     class BrokenEditBot(FakeBot):
@@ -2146,7 +2165,9 @@ def test_event_notification_edit_and_send_branches(client, monkeypatch):
             raise RuntimeError("message deleted")
 
     monkeypatch.setattr(mainmod.app.state, "bot", BrokenEditBot())
-    asyncio.run(mainmod._send_event_notification("training", 1, 123, 0, "resend"))
+    assert asyncio.run(
+        mainmod._send_event_notification("training", 1, 123, 0, "resend")
+    ) == "sent"
     assert len(sent) == 2
 
     class BrokenSendBot(FakeBot):
@@ -2155,14 +2176,17 @@ def test_event_notification_edit_and_send_branches(client, monkeypatch):
 
     monkeypatch.setattr(mainmod.db, "get_event_notification", no_record)
     monkeypatch.setattr(mainmod.app.state, "bot", BrokenSendBot())
-    asyncio.run(mainmod._send_event_notification("training", 1, 123, 0, "fail"))
+    assert asyncio.run(
+        mainmod._send_event_notification("training", 1, 123, 0, "fail")
+    ) == "failed"
 
 
 def test_training_notification_texts_and_targets(monkeypatch):
     now = int(time.time()) + 3600
     training = {
         "id": 1,
-        "training_type": "Тренировка",
+        "training_type": "Группа",
+        "level": "Уверенный любитель (С)",
         "start_at": now,
         "capacity": 30,
         "created_by": 123,
@@ -2170,30 +2194,95 @@ def test_training_notification_texts_and_targets(monkeypatch):
     }
     people = [
         {
-            "status": "booked" if i < 26 else "waitlist",
+            "status": (
+                "booked" if i < 26 else "waitlist" if i == 26 else "pending"
+            ),
             "telegram_id": 500 + i,
             "first_name": f"Игрок{i}",
             "display_mode": "name",
             "avatar_file_id": None,
         }
-        for i in range(27)
+        for i in range(28)
     ]
-    summary = mainmod._training_participants_text(training, people)
+    summary = mainmod._training_participants_text(training, people, "ilka")
+    lines = summary.splitlines()
+    assert lines[0] == "Группа: Уверенный любитель (С) - ilka"
+    assert lines[1] == mainmod._local_time(now).strftime("%d.%m / %H:%M")
+    assert lines[2] == "Записаны:"
+    assert lines[3] == "1. Игрок0"
+    assert lines[4] == "2. Игрок1"
     assert "…" in summary
-    assert "В очереди" in summary
-    for status in ("promoted", "cancelled", "deleted", "waitlist", "booked"):
-        assert mainmod._training_personal_text(training, status)
+    assert "Заявки:" not in summary and "В очереди:" not in summary
+    assert "🏸" not in summary and "📅" not in summary and "👥" not in summary
+    # Без уровня остаётся тип занятия, без имени — только тип.
+    assert mainmod._training_header(
+        {"training_type": "Группа", "level": "", "created_by": None}
+    ) == "Группа"
+    assert mainmod._training_header(
+        {"training_type": "Группа", "level": "Новичок"}
+    ) == "Группа: Новичок"
+    assert mainmod._training_player_header(
+        {"training_type": "Группа", "level": ""}
+    ) == "Группа"
+
+    pending_text = mainmod._training_personal_text(
+        training, people, "pending", "ilka"
+    )
+    pending_lines = pending_text.splitlines()
+    assert pending_lines[0] == "Заявка на занятие отправлена."
+    assert pending_lines[1] == ""
+    assert pending_lines[2] == "Группа: Уверенный любитель (С). Тренер: ilka"
+    assert pending_lines[3] == mainmod._local_time(now).strftime("%d.%m / %H:%M")
+    assert pending_lines[4] == "Записаны:"
+    assert pending_lines[5] == "1. Игрок0"
+
+    booked_text = mainmod._training_personal_text(
+        training, people, "booked", "ilka"
+    )
+    assert booked_text.startswith("Вы записаны.")
+    assert mainmod._training_personal_text(
+        training, people, "waitlist", "ilka"
+    ).startswith("Заявка на занятие одобрена, но пока нет мест,")
+    assert mainmod._training_personal_text(
+        training, people, "rejected", "ilka"
+    ).startswith("Заявка на занятие отклонена — к сожалению, мест нет.")
+    booked_final = mainmod._training_booked_message_text(
+        training, people, "ilka", "final"
+    )
+    assert "<i>Это сообщение будет автоматически удалено" in booked_final
+    booked_prelim = mainmod._training_booked_message_text(
+        training, people, "ilka", "preliminary"
+    )
+    assert "Актуальную информацию пришлём за день до занятия" in booked_prelim
+    assert mainmod._training_waitlist_text(
+        training, "ilka"
+    ).startswith("Заявка на занятие одобрена, но пока нет мест,")
+    assert "очищено" in mainmod._training_rejected_text(training, "ilka")
+    for status in ("promoted", "cancelled", "deleted", "waitlist", "pending",
+                   "rejected", "booked"):
+        text = mainmod._training_personal_text(training, people, status)
+        assert text and "🏸" not in text and "✅" not in text
 
     deleted = {**training, "deleted_at": 1}
-    assert "Тренировка отменена" in mainmod._training_participants_text(deleted, people)
+    assert "Тренировка отменена" in mainmod._training_participants_text(
+        deleted, people, "ilka"
+    )
 
     calls = []
 
     async def fake_participants(training_id):
         return people
 
-    async def fake_send(kind, entity_id, chat_id, user_id, text):
+    async def fake_user(user_id):
+        return {
+            "telegram_id": user_id,
+            "first_name": "ilka",
+            "display_mode": "name",
+        }
+
+    async def fake_send(kind, entity_id, chat_id, user_id, text, **kwargs):
         calls.append((kind, entity_id, chat_id, user_id, text))
+        return "sent"
 
     async def notifications_on(telegram_id, category):
         return True
@@ -2201,10 +2290,20 @@ def test_training_notification_texts_and_targets(monkeypatch):
     async def no_coauthors(*args):
         return []
 
+    async def noop_status(*args, **kwargs):
+        return None
+
+    async def noop_refresh(*args, **kwargs):
+        return None
+
     monkeypatch.setattr(mainmod.db, "get_participants", fake_participants)
+    monkeypatch.setattr(mainmod.db, "get_user", fake_user)
     monkeypatch.setattr(mainmod.db, "list_event_coauthors", no_coauthors)
     monkeypatch.setattr(mainmod.db, "notification_enabled", notifications_on)
     monkeypatch.setattr(mainmod, "_send_event_notification", fake_send)
+    monkeypatch.setattr(mainmod, "_ensure_training_status_message", noop_status)
+    monkeypatch.setattr(mainmod, "_refresh_training_messages", noop_refresh)
+    monkeypatch.setattr(mainmod, "_delete_training_status_messages", noop_refresh)
     asyncio.run(mainmod._notify_training_event(training, 555))
     assert any(call[2] == 123 and call[3] == 0 for call in calls)
     assert any(call[2] == 555 and call[3] == 555 for call in calls)
@@ -2215,7 +2314,203 @@ def test_training_notification_texts_and_targets(monkeypatch):
     monkeypatch.setattr(mainmod.db, "get_training", fake_training)
     calls.clear()
     asyncio.run(mainmod._notify_training_deleted(training))
-    assert len(calls) >= 27
+    assert len(calls) >= 28
+
+
+def test_training_notification_alert_only_on_edit(monkeypatch):
+    training = {
+        "id": 1,
+        "training_type": "Группа",
+        "level": "Уверенный любитель (С)",
+        "start_at": int(time.time()) + 3600,
+        "capacity": 6,
+        "created_by": 123,
+        "deleted_at": None,
+    }
+    people = [
+        {
+            "status": "pending",
+            "telegram_id": 555,
+            "first_name": "Иван",
+            "display_mode": "name",
+        }
+    ]
+    alerts = []
+    delivery = []
+    mode = {"value": "sent"}
+
+    async def participants(_id):
+        return people
+
+    async def coach_name(_id):
+        return {"telegram_id": 123, "first_name": "ilka", "display_mode": "name"}
+
+    async def coauthors(*args):
+        return []
+
+    async def allowed(*args):
+        return True
+
+    async def send(kind, entity_id, chat_id, user_id, text, **kwargs):
+        delivery.append((chat_id, text, kwargs))
+        return mode["value"]
+
+    async def alert(recipient, text, reply_markup=None):
+        alerts.append((recipient, text, reply_markup))
+
+    async def noop_status(*args, **kwargs):
+        return None
+
+    async def noop_refresh(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mainmod.db, "get_participants", participants)
+    monkeypatch.setattr(mainmod.db, "get_user", coach_name)
+    monkeypatch.setattr(mainmod.db, "list_event_coauthors", coauthors)
+    monkeypatch.setattr(mainmod.db, "notification_enabled", allowed)
+    monkeypatch.setattr(mainmod, "_send_event_notification", send)
+    monkeypatch.setattr(mainmod, "_send_user_message", alert)
+    monkeypatch.setattr(mainmod, "_ensure_training_status_message", noop_status)
+    monkeypatch.setattr(mainmod, "_refresh_training_messages", noop_refresh)
+
+    # Заявка не меняет сводку «Записаны:», но отдельный алерт всё равно нужен.
+    asyncio.run(mainmod._notify_training_event(training, 555, "pending", actor_id=555))
+    assert len(alerts) == 1
+    recipient, text, keyboard = alerts[0]
+    assert recipient == 123
+    assert text.startswith("Новая заявка: Иван\n")
+    assert "Уверенный любитель (С) - ilka" in text
+    assert keyboard is not None
+
+    # Обычная запись без правки уже даёт push — второй алерт не нужен.
+    alerts.clear()
+    asyncio.run(mainmod._notify_training_event(training, 555, "booked", actor_id=555))
+    assert alerts == []
+
+    mode["value"] = "edited"
+    asyncio.run(mainmod._notify_training_event(training, 555, "booked", actor_id=555))
+    assert len(alerts) == 1 and alerts[0][1].startswith("Новая запись: Иван")
+
+    # Автор изменения не получает отдельный алерт о своём же действии.
+    alerts.clear()
+    own = {**training, "created_by": 555}
+    asyncio.run(mainmod._notify_training_event(own, None, "pending", actor_id=555))
+    assert alerts == []
+
+    # Без actor_id (например, автопродвижение из очереди) алертов нет.
+    alerts.clear()
+    mode["value"] = "sent"
+    asyncio.run(mainmod._notify_training_event(training, 555, "promoted"))
+    assert alerts == []
+
+    # Игроку отдельный алерт нужен при отмене его записи тренером.
+    alerts.clear()
+    mode["value"] = "edited"
+    asyncio.run(
+        mainmod._notify_training_event(training, 555, "cancelled", actor_id=123)
+    )
+    assert len(alerts) == 1
+    assert alerts[0][0] == 555
+    assert alerts[0][1].startswith("Тренер снял вас с тренировки.")
+
+    assert mainmod._training_alert_text(
+        training, "ilka", "unknown", "Иван"
+    ).startswith("Изменение записи: Иван")
+    assert mainmod._training_player_alert_text(
+        training, "ilka", "unknown"
+    ).startswith("Запись обновлена")
+
+
+def test_deleted_training_alerts_players_on_edited_message(monkeypatch):
+    training = {
+        "id": 1,
+        "training_type": "Группа",
+        "level": "Уверенный любитель (С)",
+        "start_at": int(time.time()) + 3600,
+        "capacity": 6,
+        "created_by": 123,
+        "deleted_at": 1,
+    }
+    person = {
+        "status": "booked",
+        "telegram_id": 555,
+        "first_name": "Иван",
+        "display_mode": "name",
+    }
+    alerts = []
+
+    async def fresh(_id):
+        return training
+
+    async def participants(_id):
+        return [person]
+
+    async def a_user(user_id):
+        return {
+            "telegram_id": user_id,
+            "first_name": "ilka",
+            "display_mode": "name",
+        }
+
+    async def allowed(*args):
+        return True
+
+    async def send(*args, **kwargs):
+        return "edited"
+
+    async def alert(recipient, text, reply_markup=None):
+        alerts.append((recipient, text, reply_markup))
+
+    async def noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mainmod.db, "get_training", fresh)
+    monkeypatch.setattr(mainmod.db, "get_participants", participants)
+    monkeypatch.setattr(mainmod.db, "get_user", a_user)
+    monkeypatch.setattr(mainmod.db, "notification_enabled", allowed)
+    monkeypatch.setattr(mainmod, "_send_event_notification", send)
+    monkeypatch.setattr(mainmod, "_send_user_message", alert)
+    monkeypatch.setattr(mainmod, "_delete_training_status_messages", noop)
+
+    asyncio.run(mainmod._notify_training_deleted(training))
+    assert len(alerts) == 1
+    assert alerts[0][0] == 555
+    assert alerts[0][1].startswith("Тренировка отменена.")
+
+
+def test_training_actor_and_coach_name_fallbacks(monkeypatch):
+    async def no_user(_id):
+        return None
+
+    monkeypatch.setattr(mainmod.db, "get_user", no_user)
+    assert asyncio.run(mainmod._training_actor_name(999, [])) == "Игрок"
+    assert asyncio.run(mainmod._training_actor_name(None, [])) == "Игрок"
+
+    async def actor_user(user_id):
+        return {
+            "telegram_id": user_id,
+            "first_name": "Мария",
+            "display_mode": "name",
+        }
+
+    monkeypatch.setattr(mainmod.db, "get_user", actor_user)
+    assert asyncio.run(mainmod._training_actor_name(999, [])) == "Мария"
+
+    monkeypatch.setattr(mainmod.db, "get_user", no_user)
+    assert asyncio.run(
+        mainmod._training_coach_name({"created_by": 123})
+    ) == ""
+
+    async def broken(_id):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(mainmod.db, "get_user", broken)
+    assert asyncio.run(
+        mainmod._training_coach_name({"created_by": 123})
+    ) == ""
+    assert asyncio.run(
+        mainmod._training_coach_name({"created_by": None})
+    ) == ""
 
 
 def test_match_notification_texts_and_targets(monkeypatch):
@@ -2509,8 +2804,18 @@ def test_suppressed_event_notifications(monkeypatch):
     async def fresh(training_id):
         return training
 
+    async def a_user(user_id):
+        return {
+            "telegram_id": user_id,
+            "first_name": "Тренер",
+            "display_mode": "name",
+        }
+
     async def no_managers():
         return []
+
+    async def noop(*args, **kwargs):
+        return None
 
     calls = []
 
@@ -2521,7 +2826,9 @@ def test_suppressed_event_notifications(monkeypatch):
     monkeypatch.setattr(mainmod.db, "get_participants", participants)
     monkeypatch.setattr(mainmod.db, "get_match_players", match_players)
     monkeypatch.setattr(mainmod.db, "get_training", fresh)
+    monkeypatch.setattr(mainmod.db, "get_user", a_user)
     monkeypatch.setattr(mainmod.db, "list_managers", no_managers)
+    monkeypatch.setattr(mainmod, "_delete_training_status_messages", noop)
     monkeypatch.setattr(mainmod.app.state, "bot", SimpleNamespace(send_message=fake_send))
 
     asyncio.run(mainmod._notify_training_deleted(training))
@@ -2683,6 +2990,39 @@ def test_phone_profile_and_validation(client):
     assert cleared.json()["profile"]["phone"] == ""
 
 
+def test_coach_pending_badge_count(client, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(
+        mainmod, "settings", replace(settings, require_event_approval=True)
+    )
+    assert client.get("/api/coach/pending", headers=PLAYER).status_code == 403
+
+    training = client.post(
+        "/api/coach/trainings",
+        headers=COACH,
+        json={**_future(9, "18:00"), "capacity": 2},
+    ).json()["id"]
+    assert client.get("/api/coach/pending", headers=COACH).json()[
+        "pending_count"
+    ] == 0
+
+    assert client.post(
+        f"/api/trainings/{training}/book", headers=PLAYER
+    ).json()["status"] == "pending"
+    assert client.get("/api/coach/pending", headers=COACH).json()[
+        "pending_count"
+    ] == 1
+
+    client.post(
+        f"/api/coach/trainings/{training}/participants/555/approve",
+        headers=COACH,
+    )
+    assert client.get("/api/coach/pending", headers=COACH).json()[
+        "pending_count"
+    ] == 0
+
+
 def test_phone_required_for_new_events(client, monkeypatch):
     coach_headers = COACH
     coach = client.get("/api/me", headers=coach_headers).json()["user"]
@@ -2773,6 +3113,10 @@ def test_training_and_match_approval_flow(client, monkeypatch):
     assert request.json()["status"] == "pending"
     mine = client.get("/api/trainings?days=31", headers=PLAYER).json()["trainings"]
     assert next(t for t in mine if t["id"] == training)["is_pending"] is True
+    coach_listing = client.get("/api/coach/trainings", headers=COACH).json()["trainings"]
+    assert next(
+        t for t in coach_listing if t["id"] == training
+    )["pending_count"] == 1
 
     participants = client.get(
         f"/api/coach/trainings/{training}/participants", headers=COACH
@@ -3156,11 +3500,16 @@ def test_coauthor_notification_loops(monkeypatch):
     async def send(*args, **kwargs):
         calls.append((args, kwargs))
 
+    async def noop(*args, **kwargs):
+        return None
+
     monkeypatch.setattr(mainmod.db, "get_participants", participants_for)
     monkeypatch.setattr(mainmod.db, "get_match_players", match_players)
     monkeypatch.setattr(mainmod.db, "list_event_coauthors", coauthors)
     monkeypatch.setattr(mainmod.db, "notification_enabled", allowed)
     monkeypatch.setattr(mainmod, "_send_event_notification", send)
+    monkeypatch.setattr(mainmod, "_ensure_training_status_message", noop)
+    monkeypatch.setattr(mainmod, "_refresh_training_messages", noop)
     asyncio.run(mainmod._notify_training_event(training, 555, "pending"))
     assert calls
     asyncio.run(mainmod._notify_match_request(match, 555))
