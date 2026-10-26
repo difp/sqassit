@@ -31,4 +31,17 @@ jobs:
       - name: Dependency audit
         run: pip-audit -r requirements.txt
       - name: Tests
-        run: pytest
+        run: |
+          set -o pipefail
+          pytest -q 2>&1 | tee pytest.log
+      - name: Test failure summary
+        if: failure()
+        run: |
+          python - <<'PY'
+          import pathlib
+
+          path = pathlib.Path("pytest.log")
+          if path.exists():
+              for line in path.read_text(errors="replace").splitlines()[-60:]:
+                  print(f"::error::{line}")
+          PY
