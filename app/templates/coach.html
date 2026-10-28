@@ -47,10 +47,31 @@
     </div>
   </div>
 
-  <!-- CRM -->
+  <!-- CRM: поиск всегда на виду, полный список раскрывается -->
   <section class="section" id="players-section">
-    <h2 class="section-title">Игроки</h2>
-    <div id="players"><div class="skeleton skeleton--row"></div></div>
+    <h2 class="section-title">
+      <button type="button" class="players-toggle" id="players-toggle"
+              aria-expanded="false" aria-controls="players-body">
+        <span class="players-toggle__title">Игроки</span>
+        <span class="players-toggle__count" id="players-count"></span>
+        <svg class="players-toggle__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 9l6 6 6-6"/>
+        </svg>
+      </button>
+    </h2>
+    <div class="players-search">
+      <input type="search" class="input" id="players-search"
+             placeholder="Имя, @username или заметка"
+             aria-label="Поиск игроков" enterkeyhint="search"
+             autocomplete="off" autocapitalize="none" spellcheck="false">
+      <button type="button" class="icon-btn players-search__clear" id="players-search-clear"
+              aria-label="Очистить поиск" hidden>&times;</button>
+    </div>
+    <p class="hint players-status" id="players-status" role="status"></p>
+    <div class="players-body" id="players-body" hidden>
+      <div id="players"><div class="skeleton skeleton--row"></div></div>
+    </div>
   </section>
 
   <!-- Сообщения -->
@@ -275,6 +296,25 @@
     <h2 class="sheet__title" id="transfer-sheet-title">Передать занятие</h2>
     <div class="hint" style="margin:-6px 0 12px">Выберите тренера, которому передать это занятие.</div>
     <div id="transfer-list"></div>
+  </div>
+</div>
+
+<!-- Bottom sheet: запись игрока из базы -->
+<div class="sheet" id="book-sheet">
+  <div class="sheet__backdrop" data-bclose></div>
+  <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="book-sheet-title">
+    <div class="sheet__handle"></div>
+    <h2 class="sheet__title" id="book-sheet-title">Записать игрока</h2>
+    <p class="hint book-sheet__sub" id="book-sheet-sub"></p>
+    <div class="players-search">
+      <input class="input" id="book-search" type="search" autocomplete="off"
+             placeholder="Имя, @username, заметки" enterkeyhint="search"
+             aria-label="Найти игрока в базе">
+      <button type="button" class="players-search__clear" id="book-search-clear"
+              aria-label="Очистить поиск" hidden>×</button>
+    </div>
+    <p class="players-status" id="book-status" role="status"></p>
+    <div id="book-list" class="book-list"></div>
   </div>
 </div>
 {% endblock %}
@@ -820,12 +860,28 @@ async function refreshParticipants(id) {
   try {
     const data = await api(`/api/coach/trainings/${id}/participants`);
     const own = VIEW === 'active';
-    box.innerHTML = data.participants.length
+    const rows = data.participants.length
       ? data.participants.map(p => participantRow(id, p, own)).join('')
       : '<div class="hint" style="padding:10px 0">Пока никто не записан</div>';
+    // Тренер может записать игрока сам: тот передал просьбу устно.
+    box.innerHTML = rows + bookButton(id);
   } catch (e) {
     box.innerHTML = `<div class="hint" style="padding:10px 0">${esc(e.message)}</div>`;
   }
+}
+
+function bookButton(id) {
+  const t = TRAININGS.find(x => x.id == id);
+  if (VIEW !== 'active' || !t) return '';
+  // Начавшееся занятие записывать поздно — сервер всё равно откажет.
+  if (t.start_at <= Math.floor(Date.now() / 1000)) return '';
+  return `<button type="button" class="btn btn--sm btn--block book-add" data-book="${id}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M12 5v14M5 12h14"/>
+    </svg>
+    Записать игрока
+  </button>`;
 }
 function participantRow(tid, p, own) {
   const badge = p.status === 'booked' ? '<span class="badge badge--success">Записан</span>'
@@ -876,6 +932,7 @@ document.getElementById('list').addEventListener('click', async (ev) => {
   const cal = ev.target.closest('[data-cal]')?.getAttribute('data-cal');
   const xfer = ev.target.closest('[data-xfer]')?.getAttribute('data-xfer');
   const coauthors = ev.target.closest('[data-coauthors]')?.getAttribute('data-coauthors');
+  const book = ev.target.closest('[data-book]')?.getAttribute('data-book');
   const row = ev.target.closest('.p-row');
 
   if (cal) {
@@ -885,6 +942,7 @@ document.getElementById('list').addEventListener('click', async (ev) => {
   }
   if (xfer) { openTransfer(xfer); return; }
   if (coauthors) { openCoauthors(coauthors); return; }
+  if (book) { openBook(book); return; }
 
   try {
     if (del) {
@@ -954,6 +1012,218 @@ async function restoreParticipant(tid, uid) {
     loadView();
   } catch (e) { hapticNotify('error'); toast(e.message); }
 }
+
+// ===== Ручная запись игрока из базы =====
+const bookSheet = document.getElementById('book-sheet');
+const bookSearch = document.getElementById('book-search');
+const bookClear = document.getElementById('book-search-clear');
+const bookList = document.getElementById('book-list');
+const bookStatus = document.getElementById('book-status');
+const bookSub = document.getElementById('book-sheet-sub');
+const BOOK = {
+  tid: null,
+  seq: 0,
+  timer: 0,
+  query: '',
+  taken: new Map(),
+  players: null,
+  matched: null,
+  total: null,
+};
+
+function closeBookSheet() {
+  bookSheet.classList.remove('is-open');
+  clearTimeout(BOOK.timer);
+  BOOK.tid = null;
+}
+
+function bookSubtitle(t) {
+  const when = `${fmtDay(t.date)}, ${t.time}`;
+  const free = Math.max(0, t.capacity - t.booked_count);
+  const left = free
+    ? `Записано ${t.booked_count} из ${t.capacity}`
+    : 'Мест нет — игрок встанет в очередь';
+  bookSub.classList.toggle('is-full', !free);
+  bookSub.innerHTML =
+    `<span class="book-sheet__when">${esc(when)}</span>` +
+    `<span class="book-sheet__left">${esc(left)}</span>`;
+}
+
+function openBook(id) {
+  const t = TRAININGS.find(x => x.id == id);
+  if (!t) return;
+  BOOK.tid = id;
+  BOOK.query = '';
+  BOOK.players = null;
+  BOOK.matched = null;
+  BOOK.total = null;
+  BOOK.taken = new Map();
+  clearTimeout(BOOK.timer);
+  bookSearch.value = '';
+  bookClear.hidden = true;
+  bookStatus.textContent = '';
+  bookSubtitle(t);
+  bookList.innerHTML = '<div class="hint" style="padding:10px 0">Загрузка…</div>';
+  bookSheet.classList.add('is-open');
+  haptic('light');
+  // Уже записанных показываем неактивными: не нужно искать их заново.
+  loadBookTaken(id);
+  loadBookPlayers();
+  bookSearch.focus();
+}
+
+async function loadBookTaken(id) {
+  try {
+    const data = await api(`/api/coach/trainings/${id}/participants`);
+    if (BOOK.tid !== id) return;
+    BOOK.taken = new Map(
+      data.participants
+        .filter(p => ['pending', 'booked', 'waitlist'].includes(p.status))
+        .map(p => [p.telegram_id, p.status])
+    );
+    renderBookPlayers();
+  } catch (e) { /* без этого списка запись всё равно доступна */ }
+}
+
+async function loadBookPlayers() {
+  const id = BOOK.tid;
+  if (id === null) return;
+  const seq = ++BOOK.seq;
+  try {
+    const url = BOOK.query
+      ? `/api/coach/players?q=${encodeURIComponent(BOOK.query)}`
+      : '/api/coach/players';
+    const data = await api(url);
+    // Пока запрос летел, тренер мог выбрать другое занятие или изменить запрос.
+    if (seq !== BOOK.seq || BOOK.tid !== id) return;
+    BOOK.players = data.players;
+    BOOK.matched = data.matched;
+    BOOK.total = data.total;
+    renderBookPlayers();
+  } catch (e) {
+    if (seq === BOOK.seq) {
+      bookList.innerHTML = `<div class="hint" style="padding:10px 0">${esc(e.message)}</div>`;
+    }
+  }
+}
+
+function bookStatusLabel(status) {
+  if (status === 'waitlist') return 'Очередь';
+  if (status === 'pending') return 'Заявка';
+  return 'Записан';
+}
+
+function bookRow(p) {
+  const busy = BOOK.taken.get(p.telegram_id);
+  const meta = [];
+  if (p.username_visible && p.username) meta.push('@' + esc(p.username));
+  if (p.notes) meta.push(esc(p.notes));
+  if (!meta.length && p.about) meta.push(esc(p.about));
+  const sub = meta.join(' · ');
+  const action = busy
+    ? `<span class="badge ${busy === 'booked' ? 'badge--success' : 'badge--warn'}">${bookStatusLabel(busy)}</span>`
+    : '<span class="book-row__action">Записать</span>';
+  return `
+  <button type="button" class="book-row" data-book-user="${p.telegram_id}"${busy ? ' aria-disabled="true"' : ''}>
+    ${avatarHtml(p.first_name, p.avatar_url, false, p.avatar_emoji)}
+    <span class="book-row__text">
+      <span class="book-row__name">${esc(p.first_name || 'Игрок')}</span>
+      ${sub ? `<span class="book-row__meta">${sub}</span>` : ''}
+    </span>
+    ${action}
+  </button>`;
+}
+
+function renderBookPlayers() {
+  if (BOOK.players === null) return;
+  if (!BOOK.players.length) {
+    bookList.innerHTML = BOOK.query
+      ? `<div class="empty empty--inline"><div>Никого не найдено по запросу «${esc(shortQuery(BOOK.query))}».</div>` +
+        '<div class="hint">Игрок должен хотя бы раз зайти в бот.</div></div>'
+      : '<div class="empty empty--inline"><div>В базе пока нет игроков.</div></div>';
+  } else {
+    bookList.innerHTML = BOOK.players.map(bookRow).join('');
+  }
+  bookClear.hidden = !BOOK.query;
+  bookStatus.textContent = BOOK.query
+    ? `Найдено: ${BOOK.matched ?? '…'} из ${BOOK.total ?? '…'}`
+    : '';
+}
+
+function bookQuery(value, { immediate = false } = {}) {
+  BOOK.query = (value || '').trim();
+  clearTimeout(BOOK.timer);
+  if (immediate) {
+    loadBookPlayers();
+    return;
+  }
+  BOOK.timer = setTimeout(loadBookPlayers, 250);
+}
+
+async function addBookPlayer(uid, btn) {
+  const id = BOOK.tid;
+  if (id === null) return;
+  btn.disabled = true;
+  try {
+    const res = await api(`/api/coach/trainings/${id}/participants`, 'POST', {
+      user_id: uid,
+    });
+    hapticNotify('success');
+    toast(res.already
+      ? 'Игрок уже записан'
+      : res.status === 'booked' ? 'Игрок записан' : 'Мест нет — игрок в очереди');
+    closeBookSheet();
+    refreshParticipants(id);
+    cacheClear();
+    loadView();
+  } catch (e) {
+    hapticNotify('error');
+    toast(e.message);
+    btn.disabled = false;
+  }
+}
+
+bookSheet.querySelector('[data-bclose]').addEventListener('click', closeBookSheet);
+bookSearch.addEventListener('input', () => {
+  bookClear.hidden = !bookSearch.value;
+  bookQuery(bookSearch.value);
+});
+bookSearch.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    bookQuery(bookSearch.value, { immediate: true });
+    return;
+  }
+  if (ev.key !== 'Escape') return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  if (bookSearch.value) {
+    bookSearch.value = '';
+    bookClear.hidden = true;
+    bookQuery('', { immediate: true });
+    return;
+  }
+  closeBookSheet();
+});
+bookClear.addEventListener('click', () => {
+  bookSearch.value = '';
+  bookClear.hidden = true;
+  bookQuery('', { immediate: true });
+  bookSearch.focus();
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') closeBookSheet();
+});
+bookList.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('[data-book-user]');
+  if (!btn) return;
+  if (btn.getAttribute('aria-disabled') === 'true') {
+    hapticNotify('error');
+    toast('Игрок уже записан на это занятие');
+    return;
+  }
+  addBookPlayer(parseInt(btn.getAttribute('data-book-user'), 10), btn);
+});
 
 // ===== Напоминание =====
 function readReminder(id) {
@@ -1255,14 +1525,16 @@ function playerRow(p) {
     : 'username скрыт';
   return `
   <div class="card">
-    <button type="button" class="player-open" data-profile-token="${esc(p.profile_token || '')}">
-      ${avatarHtml(p.first_name, p.avatar_url, false, p.avatar_emoji)}
-      <div style="flex:1;min-width:0">
-        <div style="font-weight:600">${esc(p.first_name || 'Игрок')}</div>
-        <div style="font-size:12px;color:var(--hint)">${handle} · уведомления: ${notif}</div>
-      </div>
-    </button>
-    <button type="button" class="btn btn--sm player-chat-btn" data-chat-user="${p.telegram_id}" data-chat-name="${esc(p.first_name || 'Игрок')}" aria-label="Написать игроку: ${esc(p.first_name || 'Игрок')}">Написать</button>
+    <div class="player-head">
+      <button type="button" class="player-open" data-profile-token="${esc(p.profile_token || '')}">
+        ${avatarHtml(p.first_name, p.avatar_url, false, p.avatar_emoji)}
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600">${esc(p.first_name || 'Игрок')}</div>
+          <div style="font-size:12px;color:var(--hint)">${handle} · уведомления: ${notif}</div>
+        </div>
+      </button>
+      <button type="button" class="btn btn--sm player-chat-btn" data-chat-user="${p.telegram_id}" data-chat-name="${esc(p.first_name || 'Игрок')}" aria-label="Написать игроку: ${esc(p.first_name || 'Игрок')}">Написать</button>
+    </div>
     ${p.about ? `<div class="player-about">${esc(p.about)}</div>` : ''}
     <details class="disclosure">
       <summary><span class="disclosure__dot" aria-hidden="true"></span>Заметки тренера</summary>
@@ -1271,17 +1543,183 @@ function playerRow(p) {
     </details>
   </div>`;
 }
-async function loadPlayers() {
-  if (!APP.me || !APP.me.is_coach) return;
-  try {
-    const data = await api('/api/coach/players');
-    if (!APP.me.is_coach) return;
-    document.getElementById('players').innerHTML = data.players.length
-      ? data.players.map(playerRow).join('')
-      : '<div class="empty empty--inline"><div>Игроков пока нет.</div></div>';
-  } catch (e) { toast(e.message); }
+const playersSection = document.getElementById('players-section');
+const playersToggle = document.getElementById('players-toggle');
+const playersBody = document.getElementById('players-body');
+const playersBox = document.getElementById('players');
+const playersSearch = document.getElementById('players-search');
+const playersClear = document.getElementById('players-search-clear');
+const playersCount = document.getElementById('players-count');
+const playersStatus = document.getElementById('players-status');
+const PLAYERS = {
+  open: false,
+  loaded: false,
+  loadedQuery: null,
+  stale: false,
+  seq: 0,
+  timer: 0,
+  query: '',
+  players: [],
+  total: null,
+  matched: null,
+};
+
+function playersAvailable() {
+  return !!(APP.me && APP.me.is_coach);
 }
+
+function setPlayersOpen(open) {
+  PLAYERS.open = !!open;
+  playersBody.hidden = !PLAYERS.open;
+  playersSection.classList.toggle('is-open', PLAYERS.open);
+  playersToggle.setAttribute('aria-expanded', PLAYERS.open ? 'true' : 'false');
+}
+
+function resetPlayersQuery() {
+  PLAYERS.query = '';
+  PLAYERS.matched = null;
+  clearTimeout(PLAYERS.timer);
+  updatePlayersStatus();
+}
+
+function setPlayersCount(total) {
+  if (typeof total === 'number') PLAYERS.total = total;
+  playersCount.textContent = typeof PLAYERS.total === 'number' ? String(PLAYERS.total) : '';
+}
+
+function updatePlayersStatus() {
+  const active = !!PLAYERS.query;
+  playersClear.hidden = !active;
+  if (!active) { playersStatus.textContent = ''; return; }
+  const matched = typeof PLAYERS.matched === 'number' ? PLAYERS.matched : '…';
+  const total = typeof PLAYERS.total === 'number' ? PLAYERS.total : '…';
+  playersStatus.textContent = `Найдено: ${matched} из ${total}`;
+}
+
+function shortQuery(value) {
+  return value.length > 40 ? value.slice(0, 40).trimEnd() + '…' : value;
+}
+
+// Свёрнутый список: счётчик тянем сразу, карточки — при раскрытии.
+async function loadPlayersCount() {
+  if (!playersAvailable()) return;
+  try {
+    const data = await api('/api/coach/players/count');
+    if (!playersAvailable()) return;
+    setPlayersCount(data.total);
+    updatePlayersStatus();
+  } catch (e) { /* счётчик не критичен: список всё равно загрузится */ }
+}
+
+async function loadPlayers({ force = false } = {}) {
+  if (!playersAvailable()) return;
+  const query = PLAYERS.query;
+  if (!force && PLAYERS.loaded && !PLAYERS.stale && PLAYERS.loadedQuery === query) return;
+  const seq = ++PLAYERS.seq;
+  try {
+    const url = query
+      ? `/api/coach/players?q=${encodeURIComponent(query)}`
+      : '/api/coach/players';
+    const data = await api(url);
+    // Пока запрос летел, пользователь мог изменить строку поиска.
+    if (seq !== PLAYERS.seq || !playersAvailable()) return;
+    PLAYERS.loaded = true;
+    PLAYERS.loadedQuery = query;
+    PLAYERS.stale = false;
+    PLAYERS.players = data.players;
+    PLAYERS.matched = data.matched;
+    setPlayersCount(data.total);
+    if (!data.players.length) {
+      playersBox.innerHTML = query
+        ? `<div class="empty empty--inline"><div>Никого не найдено по запросу «${esc(shortQuery(query))}».</div>` +
+          '<button type="button" class="btn btn--sm players-empty-reset" data-players-reset>Сбросить поиск</button></div>'
+        : '<div class="empty empty--inline"><div>Игроков пока нет.</div></div>';
+    } else {
+      playersBox.innerHTML = data.players.map(playerRow).join('');
+    }
+    updatePlayersStatus();
+  } catch (e) {
+    if (seq === PLAYERS.seq) toast(e.message);
+  }
+}
+
+// Счётчик и открытый список обновляем после смены состава тренеров.
+async function refreshPlayers() {
+  if (!playersAvailable()) return;
+  await loadPlayersCount();
+  if (!PLAYERS.open) {
+    PLAYERS.stale = true;
+    return;
+  }
+  await loadPlayers({ force: PLAYERS.loaded });
+}
+
+function applyPlayersQuery(value, { immediate = false } = {}) {
+  const next = (value || '').trim();
+  PLAYERS.query = next;
+  clearTimeout(PLAYERS.timer);
+  if (!next) PLAYERS.matched = null;
+  // Поиск всегда на виду: как только в нём что-то есть, список раскрывается.
+  if (next) setPlayersOpen(true);
+  updatePlayersStatus();
+  if (immediate) {
+    loadPlayers();
+    return;
+  }
+  PLAYERS.timer = setTimeout(loadPlayers, 250);
+}
+
+playersToggle.addEventListener('click', () => {
+  if (PLAYERS.open) {
+    // Сворачиваем вместе с запросом: иначе поле обещает выдачу, которой не видно.
+    const hadQuery = !!PLAYERS.query;
+    playersSearch.value = '';
+    resetPlayersQuery();
+    setPlayersOpen(false);
+    // Выдача в свёрнутом теле относилась к запросу — при следующем раскрытии
+    // нужен свежий список.
+    if (hadQuery) {
+      PLAYERS.loaded = false;
+      PLAYERS.loadedQuery = null;
+    }
+    return;
+  }
+  setPlayersOpen(true);
+  loadPlayers();
+});
+
+playersSearch.addEventListener('input', () => {
+  applyPlayersQuery(playersSearch.value);
+});
+
+playersSearch.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    applyPlayersQuery(playersSearch.value, { immediate: true });
+    return;
+  }
+  if (ev.key !== 'Escape') return;
+  ev.preventDefault();
+  if (playersSearch.value) {
+    playersSearch.value = '';
+    applyPlayersQuery('', { immediate: true });
+    return;
+  }
+  playersSearch.blur();
+  setPlayersOpen(false);
+});
+
+playersClear.addEventListener('click', () => {
+  playersSearch.value = '';
+  applyPlayersQuery('', { immediate: true });
+  playersSearch.focus();
+});
 document.getElementById('players').addEventListener('click', async (ev) => {
+  if (ev.target.closest('[data-players-reset]')) {
+    playersSearch.value = '';
+    applyPlayersQuery('', { immediate: true });
+    return;
+  }
   const chat = ev.target.closest('[data-chat-user]');
   if (chat) {
     openCoachChat(parseInt(chat.getAttribute('data-chat-user'), 10), chat.getAttribute('data-chat-name') || '');
@@ -1295,6 +1733,10 @@ document.getElementById('players').addEventListener('click', async (ev) => {
   const notes = document.querySelector(`[data-notes="${id}"]`).value;
   try {
     await api(`/api/coach/players/${id}/notes`, 'PUT', { notes });
+    // Локально обновляем кэш строки, но не перезапускаем активный поиск:
+    // иначе карточка исчезнет из-под курсора при несовпадении запроса.
+    const cached = PLAYERS.players.find(p => String(p.telegram_id) === id);
+    if (cached) cached.notes = notes;
     hapticNotify('success');
     toast('Заметка сохранена');
     btn.disabled = true;
@@ -1352,7 +1794,7 @@ document.getElementById('applications-list').addEventListener('click', async (ev
     loadApplications();
     if (ok) {
       loadCoaches();
-      loadPlayers();
+      refreshPlayers();
     }
   } catch (e) { hapticNotify('error'); toast(e.message); }
 });
@@ -1395,7 +1837,7 @@ document.getElementById('coach-add').addEventListener('click', async () => {
     toast(r.created ? 'Тренер добавлен' : 'Уже является тренером');
     document.getElementById('coach-input').value = '';
     loadCoaches();
-    loadPlayers();
+    refreshPlayers();
   } catch (e) { hapticNotify('error'); toast(e.message); }
 });
 document.getElementById('coaches-list').addEventListener('click', async (ev) => {
@@ -1407,7 +1849,7 @@ document.getElementById('coaches-list').addEventListener('click', async (ev) => 
     hapticNotify('success');
     toast('Роль снята');
     loadCoaches();
-    loadPlayers();
+    refreshPlayers();
   } catch (e) { hapticNotify('error'); toast(e.message); }
 });
 document.getElementById('coaches-list').addEventListener('change', async (ev) => {
@@ -1466,7 +1908,7 @@ window.PAGE_REFRESH = async () => {
     return;
   }
 
-  const jobs = [loadView(), loadPlayers(), loadProfile(), loadMessages()];
+  const jobs = [loadView(), refreshPlayers(), loadProfile(), loadMessages()];
   if (IS_MANAGER) {
     document.getElementById('coaches-section').hidden = false;
     jobs.push(loadApplications(), loadCoaches());
@@ -1490,7 +1932,7 @@ window.PAGE_REFRESH = async () => {
       // догружаем в фоне, не задерживая открытие вкладки.
       await loadView();
       hideAppLoader();
-      const background = [loadPlayers(), loadProfile(), loadMessages()];
+      const background = [loadPlayersCount(), loadProfile(), loadMessages()];
       if (IS_MANAGER) {
         document.getElementById('coaches-section').hidden = false;
         background.push(loadApplications(), loadCoaches());

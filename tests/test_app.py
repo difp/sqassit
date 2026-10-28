@@ -23,6 +23,7 @@ import app.avatars as avatarsmod
 import app.bot as botmod
 import app.main as mainmod
 from app.config import TRAINING_LEVELS, settings
+from app.identity import animal_identity
 from app.secure_auth import issue_scoped_token
 
 
@@ -477,6 +478,145 @@ def test_booking_is_idempotent(client):
         (556, "waitlist"),
         (557, "waitlist"),
     ]
+
+
+def test_coach_books_existing_player(client):
+    """Тренер записывает игрока из базы, когда тот не может сделать это сам."""
+    assert client.get("/api/me", headers=PLAYER).status_code == 200
+    assert client.get("/api/me", headers=PLAYER2).status_code == 200
+    tid = _create_training(client, day=18, time_str="09:00", capacity=1)
+
+    first = client.post(
+        f"/api/coach/trainings/{tid}/participants",
+        headers=COACH,
+        json={"user_id": 555},
+    )
+    assert first.status_code == 200
+    assert first.json() == {"ok": True, "status": "booked", "already": False}
+
+    # Повторный тап не создаёт дубль и не снимает игрока с места.
+    again = client.post(
+        f"/api/coach/trainings/{tid}/participants",
+        headers=COACH,
+        json={"user_id": 555},
+    )
+    assert again.json() == {"ok": True, "status": "booked", "already": True}
+
+    # Мест нет — тренер ставит в очередь, а не получает отказ.
+    second = client.post(
+        f"/api/coach/trainings/{tid}/participants",
+        headers=COACH,
+        json={"user_id": 556},
+    )
+    assert second.status_code == 200
+    assert second.json()["status"] == "waitlist"
+
+    participants = client.get(
+        f"/api/coach/trainings/{tid}/participants", headers=COACH
+    ).json()["participants"]
+    assert [(p["telegram_id"], p["status"]) for p in participants] == [
+        (555, "booked"),
+        (556, "waitlist"),
+    ]
+
+    # Игрока без карточки в базе записать нельзя.
+    assert client.post(
+        f"/api/coach/trainings/{tid}/participants",
+        headers=COACH,
+        json={"user_id": 9999},
+    ).status_code == 404
+
+    # Чужое занятие — даже тренеру нельзя.
+    assert client.post(
+        "/api/coach/coaches", headers=COACH, json={"telegram_id": 777}
+    ).json()["ok"]
+    assert client.post(
+        f"/api/coach/trainings/{tid}/participants",
+        headers=COACH2,
+        json={"user_id": 556},
+    ).status_code == 404
+
+    # Записывать может только тренер.
+    assert client.post(
+        f"/api/coach/trainings/{tid}/participants",
+        headers=PLAYER,
+        json={"user_id": 555},
+    ).status_code == 403
+
+    # Удалённое занятие не принимает записи.
+    gone = _create_training(client, day=18, time_str="10:00")
+    assert client.delete(
+        f"/api/coach/trainings/{gone}", headers=COACH
+    ).status_code == 200
+    assert client.post(
+        f"/api/coach/trainings/{gone}/participants",
+        headers=COACH,
+        json={"user_id": 555},
+    ).status_code == 404
+
+
+def test_coach_book_player_errors(monkeypatch):
+    payload = mainmod.ParticipantIn(user_id=555)
+    coach = {"telegram_id": 123}
+
+    async def past_training(training_id):
+        return {
+            "id": training_id,
+            "deleted_at": None,
+            "start_at": 0,
+            "capacity": 2,
+            "created_by": 123,
+        }
+
+    monkeypatch.setattr(mainmod.db, "get_training", past_training)
+    response = asyncio.run(
+        mainmod.api_coach_add_participant(1, payload, coach)
+    )
+    assert response.status_code == 400
+
+    async def upcoming(training_id):
+        return {
+            "id": training_id,
+            "deleted_at": None,
+            "start_at": int(time.time()) + 3600,
+            "capacity": 2,
+            "created_by": 123,
+        }
+
+    async def no_user(user_id):
+        return None
+
+    monkeypatch.setattr(mainmod.db, "get_training", upcoming)
+    monkeypatch.setattr(mainmod.db, "get_user", no_user)
+    response = asyncio.run(
+        mainmod.api_coach_add_participant(1, payload, coach)
+    )
+    assert response.status_code == 404
+
+    async def user(user_id):
+        return {"telegram_id": user_id}
+
+    async def pending(training_id, user_id):
+        return {"status": "pending"}
+
+    monkeypatch.setattr(mainmod.db, "get_user", user)
+    monkeypatch.setattr(mainmod.db, "get_booking", pending)
+    assert asyncio.run(
+        mainmod.api_coach_add_participant(1, payload, coach)
+    ) == {"ok": True, "status": "pending", "already": True}
+
+    async def no_booking(training_id, user_id):
+        return None
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(mainmod.db, "get_booking", no_booking)
+    monkeypatch.setattr(mainmod.db, "book_training", boom)
+    response = asyncio.run(
+        mainmod.api_coach_add_participant(1, payload, coach)
+    )
+    assert response.status_code == 500
 
 
 def test_avatar_requires_scoped_token(client, monkeypatch):
@@ -959,6 +1099,93 @@ def test_avatar_endpoint_hides_photo_in_animal_mode(client):
     response = client.get(f"/api/avatar/555?token={public_token}")
     assert response.status_code == 404
     assert response.json()["detail"] == "Аватарка скрыта."
+
+
+def test_coach_players_search(client):
+    player = {"X-Init-Data": _init({"id": 555, "first_name": "Иван", "username": "ivan"})}
+    anon = {"X-Init-Data": _init({"id": 654, "first_name": "Пётр", "username": "petr"})}
+    assert client.get("/api/me", headers=player).status_code == 200
+    assert client.get("/api/me", headers=anon).status_code == 200
+    assert client.get("/api/me", headers=PLAYER2).status_code == 200
+    assert client.put(
+        "/api/coach/players/556/notes", headers=COACH, json={"notes": "Травма колена"}
+    ).status_code == 200
+
+    base = client.get("/api/coach/players", headers=COACH).json()
+    ids = [p["telegram_id"] for p in base["players"]]
+    assert {555, 556, 654} <= set(ids)
+    assert 123 not in ids  # тренеры живут в отдельном разделе
+    assert base["total"] == len(ids) == base["matched"]
+    assert base["query"] == ""
+
+    count = client.get("/api/coach/players/count", headers=COACH).json()
+    assert count == {"ok": True, "total": base["total"]}
+    assert client.get("/api/coach/players/count", headers=PLAYER).status_code == 403
+    assert client.get(
+        "/api/coach/players", headers=COACH, params={"q": "   "}
+    ).json()["total"] == base["total"]
+
+    # Кириллица: регистр не важен, «ё» и «е» взаимозаменяемы.
+    found = client.get("/api/coach/players", headers=COACH, params={"q": "пЁтР"}).json()
+    assert [p["telegram_id"] for p in found["players"]] == [654]
+    assert found["matched"] == 1
+    assert found["total"] == base["total"]
+    assert found["query"] == "пЁтР"
+
+    # Заметки тренера тоже участвуют в поиске.
+    assert client.get(
+        "/api/coach/players", headers=COACH, params={"q": "колена"}
+    ).json()["players"][0]["telegram_id"] == 556
+    assert client.get(
+        "/api/coach/players", headers=COACH, params={"q": "травма"}
+    ).json()["matched"] == 1
+
+    # Спецсимволы LIKE экранируются, а не работают как шаблон.
+    assert client.get(
+        "/api/coach/players", headers=COACH, params={"q": "%"}
+    ).json()["matched"] == 0
+    assert client.get(
+        "/api/coach/players", headers=COACH, params={"q": "_"}
+    ).json()["matched"] == 0
+    assert client.get(
+        "/api/coach/players", headers=COACH, params={"q": "@"}
+    ).json()["matched"] == 0
+    assert client.get(
+        "/api/coach/players", headers=COACH, params={"q": "тренер"}
+    ).json()["matched"] == 0
+
+    # Без согласия username в поиске не участвует.
+    assert client.get(
+        "/api/coach/players", headers=COACH, params={"q": "ivan"}
+    ).json()["matched"] == 0
+    assert client.put(
+        "/api/me/profile", headers=player, json={"show_username": True}
+    ).status_code == 200
+    for query in ("ivan", "@ivan", "iVaN"):
+        found = client.get("/api/coach/players", headers=COACH, params={"q": query}).json()
+        assert [p["telegram_id"] for p in found["players"]] == [555]
+
+    # В режиме «животное» реальное имя не ищется — иначе оно утекает тренеру.
+    assert client.put(
+        "/api/me/profile",
+        headers=anon,
+        json={"about": "", "display_mode": "animal", "show_username": False},
+    ).status_code == 200
+    assert client.get(
+        "/api/coach/players", headers=COACH, params={"q": "петр"}
+    ).json()["matched"] == 0
+    animal = animal_identity(654)
+    found = client.get(
+        "/api/coach/players", headers=COACH, params={"q": animal["name"].lower()}
+    ).json()
+    assert [p["telegram_id"] for p in found["players"]] == [654]
+    assert found["players"][0]["first_name"] == animal["name"]
+    assert found["players"][0]["anonymous"] is True
+
+    # Слишком длинный запрос не уходит в БД.
+    assert client.get(
+        "/api/coach/players", headers=COACH, params={"q": "x" * 101}
+    ).status_code == 422
 
 
 def test_coach_message_hides_player_id(client, monkeypatch):

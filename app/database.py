@@ -18,9 +18,47 @@ from typing import Any
 
 import aiosqlite
 
+from .identity import ANIMALS
+
 # Одно общее соединение на процесс + лок для сериализации доступа.
 _conn: aiosqlite.Connection | None = None
 _lock = asyncio.Lock()
+
+
+def search_norm(value: str | None) -> str:
+    """
+    Нормализация текста для поиска.
+
+    SQLite `LIKE`/`lower()` не понимают регистр кириллицы, поэтому функция
+    регистрируется в соединении (`connect`) и вызывается прямо в SQL.
+    """
+    return (value or "").casefold().replace("ё", "е")
+
+
+def _like_pattern(query: str) -> str:
+    """LIKE-шаблон `%query%` с экранированием `%`, `_` и `\\` (ESCAPE '\\')."""
+    escaped = (
+        search_norm(query)
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+    return f"%{escaped}%"
+
+
+def _animal_indexes(query: str) -> list[int]:
+    """
+    Животные, чьё имя совпадает с запросом.
+
+    В анонимном режиме тренер видит только вымышленное имя, поэтому реальное
+    имя такого игрока искать нельзя — иначе оно утекает через поиск.
+    """
+    needle = search_norm(query)
+    return [
+        index
+        for index, (_, name) in enumerate(ANIMALS)
+        if needle in search_norm(name)
+    ]
 
 
 SCHEMA = """
@@ -173,6 +211,7 @@ async def connect(db_path: str) -> None:
     _lock = asyncio.Lock()
     _conn = await aiosqlite.connect(db_path)
     _conn.row_factory = aiosqlite.Row
+    await _conn.create_function("search_norm", 1, search_norm, deterministic=True)
     await _conn.execute("PRAGMA journal_mode=WAL;")
     await _conn.execute("PRAGMA foreign_keys=ON;")
     await _conn.execute("PRAGMA busy_timeout=5000;")
@@ -759,22 +798,63 @@ async def list_all_users() -> list[aiosqlite.Row]:
     return await _fetchall("SELECT telegram_id FROM users ORDER BY telegram_id")
 
 
-async def list_players() -> list[aiosqlite.Row]:
+async def list_players(query: str | None = None) -> list[aiosqlite.Row]:
     """
     Список игроков для CRM тренера.
 
     Источник истины — реестр coaches, а не денормализованный users.is_coach:
     после снятия роли игрок не должен навсегда исчезать из CRM.
+
+    `query` фильтрует по имени, username и заметкам. Поиск учитывает только то,
+    что тренеру и так видно: реальное имя скрыто в режиме «животное», username —
+    без согласия игрока.
     """
-    return await _fetchall(
-        """
+    sql = """
         SELECT u.* FROM users u
          WHERE NOT EXISTS (
                SELECT 1 FROM coaches c WHERE c.telegram_id = u.telegram_id
          )
-         ORDER BY u.first_name COLLATE NOCASE
+    """
+    params: list[Any] = []
+    if query:
+        clauses = [
+            "(u.display_mode <> 'animal' AND search_norm(u.first_name) LIKE ? ESCAPE '\\')"
+        ]
+        params.append(_like_pattern(query))
+        # @username ищется и с собакой, и без неё.
+        handle = query.strip().lstrip("@")
+        if handle:
+            clauses.append(
+                "(u.show_username = 1 AND search_norm(u.username) LIKE ? ESCAPE '\\')"
+            )
+            params.append(_like_pattern(handle))
+        clauses.append("search_norm(u.notes) LIKE ? ESCAPE '\\'")
+        params.append(_like_pattern(query))
+        animals = _animal_indexes(query)
+        if animals:
+            marks = ",".join("?" for _ in animals)
+            clauses.append(
+                f"(u.display_mode = 'animal' AND (u.telegram_id % ?) IN ({marks}))"
+            )
+            params.append(len(ANIMALS))
+            params.extend(animals)
+        sql += " AND (" + " OR ".join(clauses) + ")"
+
+    sql += " ORDER BY u.first_name COLLATE NOCASE"
+    return await _fetchall(sql, tuple(params))
+
+
+async def count_players() -> int:
+    """Сколько не-тренеров в CRM (для счётчика без загрузки карточек)."""
+    row = await _fetchone(
+        """
+        SELECT COUNT(*) FROM users u
+         WHERE NOT EXISTS (
+               SELECT 1 FROM coaches c WHERE c.telegram_id = u.telegram_id
+         )
         """
     )
+    return int(row[0]) if row is not None else 0
 
 
 # --------------------------------------------------------------------------- #
@@ -1088,10 +1168,14 @@ async def book_training(
     capacity: int,
     *,
     requires_approval: bool = False,
+    respect_waitlist: bool = False,
 ) -> str:
     """
     Записывает игрока. С подтверждением — создаёт pending, без него —
     сразу booked/waitlist (FIFO).
+
+    `respect_waitlist` — для записи тренером: новый игрок не обгоняет
+    существующую очередь, даже если место формально свободно.
     """
     db = _db()
     now = int(time.time())
@@ -1120,7 +1204,15 @@ async def book_training(
             ) as cur:
                 row = await cur.fetchone()
             booked = int(row[0]) if row is not None else 0
-            if booked < capacity:
+            has_waitlist = False
+            if respect_waitlist:
+                async with db.execute(
+                    "SELECT 1 FROM bookings WHERE training_id = ? "
+                    "AND status = 'waitlist' LIMIT 1",
+                    (training_id,),
+                ) as cur:
+                    has_waitlist = await cur.fetchone() is not None
+            if booked < capacity and not has_waitlist:
                 status = "booked"
                 position = 0
             else:

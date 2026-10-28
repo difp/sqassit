@@ -593,6 +593,12 @@ class MessageIn(BaseModel):
     training_id: int | None = None
 
 
+class ParticipantIn(BaseModel):
+    """Кого тренер записывает на занятие вручную."""
+
+    user_id: int
+
+
 class MatchIn(BaseModel):
     date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     time: str = Field(pattern=r"^\d{2}:\d{2}$")
@@ -1660,6 +1666,55 @@ async def api_coach_participants(training_id: int, coach: Annotated[dict, Depend
         return error_json("Внутренняя ошибка сервера", 500)
 
 
+@app.post("/api/coach/trainings/{training_id}/participants")
+async def api_coach_add_participant(
+    training_id: int,
+    payload: ParticipantIn,
+    coach: Annotated[dict, Depends(require_coach)],
+):
+    """
+    Тренер записывает существующего игрока из базы.
+
+    Нужно, когда игрок не может записаться сам и передаёт просьбу устно:
+    карточку не создаём, берём уже существующую. Место выдаётся сразу —
+    подтверждение тренера здесь и есть согласие.
+    """
+    try:
+        training = await db.get_training(training_id)
+        if (
+            training is None
+            or training["deleted_at"]
+            or not await _can_manage_training(training, coach["telegram_id"])
+        ):
+            return error_json("Тренировка не найдена", 404)
+        if training["start_at"] <= int(time.time()):
+            return error_json("Тренировка уже началась", 400)
+        if await db.get_user(payload.user_id) is None:
+            return error_json("Игрок не найден", 404)
+
+        booking = await db.get_booking(training_id, payload.user_id)
+        if booking is not None and booking["status"] in {
+            "pending", "booked", "waitlist"
+        }:
+            return {"ok": True, "status": booking["status"], "already": True}
+
+        status = await db.book_training(
+            training_id,
+            payload.user_id,
+            training["capacity"],
+            respect_waitlist=True,
+        )
+        _spawn(
+            _notify_training_event(
+                training, payload.user_id, status, actor_id=coach["telegram_id"]
+            )
+        )
+        return {"ok": True, "status": status, "already": False}
+    except Exception:
+        logger.exception("Ошибка ручной записи игрока")
+        return error_json("Внутренняя ошибка сервера", 500)
+
+
 @app.post("/api/coach/trainings/{training_id}/participants/{user_id}/approve")
 async def api_coach_approve_participant(
     training_id: int, user_id: int, coach: Annotated[dict, Depends(require_coach)]
@@ -1803,8 +1858,13 @@ async def api_update_reminder(
 
 
 @app.get("/api/coach/players")
-async def api_players(coach: Annotated[dict, Depends(require_coach)]):
-    rows = await db.list_players()
+async def api_players(
+    coach: Annotated[dict, Depends(require_coach)],
+    q: Annotated[str | None, Query(max_length=100)] = None,
+):
+    query = (q or "").strip()
+    rows = await db.list_players(query or None)
+    total = len(rows) if not query else await db.count_players()
     return {
         "ok": True,
         "players": [
@@ -1820,7 +1880,16 @@ async def api_players(coach: Annotated[dict, Depends(require_coach)]):
             }
             for r in rows
         ],
+        "total": total,
+        "matched": len(rows),
+        "query": query,
     }
+
+
+@app.get("/api/coach/players/count")
+async def api_players_count(coach: Annotated[dict, Depends(require_coach)]):
+    """Лёгкий счётчик для свёрнутого списка: без карточек и аватарок."""
+    return {"ok": True, "total": await db.count_players()}
 
 
 @app.put("/api/coach/players/{telegram_id}/notes")

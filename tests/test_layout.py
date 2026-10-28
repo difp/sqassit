@@ -64,3 +64,96 @@ def test_coach_tab_has_pending_badge() -> None:
     assert "setCoachIndicator" in base
     assert "refreshCoachIndicator" in base
     assert "window.setCoachIndicator(" in coach
+
+
+def test_coach_players_search_always_visible_list_collapsed() -> None:
+    coach = (TEMPLATES / "coach.html").read_text()
+    base = BASE.read_text()
+
+    # Полный список свёрнут при загрузке: тело скрыто, кнопка сообщает состояние.
+    body = re.search(r'<div[^>]*id="players-body"[^>]*>', coach)
+    assert body is not None
+    assert "hidden" in body.group(0)
+    toggle = re.search(r'<button[^>]*id="players-toggle"[^>]*>', coach)
+    assert toggle is not None
+    assert 'aria-expanded="false"' in toggle.group(0)
+    assert 'aria-controls="players-body"' in toggle.group(0)
+    assert 'type="button"' in toggle.group(0)
+
+    # Поиск живёт вне сворачиваемого тела, поэтому виден всегда.
+    search = coach.index('id="players-search"')
+    body_start = coach.index('id="players-body"')
+    assert search < body_start
+    assert 'type="search"' in coach
+    assert 'enterkeyhint="search"' in coach
+    assert "autofocus" not in coach
+
+    # Живой регион существует до обновления текста и не монтируется с ним.
+    status = re.search(r'<p[^>]*id="players-status"[^>]*>', coach)
+    assert status is not None
+    assert 'role="status"' in status.group(0)
+    assert "hidden" not in status.group(0)
+
+    # Раскрытие обозначено шевроном, а не только цветом/точкой.
+    assert "players-toggle__chevron" in coach
+    assert "playersToggle.setAttribute('aria-expanded'" in coach
+
+    # Ленивая загрузка: счётчик сразу, карточки — при раскрытии.
+    assert 'id="players-count"' in coach
+    assert "loadPlayersCount()" in coach
+    assert "/api/coach/players/count" in coach
+    assert "/api/coach/players?q=" in coach
+    assert "playersBody.hidden = !PLAYERS.open" in coach
+    # Ввод в поиске раскрывает список, сворачивание сбрасывает запрос.
+    assert "if (next) setPlayersOpen(true);" in coach
+    assert "resetPlayersQuery();" in coach
+
+    # Стили секции живут в общей таблице стилей.
+    assert "#players-section > .section-title" in base
+    assert ".players-toggle__chevron" in base
+    assert ".players-toggle__count" in base
+
+
+def test_coach_can_book_player_manually() -> None:
+    coach = (TEMPLATES / "coach.html").read_text()
+    base = BASE.read_text()
+
+    # Действие живёт под списком участников занятия, а не в шапке страницы.
+    assert "bookButton(id)" in coach
+    assert 'class="btn btn--sm btn--block book-add"' in coach
+    assert "data-book=" in coach
+    assert ".book-add" in base
+
+    # Шторка: поиск по базе на виду, результат — строки-кнопки.
+    sheet = re.search(
+        r'<div class="sheet" id="book-sheet">(.*?)\n</div>\n\{% endblock', coach, re.DOTALL
+    )
+    assert sheet is not None
+    block = sheet.group(1)
+    search = re.search(r'<input[^>]*id="book-search"[^>]*>', block)
+    assert search is not None
+    assert 'type="search"' in search.group(0)
+    assert 'enterkeyhint="search"' in search.group(0)
+    assert 'aria-label="Найти игрока в базе"' in search.group(0)
+    assert 'id="book-status"' in block and 'role="status"' in block
+    assert 'aria-labelledby="book-sheet-title"' in block
+
+    # Подпись говорит, есть ли места: очередь не должна быть сюрпризом.
+    assert "Мест нет — игрок встанет в очередь" in coach
+    assert "bookSubtitle(t)" in coach
+
+    # Уже записанные не выбираются повторно.
+    assert "BOOK.taken" in coach
+    assert 'aria-disabled="true"' in coach
+    assert "Игрок уже записан на это занятие" in coach
+
+    # Запись идёт в тот же endpoint участников; список и счётчики обновляются.
+    assert "`/api/coach/trainings/${id}/participants`, 'POST'" in coach
+    assert "user_id: uid" in coach
+    assert "refreshParticipants(id);" in coach
+    assert "cacheClear();" in coach
+
+    # Стили строки поиска игрока.
+    assert ".book-row" in base
+    assert ".book-row__action" in base
+    assert ".book-sheet__sub" in base

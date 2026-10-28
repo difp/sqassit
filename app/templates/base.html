@@ -569,7 +569,8 @@
     }
     .chat-bubble--me { align-self: flex-end; background: var(--accent); color: var(--accent-text); }
     .chat-empty { padding: 18px 0; text-align: center; color: var(--hint); font-size: 14px; }
-    .player-chat-btn { margin-top: 8px; background: var(--bg); border-color: var(--line); }
+    .player-head { display: flex; align-items: center; gap: var(--space-3); }
+    .player-chat-btn { flex: none; background: var(--bg); border-color: var(--line); }
     .player-open.chat-row {
       width: 100%; padding: var(--space-4); text-align: left;
       background: var(--surface); border: 1px solid var(--line);
@@ -579,6 +580,75 @@
       padding-top: 8px; border-top: 1px solid var(--separator);
       white-space: pre-wrap; overflow-wrap: anywhere;
     }
+
+    /* ===== Игроки: поиск на виду, полный список раскрывается ===== */
+    #players-section { margin-top: var(--space-6); }
+    #players-section > .section-title { margin: 0; }
+    .players-toggle {
+      display: flex; align-items: center; gap: 0; width: 100%;
+      min-height: 44px; padding-inline: var(--space-1) 0; border: 0; background: transparent;
+      font: inherit; letter-spacing: inherit; text-transform: inherit;
+      color: inherit; text-align: start; cursor: pointer;
+    }
+    .players-toggle:active { opacity: .6; }
+    .players-toggle:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+    .players-toggle__title { min-width: 0; }
+    .players-toggle__count { font-variant-numeric: tabular-nums; }
+    .players-toggle__count:not(:empty)::before { content: "·"; margin-inline: 6px; }
+    .players-toggle__chevron {
+      width: 16px; height: 16px; flex: none; margin-inline-start: auto;
+      transition: transform .2s var(--ease);
+    }
+    .players-toggle[aria-expanded="true"] .players-toggle__chevron { transform: rotate(180deg); }
+    .players-search { position: relative; display: flex; align-items: center; margin-top: var(--space-2); }
+    .players-search .input { padding-inline-end: 52px; }
+    input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; }
+    .players-search__clear {
+      position: absolute; inset-inline-end: 2px; top: 50%; transform: translateY(-50%);
+      width: 44px; height: 44px; border-radius: 10px;
+      font-size: 20px; line-height: 1; color: var(--hint);
+    }
+    .players-search__clear[hidden] { display: none; }
+    /* Строка статуса резервирует высоту только у раскрытого списка. */
+    .players-status {
+      margin: 0 var(--space-1); font-variant-numeric: tabular-nums;
+    }
+    #players-section.is-open .players-status { min-height: 20px; margin-top: 6px; }
+    .players-status:not(:empty) { margin-block-end: var(--space-2); }
+    .players-empty-reset { min-height: 44px; margin-top: 12px; }
+    /* ===== Ручная запись игрока на занятие ===== */
+    .book-add { margin-top: 10px; min-height: 44px; }
+    .book-sheet__sub { display: grid; gap: 2px; margin: -10px 0 0; }
+    .book-sheet__when { font-variant-numeric: tabular-nums; }
+    .book-sheet__left { font-size: 13px; font-weight: 600; color: var(--text); }
+    .book-sheet__sub.is-full .book-sheet__left { color: #8a4f00; }
+    [data-theme="dark"] .book-sheet__sub.is-full .book-sheet__left { color: #ffb340; }
+    #book-sheet .players-status { margin: 8px 0 0; }
+    #book-sheet .players-status:not(:empty) { margin-block-end: var(--space-2); }
+    .book-list { margin-top: var(--space-1); }
+    .book-row {
+      display: flex; align-items: center; gap: 12px; width: 100%;
+      min-height: 56px; padding: 8px 0; border: 0;
+      border-bottom: 1px solid var(--separator);
+      background: transparent; color: inherit; font: inherit;
+      text-align: start; cursor: pointer;
+    }
+    .book-row:last-child { border-bottom: 0; }
+    .book-row:active { opacity: .6; }
+    .book-row:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; border-radius: 10px; }
+    .book-row[aria-disabled="true"] { cursor: default; }
+    .book-row .avatar { width: 36px; height: 36px; font-size: 15px; flex: none; }
+    .book-row__text { flex: 1; min-width: 0; }
+    .book-row__name {
+      display: block; font-size: 14.5px; font-weight: 600;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .book-row[aria-disabled="true"] .book-row__name { color: var(--hint); }
+    .book-row__meta {
+      display: block; margin-top: 1px; font-size: 12.5px; color: var(--hint);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .book-row__action { flex: none; font-size: 13px; font-weight: 600; color: var(--link); }
     .quote-card {
       position: relative; overflow: hidden; margin-top: var(--space-6); padding: var(--space-4);
       border: 1px solid var(--line); border-radius: var(--radius);

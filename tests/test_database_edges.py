@@ -105,6 +105,28 @@ def test_database_helpers_and_queue_branches(tmp_path):
             assert await db.restore_booking(training_id, 1, 2) == "booked"
             assert await db.restore_booking(training_id, 1, 2) == "booked"
 
+            # Место освободилось, но очередь уже есть: ручная запись
+            # тренером встаёт в её конец, а не обгоняет ожидающих.
+            queue_id = await db.create_training(
+                title="Очередь",
+                training_type="Очередь",
+                start_at=now + 7200,
+                capacity=1,
+                duration_min=60,
+                reminder_offset_min=60,
+                reminder_enabled=False,
+                created_by=1,
+                level="",
+            )
+            assert await db.book_training(queue_id, 10, 1) == "booked"
+            assert await db.book_training(queue_id, 11, 1) == "waitlist"
+            assert (
+                await db.book_training(
+                    queue_id, 12, 2, respect_waitlist=True
+                )
+                == "waitlist"
+            )
+
             await db.add_message(1, 123, "Привет")
             inbox = await db.list_inbox(123)
             assert inbox and inbox[0]["text"] == "Привет"
