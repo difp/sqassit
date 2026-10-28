@@ -147,11 +147,12 @@ def test_coach_can_book_player_manually() -> None:
     assert 'aria-disabled="true"' in coach
     assert "Игрок уже записан на это занятие" in coach
 
-    # Запись идёт в тот же endpoint участников; список и счётчики обновляются.
+    # Запись идёт в тот же endpoint участников; список и счётчики обновляются
+    # с сохранением позиции прокрутки.
     assert "`/api/coach/trainings/${id}/participants`, 'POST'" in coach
     assert "user_id: uid" in coach
-    assert "refreshParticipants(id);" in coach
-    assert "cacheClear();" in coach
+    assert "closeBookSheet();" in coach
+    assert "await refreshKeepingPlace();" in coach
 
     # Стили строки поиска игрока.
     assert ".book-row" in base
@@ -180,9 +181,18 @@ def test_sheets_do_not_shift_the_page() -> None:
     assert "matchMedia('(pointer: fine)')" in coach
 
     # После записи возвращаем страницу туда, где открыли шторку.
-    assert "scrollY: 0," in coach
-    assert "const keepY = BOOK.scrollY;" in coach
-    assert "await loadView();\n    await HYDRATION;\n    window.scrollTo(0, keepY);" in coach
+    assert "async function refreshKeepingPlace()" in coach
+    assert "captureListAnchor()" in coach
+    assert "restoreListAnchor(anchor)" in coach
+    assert "await loadView();\n  await HYDRATION;\n  restoreListAnchor(anchor);" in coach
+
+    # Любое действие по участникам сохраняет место, а не только запись:
+    # «Снять»/«Одобрить»/«Отклонить» перерисовывают список так же.
+    for action in ("premove", "papprove", "preject", "prestore", "del", "purge"):
+        assert f"if ({action}" in coach or f"closest('[data-{action}]')" in coach
+    assert coach.count("await refreshKeepingPlace();") >= 6
+    assert "refreshParticipants(tid);\n      cacheClear();\n      loadView();" not in coach
+
     # Позиция возвращается уже после догрузки участников: иначе высота
     # карточек меняется после восстановления и страница снова уезжает.
     assert "HYDRATION = hydrateParticipants();" in coach

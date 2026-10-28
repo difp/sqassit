@@ -647,10 +647,13 @@ document.getElementById('segmented').addEventListener('click', ev => {
   if (btn) setView(btn.dataset.view);
 });
 function setView(view) {
+  const changed = view !== VIEW;
   VIEW = view;
   document.querySelectorAll('#segmented [data-view]').forEach(b =>
     b.classList.toggle('is-active', b.dataset.view === view));
   loadView();
+  // Другой список всегда показываем с начала.
+  if (changed) window.scrollTo(0, 0);
 }
 async function loadView() {
   const list = document.getElementById('list');
@@ -682,6 +685,39 @@ async function loadView() {
   }
 }
 function emptyState(text) { return `<div class="empty"><div>${esc(text)}</div></div>`; }
+
+// ===== Сохранение места при перерисовке =====
+// Любое действие (запись, снятие, одобрение, удаление) перерисовывает список
+// и меняет высоту карточек. Запоминаем карточку у верхней кромки и возвращаем
+// её на то же место — иначе страница прыгает на сотни пикселей.
+function captureListAnchor() {
+  const y = window.scrollY || 0;
+  const cards = [...document.querySelectorAll('#list .card')];
+  for (let i = 0; i < cards.length; i++) {
+    const box = cards[i].getBoundingClientRect();
+    if (box.bottom > 0) return { y, index: i, top: box.top };
+  }
+  return { y, index: -1, top: 0 };
+}
+function restoreListAnchor(anchor) {
+  const card = anchor.index >= 0
+    ? document.querySelectorAll('#list .card')[anchor.index] : null;
+  if (card) {
+    const delta = card.getBoundingClientRect().top - anchor.top;
+    if (Math.abs(delta) > 1) { window.scrollBy(0, delta); return; }
+  }
+  window.scrollTo(0, anchor.y);
+}
+// Перерисовать список и вернуть страницу туда, где она была: сначала после
+// данных, затем после догрузки участников (она меняет высоту карточек).
+async function refreshKeepingPlace() {
+  const anchor = captureListAnchor();
+  cacheClear();
+  await loadView();
+  await HYDRATION;
+  restoreListAnchor(anchor);
+  requestAnimationFrame(() => restoreListAnchor(anchor));
+}
 function renderList() {
   const list = document.getElementById('list');
   if (!TRAININGS.length) {
@@ -960,8 +996,7 @@ document.getElementById('list').addEventListener('click', async (ev) => {
       await api(`/api/coach/trainings/${del}`, 'DELETE');
       hapticNotify('success');
       toast('Тренировка в корзине', { label: 'Вернуть', onClick: () => restoreTraining(del) });
-      cacheClear();
-      loadView();
+      await refreshKeepingPlace();
     } else if (restore) {
       await restoreTraining(restore);
     } else if (purge) {
@@ -969,8 +1004,7 @@ document.getElementById('list').addEventListener('click', async (ev) => {
       await api(`/api/coach/trainings/${purge}/purge`, 'DELETE');
       hapticNotify('success');
       toast('Удалено навсегда');
-      cacheClear();
-      loadView();
+      await refreshKeepingPlace();
     } else if ((papprove || preject) && row) {
       const uid = papprove || preject, tid = row.dataset.ptid;
       const action = papprove ? 'approve' : 'reject';
@@ -979,18 +1013,14 @@ document.getElementById('list').addEventListener('click', async (ev) => {
       toast(action === 'approve'
         ? (result.status === 'waitlist' ? 'Мест нет — игрок в очереди' : 'Заявка одобрена')
         : 'Заявка отклонена');
-      refreshParticipants(tid);
-      cacheClear();
-      loadView();
+      await refreshKeepingPlace();
     } else if (premove && row) {
       const uid = premove, tid = row.dataset.ptid;
       haptic('medium');
       await api(`/api/coach/trainings/${tid}/participants/${uid}/cancel`, 'POST');
       hapticNotify('success');
       toast('Игрок снят', { label: 'Вернуть', onClick: () => restoreParticipant(tid, uid) });
-      refreshParticipants(tid);
-      cacheClear();
-      loadView();
+      await refreshKeepingPlace();
     } else if (prestore && row) {
       await restoreParticipant(row.dataset.ptid, prestore);
     }
@@ -1014,9 +1044,7 @@ async function restoreParticipant(tid, uid) {
     const r = await api(`/api/coach/trainings/${tid}/participants/${uid}/restore`, 'POST');
     hapticNotify('success');
     toast(r.status === 'waitlist' ? 'Мест нет — игрок в очереди' : 'Игрок возвращён');
-    refreshParticipants(tid);
-    cacheClear();
-    loadView();
+    await refreshKeepingPlace();
   } catch (e) { hapticNotify('error'); toast(e.message); }
 }
 
@@ -1032,7 +1060,6 @@ const BOOK = {
   seq: 0,
   timer: 0,
   query: '',
-  scrollY: 0,
   taken: new Map(),
   players: null,
   matched: null,
@@ -1066,7 +1093,6 @@ function openBook(id) {
   BOOK.matched = null;
   BOOK.total = null;
   BOOK.taken = new Map();
-  BOOK.scrollY = window.scrollY || 0;
   clearTimeout(BOOK.timer);
   bookSearch.value = '';
   bookClear.hidden = true;
@@ -1178,7 +1204,6 @@ function bookQuery(value, { immediate = false } = {}) {
 async function addBookPlayer(uid, btn) {
   const id = BOOK.tid;
   if (id === null) return;
-  const keepY = BOOK.scrollY;
   btn.disabled = true;
   try {
     const res = await api(`/api/coach/trainings/${id}/participants`, 'POST', {
@@ -1189,14 +1214,9 @@ async function addBookPlayer(uid, btn) {
       ? 'Игрок уже записан'
       : res.status === 'booked' ? 'Игрок записан' : 'Мест нет — игрок в очереди');
     closeBookSheet();
-    refreshParticipants(id);
-    cacheClear();
     // Полный перерендер списка сдвигает страницу — возвращаем её на место
     // после того, как догрузятся участники и высота карточек устоится.
-    await loadView();
-    await HYDRATION;
-    window.scrollTo(0, keepY);
-    requestAnimationFrame(() => window.scrollTo(0, keepY));
+    await refreshKeepingPlace();
   } catch (e) {
     hapticNotify('error');
     toast(e.message);
@@ -1358,8 +1378,7 @@ document.getElementById('transfer-list').addEventListener('click', async (ev) =>
     hapticNotify('success');
     toast('Занятие передано');
     transferSheet.classList.remove('is-open');
-    cacheClear();
-    loadView();
+    await refreshKeepingPlace();
   } catch (e) { hapticNotify('error'); toast(e.message); }
 });
 
