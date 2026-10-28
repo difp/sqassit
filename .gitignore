@@ -20,3 +20,6 @@ venv/
 .pytest_cache/
 .coverage
 .coverage.*
+
+# Локальные настройки Claude Code (личные, не для команды)
+.claude/settings.local.json
