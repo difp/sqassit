@@ -36,12 +36,17 @@ def test_disclosures_use_aligned_dots() -> None:
 
     assert ".disclosure > summary" in base
     assert "::-webkit-details-marker" in base
-    assert ".disclosure__dot" in base
+    # Точка нарисована псевдоэлементом и прижата к подписи: отдельного
+    # элемента слева от текста нет, поэтому она не выглядит сама по себе.
+    assert "summary::before" in base
+    assert ".disclosure[open] > summary::before" in base
+    assert "display: inline-flex; align-items: center; gap: 3px;" in base
+    assert ".disclosure__dot" not in base
+    assert "disclosure__dot" not in coach
     assert "border-radius: 50%" in base
     assert '<summary style=' not in coach
     for tag in re.findall(r"<details[^>]*>", coach):
         assert 'class="disclosure"' in tag
-    assert coach.count('class="disclosure__dot"') >= 3
 
 
 def test_coach_participants_open_by_default() -> None:

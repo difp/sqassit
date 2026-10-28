@@ -571,22 +571,24 @@
     .hm__part { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
     .setting-row .switch { margin-left: var(--space-2); }
 
-    /* Раскрывающиеся списки: точка вместо «поехавших» нативных стрелок. */
+    /* Раскрывающиеся списки: точка вместо «поехавших» нативных стрелок.
+       Точка — часть подписи (::before вплотную к тексту), а не отдельный
+       элемент слева: иначе она читается как самостоятельный маркер. */
     .disclosure { margin-top: var(--space-3); }
     .disclosure > summary {
-      display: inline-flex; align-items: center; gap: var(--space-2);
+      display: inline-flex; align-items: center; gap: 3px;
       min-height: 28px; padding: 2px 0;
       list-style: none; cursor: pointer;
       color: var(--link); font-size: 13px; font-weight: 600;
     }
     .disclosure > summary::-webkit-details-marker { display: none; }
     .disclosure > summary::marker { content: ""; }
-    .disclosure__dot {
-      width: 6px; height: 6px; flex: none; align-self: center;
+    .disclosure > summary::before {
+      content: ""; width: 6px; height: 6px; flex: none; align-self: center;
       border-radius: 50%; background: currentColor; opacity: .45;
       transition: opacity .15s var(--ease);
     }
-    .disclosure[open] .disclosure__dot { opacity: 1; }
+    .disclosure[open] > summary::before { opacity: 1; }
     .disclosure > summary:active { opacity: .7; }
     .form-note { margin: 0 2px 10px; }
     .chat-log {
