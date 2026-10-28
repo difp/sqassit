@@ -49,6 +49,20 @@
       --space-6: 24px;
       --ease: cubic-bezier(.2,0,0,1);
       --tabbar-h: 60px;
+      /* Безопасные зоны. Сначала простые значения: старый Android WebView
+         не знает env()/max(), и без запасного варианта отступы шапки
+         обнулялись бы — весь макет уезжал вверх под системную панель. */
+      --safe-top: 0px;
+      --safe-bottom: 0px;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    /* В полноэкранном режиме Telegram сообщает свои вставки: берём большее. */
+    @supports (width: max(0px, 0px)) {
+      :root {
+        --safe-top: max(env(safe-area-inset-top, 0px), var(--tg-safe-area-inset-top, 0px));
+        --safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom, 0px));
+      }
     }
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     html, body { margin: 0; padding: 0; width: 100%; max-width: 100%; }
@@ -56,6 +70,16 @@
       scroll-padding-top: 64px;
       overflow-x: hidden;
       overflow-x: clip; /* не создаёт лишний scroll-container для sticky-шапки */
+      /* Отключаем автоприближение шрифта в Android WebView: иначе текст
+         крупнее, чем в макете, и строки ломаются не как на стенде. */
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
+      /* Место под полосу прокрутки зарезервировано всегда, чтобы открытие
+         шторки (overflow: hidden) не сдвигало страницу по горизонтали. */
+      scrollbar-gutter: stable;
+      /* Chrome сам «удерживает якорь» при перерисовке списка и меняет
+         прокрутку за нашей спиной. Нам нужен ручной контроль. */
+      overflow-anchor: none;
     }
     body { overflow-x: hidden; overflow-x: clip; }
     .app {
@@ -95,7 +119,7 @@
     /* ===== Верхняя панель ===== */
     .app-header {
       position: sticky; top: 0; z-index: 20; min-width: 0;
-      padding: calc(env(safe-area-inset-top) + 12px) 16px 12px;
+      padding: calc(var(--safe-top) + 12px) 16px 12px;
       background: var(--header-bg);
       border-bottom: 1px solid var(--separator);
       display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -110,7 +134,7 @@
     /* ===== Контент ===== */
     .app-main {
       min-width: 0; width: 100%;
-      padding: var(--space-4) var(--space-4) calc(var(--tabbar-h) + 26px + env(safe-area-inset-bottom));
+      padding: var(--space-4) var(--space-4) calc(var(--tabbar-h) + 26px + var(--safe-bottom));
     }
 
     .section { margin-top: var(--space-6); }
@@ -271,7 +295,7 @@
     /* ===== День ===== */
     .day { margin-bottom: 20px; }
     .day-label {
-      position: sticky; top: calc(env(safe-area-inset-top) + 54px); z-index: 10;
+      position: sticky; top: calc(var(--safe-top) + 54px); z-index: 10;
       background: var(--bg); padding: 8px 2px 8px; margin: 0 -2px 8px;
       display: flex; align-items: baseline; justify-content: space-between;
       font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--hint);
@@ -412,7 +436,7 @@
       display: flex; width: 100%; max-width: 520px; margin: 0 auto;
       background: var(--header-bg);
       border-top: 1px solid var(--separator);
-      padding-bottom: env(safe-area-inset-bottom);
+      padding-bottom: var(--safe-bottom);
     }
     .tab {
       flex: 1; min-height: var(--tabbar-h);
@@ -434,14 +458,21 @@
     /* ===== Bottom sheet ===== */
     .sheet { position: fixed; inset: 0; z-index: 50; display: none; }
     .sheet.is-open { display: block; }
-    .sheet__backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.45); opacity: 0; transition: opacity .22s; }
+    /* Пока шторка открыта, страница под ней стоит на месте: иначе фон
+       прокручивается пальцем и после закрытия всё «съезжает». */
+    html.has-sheet, html.has-sheet body { overflow: hidden; }
+    .sheet__backdrop {
+      position: absolute; inset: 0; background: rgba(0,0,0,.45);
+      opacity: 0; transition: opacity .22s; touch-action: none;
+    }
     .sheet.is-open .sheet__backdrop { opacity: 1; }
     .sheet__panel {
       position: absolute; left: 0; right: 0; bottom: 0;
       width: 100%; max-width: 520px; margin: 0 auto;
       background: var(--bg); border-radius: 22px 22px 0 0;
-      padding: 8px var(--space-4) calc(20px + env(safe-area-inset-bottom));
-      max-height: 92vh; overflow-y: auto; overscroll-behavior: contain;
+      padding: 8px var(--space-4) calc(20px + var(--safe-bottom));
+      max-height: 92vh; max-height: 92dvh;
+      overflow-y: auto; overscroll-behavior: contain;
       transform: translateY(100%); transition: transform .26s var(--ease);
     }
     .sheet.is-open .sheet__panel { transform: translateY(0); }
@@ -452,14 +483,14 @@
     .sheet__panel--form .sheet__title { flex: none; }
     .sheet__body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: var(--space-2); }
     .sheet__footer {
-      flex: none; padding: var(--space-3) 0 calc(var(--space-4) + env(safe-area-inset-bottom));
+      flex: none; padding: var(--space-3) 0 calc(var(--space-4) + var(--safe-bottom));
       background: var(--bg); border-top: 1px solid var(--separator);
     }
 
     /* ===== Тост ===== */
     .toast {
       position: fixed; left: 50%; z-index: 60;
-      bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 16px);
+      bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 16px);
       transform: translateX(-50%) translateY(16px);
       display: flex; align-items: center; gap: 12px; justify-content: center;
       background: rgba(28,28,30,.95); color: #fff;
@@ -727,7 +758,7 @@
       .app-header { padding-left: 10px; padding-right: 10px; gap: 8px; }
       .app-title { font-size: 17px; }
       .header-action { width: 34px; height: 34px; }
-      .app-main { padding: 12px 10px calc(var(--tabbar-h) + 20px + env(safe-area-inset-bottom)); }
+      .app-main { padding: 12px 10px calc(var(--tabbar-h) + 20px + var(--safe-bottom)); }
       .card { padding: 12px; border-radius: 14px; }
       .section-title { font-size: 12px; }
       .profile-card__top { align-items: flex-start; gap: var(--space-2); }
@@ -768,7 +799,7 @@
     }
     /* 300%+ zoom / панель уже 220px: ещё плотнее, без горизонтального скролла. */
     @media (max-width: 220px) {
-      .app-main { padding: 8px 6px calc(var(--tabbar-h) + 16px + env(safe-area-inset-bottom)); }
+      .app-main { padding: 8px 6px calc(var(--tabbar-h) + 16px + var(--safe-bottom)); }
       .card { padding: 10px; border-radius: 12px; }
       .app-header { gap: 4px; padding-left: 8px; padding-right: 8px; }
       .app-header__right { gap: 4px; }
@@ -941,6 +972,23 @@
       } catch (e) { /* старые версии клиента */ }
     }
 
+    // Telegram раскрывает мини-приложение анимацией: высота WebView меняется
+    // уже после первой отрисовки, и Chrome «удерживает якорь» — страница
+    // открывается уже прокрученной, без верха карточки. Пока человек сам не
+    // начал листать, возвращаем верх после каждого такого изменения.
+    let USER_SCROLLED = false;
+    ['touchstart', 'wheel', 'keydown'].forEach((type) => {
+      window.addEventListener(type, () => { USER_SCROLLED = true; },
+        { passive: true, once: true });
+    });
+    function pinTopWhileOpening() {
+      if (!USER_SCROLLED) scrollAppToTop();
+    }
+    try {
+      tg && tg.onEvent && tg.onEvent('viewportChanged', pinTopWhileOpening);
+    } catch (e) { /* старые версии клиента */ }
+    [0, 120, 300, 700].forEach((ms) => setTimeout(pinTopWhileOpening, ms));
+
     function syncTheme() {
       const scheme = (tg && tg.colorScheme) ||
         (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
@@ -1017,6 +1065,30 @@
         }
       });
     }
+
+    // ===== Шторки: фиксируем страницу под открытой шторкой =====
+    // Без этого палец на затемнении прокручивает фон, а после закрытия
+    // карточка оказывается не там, где была (на телефоне это выглядит как
+    // «вёрстка съехала»). Позицию запоминаем: iOS сбрасывает её при
+    // переключении overflow у html.
+    let SHEET_SCROLL_Y = 0;
+    function syncSheetScrollLock() {
+      const open = Boolean(document.querySelector('.sheet.is-open'));
+      const locked = document.documentElement.classList.contains('has-sheet');
+      if (open === locked) return;
+      if (open) {
+        SHEET_SCROLL_Y = window.scrollY || 0;
+        document.documentElement.classList.add('has-sheet');
+      } else {
+        document.documentElement.classList.remove('has-sheet');
+        window.scrollTo(0, SHEET_SCROLL_Y);
+      }
+    }
+    try {
+      const sheetObserver = new MutationObserver(syncSheetScrollLock);
+      document.querySelectorAll('.sheet').forEach((el) =>
+        sheetObserver.observe(el, { attributes: true, attributeFilter: ['class'] }));
+    } catch (e) {}
 
     function currentInitData() {
       return (tg && tg.initData) || INIT_DATA;

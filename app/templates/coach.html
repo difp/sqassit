@@ -327,6 +327,9 @@ let IS_OWNER = false;
 let IS_MANAGER = false;
 let XFER_TID = null;
 let CREATE_MODE = 'single';
+// Промис последней догрузки участников: нужен, чтобы вернуть прокрутку
+// после того, как высота карточек перестанет меняться.
+let HYDRATION = Promise.resolve();
 
 const WEEKDAY_NAMES = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
@@ -694,18 +697,22 @@ function renderList() {
     : VIEW === 'history' ? historyRow
       : VIEW === 'deleted' ? deletedRow : clubRow;
   list.innerHTML = TRAININGS.map(render).join('');
-  hydrateParticipants();
+  HYDRATION = hydrateParticipants();
   hideAppLoader();
 }
 
 // Списки участников раскрыты сразу: догружаем их без клика по <summary>.
-function hydrateParticipants() {
+// Возвращаем промис, чтобы вызывающий код мог дождаться, когда высота
+// карточек перестанет меняться (иначе прокрутка «уезжает» после записи).
+async function hydrateParticipants() {
+  const jobs = [];
   document.querySelectorAll('#list details[data-pid][open]').forEach(details => {
     const box = details.querySelector('[data-plist]');
     if (!box || box.dataset.loaded === '1') return;
     box.dataset.loaded = '1';
-    refreshParticipants(details.dataset.pid);
+    jobs.push(refreshParticipants(details.dataset.pid));
   });
+  await Promise.allSettled(jobs);
 }
 
 // ---------- Своё занятие ----------
@@ -1025,6 +1032,7 @@ const BOOK = {
   seq: 0,
   timer: 0,
   query: '',
+  scrollY: 0,
   taken: new Map(),
   players: null,
   matched: null,
@@ -1058,6 +1066,7 @@ function openBook(id) {
   BOOK.matched = null;
   BOOK.total = null;
   BOOK.taken = new Map();
+  BOOK.scrollY = window.scrollY || 0;
   clearTimeout(BOOK.timer);
   bookSearch.value = '';
   bookClear.hidden = true;
@@ -1069,7 +1078,13 @@ function openBook(id) {
   // Уже записанных показываем неактивными: не нужно искать их заново.
   loadBookTaken(id);
   loadBookPlayers();
-  bookSearch.focus();
+  // На телефоне автфокус поднимает клавиатуру: вьюпорт прыгает, список
+  // уезжает под неё. Фокус оставляем только там, где клавиатуры нет.
+  try {
+    if (window.matchMedia('(pointer: fine)').matches) {
+      bookSearch.focus({ preventScroll: true });
+    }
+  } catch (e) {}
 }
 
 async function loadBookTaken(id) {
@@ -1163,6 +1178,7 @@ function bookQuery(value, { immediate = false } = {}) {
 async function addBookPlayer(uid, btn) {
   const id = BOOK.tid;
   if (id === null) return;
+  const keepY = BOOK.scrollY;
   btn.disabled = true;
   try {
     const res = await api(`/api/coach/trainings/${id}/participants`, 'POST', {
@@ -1175,7 +1191,12 @@ async function addBookPlayer(uid, btn) {
     closeBookSheet();
     refreshParticipants(id);
     cacheClear();
-    loadView();
+    // Полный перерендер списка сдвигает страницу — возвращаем её на место
+    // после того, как догрузятся участники и высота карточек устоится.
+    await loadView();
+    await HYDRATION;
+    window.scrollTo(0, keepY);
+    requestAnimationFrame(() => window.scrollTo(0, keepY));
   } catch (e) {
     hapticNotify('error');
     toast(e.message);

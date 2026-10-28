@@ -157,3 +157,69 @@ def test_coach_can_book_player_manually() -> None:
     assert ".book-row" in base
     assert ".book-row__action" in base
     assert ".book-sheet__sub" in base
+
+
+def test_sheets_do_not_shift_the_page() -> None:
+    base = BASE.read_text()
+    coach = (TEMPLATES / "coach.html").read_text()
+
+    # Открытая шторка блокирует прокрутку фона: иначе палец на затемнении
+    # уводит страницу, и после закрытия карточка оказывается не на месте.
+    assert "html.has-sheet, html.has-sheet body { overflow: hidden; }" in base
+    assert "MutationObserver(syncSheetScrollLock)" in base
+    assert "document.querySelectorAll('.sheet')" in base
+    assert "touch-action: none" in base
+    # Позицию запоминаем и возвращаем: iOS сбрасывает её при смене overflow.
+    assert "window.scrollTo(0, SHEET_SCROLL_Y)" in base
+
+    # Шторка ограничена видимым вьюпортом, а не 100vh с панелью браузера.
+    assert "max-height: 92dvh" in base
+
+    # На телефоне автфокус поднимает клавиатуру и список прыгает.
+    assert "bookSearch.focus({ preventScroll: true })" in coach
+    assert "matchMedia('(pointer: fine)')" in coach
+
+    # После записи возвращаем страницу туда, где открыли шторку.
+    assert "scrollY: 0," in coach
+    assert "const keepY = BOOK.scrollY;" in coach
+    assert "await loadView();\n    await HYDRATION;\n    window.scrollTo(0, keepY);" in coach
+    # Позиция возвращается уже после догрузки участников: иначе высота
+    # карточек меняется после восстановления и страница снова уезжает.
+    assert "HYDRATION = hydrateParticipants();" in coach
+    assert "await Promise.allSettled(jobs);" in coach
+
+
+def test_safe_areas_and_text_scale_are_pinned() -> None:
+    base = BASE.read_text()
+
+    # Полноэкранный режим Telegram отдаёт свои вставки, env() их не знает.
+    assert "--tg-safe-area-inset-top" in base
+    assert "--tg-safe-area-inset-bottom" in base
+    assert "calc(var(--safe-top) + 12px)" in base
+    assert "calc(var(--tabbar-h) + 26px + var(--safe-bottom))" in base
+
+    # Старый WebView без env()/max() не должен обнулять отступы шапки:
+    # сначала простое значение, расширение — только под @supports.
+    assert "--safe-top: 0px;" in base
+    assert "--safe-top: env(safe-area-inset-top, 0px);" in base
+    assert "@supports (width: max(0px, 0px))" in base
+
+    # Android WebView не должен сам увеличивать шрифт: иначе строки ломаются
+    # иначе, чем на стенде.
+    assert "-webkit-text-size-adjust: 100%" in base
+    assert "text-size-adjust: 100%" in base
+
+
+def test_page_stays_at_top_while_telegram_expands() -> None:
+    base = BASE.read_text()
+
+    # Раскрытие WebView в Telegram меняет высоту после первой отрисовки;
+    # без этого страница открывается прокрученной, без верха карточки.
+    assert "function pinTopWhileOpening()" in base
+    assert "tg.onEvent('viewportChanged', pinTopWhileOpening)" in base
+    assert "let USER_SCROLLED = false;" in base
+    assert "[0, 120, 300, 700].forEach((ms) => setTimeout(pinTopWhileOpening, ms));" in base
+
+    # Автоматическое «удержание якоря» Chrome конфликтует с ручным возвратом
+    # прокрутки после перерисовки списка.
+    assert "overflow-anchor: none;" in base
