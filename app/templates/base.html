@@ -572,11 +572,11 @@
     .setting-row .switch { margin-left: var(--space-2); }
 
     /* Раскрывающиеся списки: точка вместо «поехавших» нативных стрелок.
-       Точка — часть подписи (::before вплотную к тексту), а не отдельный
-       элемент слева: иначе она читается как самостоятельный маркер. */
+       Точка — символ в тексте подписи, а отступ задан в em: фиксированные
+       пиксели при DPR 1 схлопывались, и точка слипалась с буквой. */
     .disclosure { margin-top: var(--space-3); }
     .disclosure > summary {
-      display: inline-flex; align-items: center; gap: 3px;
+      display: inline-flex; align-items: center;
       min-height: 28px; padding: 2px 0;
       list-style: none; cursor: pointer;
       color: var(--link); font-size: 13px; font-weight: 600;
@@ -584,9 +584,9 @@
     .disclosure > summary::-webkit-details-marker { display: none; }
     .disclosure > summary::marker { content: ""; }
     .disclosure > summary::before {
-      content: ""; width: 6px; height: 6px; flex: none; align-self: center;
-      border-radius: 50%; background: currentColor; opacity: .45;
-      transition: opacity .15s var(--ease);
+      content: "\2022"; flex: none; align-self: center;
+      font-size: 1.35em; line-height: 1; margin-right: .18em;
+      opacity: .45; transition: opacity .15s var(--ease);
     }
     .disclosure[open] > summary::before { opacity: 1; }
     .disclosure > summary:active { opacity: .7; }

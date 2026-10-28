@@ -38,12 +38,15 @@ def test_disclosures_use_aligned_dots() -> None:
     assert "::-webkit-details-marker" in base
     # Точка нарисована псевдоэлементом и прижата к подписи: отдельного
     # элемента слева от текста нет, поэтому она не выглядит сама по себе.
+    # Отступ задан в em, а не в px: при DPR 1 фиксированные 3 px схлопывались
+    # и точка слипалась с первой буквой.
     assert "summary::before" in base
     assert ".disclosure[open] > summary::before" in base
-    assert "display: inline-flex; align-items: center; gap: 3px;" in base
+    assert 'content: "\\2022"' in base
+    assert "font-size: 1.35em" in base
+    assert "margin-right: .18em" in base
     assert ".disclosure__dot" not in base
     assert "disclosure__dot" not in coach
-    assert "border-radius: 50%" in base
     assert '<summary style=' not in coach
     for tag in re.findall(r"<details[^>]*>", coach):
         assert 'class="disclosure"' in tag
