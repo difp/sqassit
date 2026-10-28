@@ -17,6 +17,8 @@ services:
         value: Europe/Moscow
       - key: DB_PATH
         value: /var/data/squash.db
+      - key: AVATAR_CACHE_DIR
+        value: /var/data/cache/avatars
       - key: BOT_MODE
         value: polling
       - key: WEBHOOK_BASE_URL

@@ -6,6 +6,8 @@ import asyncio
 import hashlib
 import hmac
 import json
+import re
+import shutil
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -17,6 +19,7 @@ import pytest
 from fastapi import HTTPException
 from starlette.testclient import TestClient
 
+import app.avatars as avatarsmod
 import app.bot as botmod
 import app.main as mainmod
 from app.config import TRAINING_LEVELS, settings
@@ -58,6 +61,7 @@ def client(monkeypatch):
     # Каждый тест получает чистую БД и чистые in-memory-состояния.
     for suffix in ("", "-wal", "-shm"):
         Path(f"{settings.db_path}{suffix}").unlink(missing_ok=True)
+    shutil.rmtree(settings.avatar_cache_dir, ignore_errors=True)
     mainmod._bot_check_cache = (0.0, False)
     mainmod._message_limiter.clear()
     mainmod._apply_limiter.clear()
@@ -475,10 +479,15 @@ def test_booking_is_idempotent(client):
     ]
 
 
-def test_avatar_requires_scoped_token(client):
+def test_avatar_requires_scoped_token(client, monkeypatch):
     """<img> не может передать X-Init-Data, поэтому аватар авторизуется токеном."""
+    async def no_photo(bot, telegram_id):
+        return None
+
+    monkeypatch.setattr(botmod, "_cache_avatar", no_photo)
+
     avatar_url = client.get("/api/me", headers=PLAYER).json()["user"]["avatar_url"]
-    assert "token=" in avatar_url
+    assert re.search(r"/api/avatar/555/[0-9a-f]{12}\?token=", avatar_url)
 
     # без токена — 401 (именно так раньше ломались все аватарки)
     assert client.get("/api/avatar/555").status_code == 401
@@ -489,6 +498,81 @@ def test_avatar_requires_scoped_token(client):
     # подделанный токен не принимается
     tampered = avatar_url[:-1] + ("0" if avatar_url[-1] != "0" else "1")
     assert client.get(tampered).status_code == 401
+
+
+def test_avatar_url_is_stable_and_versioned(client):
+    first = client.get("/api/me", headers=PLAYER).json()["user"]["avatar_url"]
+    second = client.get("/api/me", headers=PLAYER).json()["user"]["avatar_url"]
+    assert first == second  # повторная сериализация не меняет src
+
+    version = first.split("/")[4].split("?")[0]
+    assert re.fullmatch(r"[0-9a-f]{12}", version)
+
+    asyncio.run(mainmod.db.set_user_avatar(555, "new-photo"))
+    changed = client.get("/api/me", headers=PLAYER).json()["user"]["avatar_url"]
+    assert changed != first  # смена фото меняет версию, а значит и URL
+
+
+def test_avatar_url_served_for_stale_version_without_caching(client, monkeypatch):
+    async def fake_get_file(file_id):
+        class FakeFile:
+            file_path = "photo.jpg"
+
+        return FakeFile()
+
+    async def fake_download_file(file_path):
+        class FakeBuffer:
+            def getvalue(self):
+                return b"\xff\xd8\xffstale"
+
+        return FakeBuffer()
+
+    monkeypatch.setattr(mainmod.app.state.bot, "get_file", fake_get_file)
+    monkeypatch.setattr(
+        mainmod.app.state.bot, "download_file", fake_download_file
+    )
+    assert client.get("/api/me", headers=PLAYER).status_code == 200
+    asyncio.run(mainmod.db.set_user_avatar(555, "avatar-file"))
+
+    token = issue_scoped_token(settings.bot_token, "avatar", 555, 555)
+    stale = client.get(f"/api/avatar/555/deadbeefcafe?token={token}")
+    assert stale.status_code == 200
+    assert stale.headers["cache-control"] == "private, no-cache"
+
+
+def test_delete_me_removes_avatar_cache(client, monkeypatch):
+    async def fake_get_file(file_id):
+        class FakeFile:
+            file_path = "photo.jpg"
+
+        return FakeFile()
+
+    async def fake_download_file(file_path):
+        class FakeBuffer:
+            def getvalue(self):
+                return b"\xff\xd8\xffphoto"
+
+        return FakeBuffer()
+
+    monkeypatch.setattr(mainmod.app.state.bot, "get_file", fake_get_file)
+    monkeypatch.setattr(
+        mainmod.app.state.bot, "download_file", fake_download_file
+    )
+    assert client.get("/api/me", headers=PLAYER).status_code == 200
+    asyncio.run(mainmod.db.set_user_avatar(555, "avatar-file"))
+    url = client.get("/api/me", headers=PLAYER).json()["user"]["avatar_url"]
+    assert client.get(url).status_code == 200
+    assert any(settings.avatar_cache_dir.rglob("*.img"))
+
+    assert client.delete("/api/me?confirm=true", headers=PLAYER).status_code == 200
+    assert not (settings.avatar_cache_dir / "555").exists()
+
+
+def test_avatar_store_created_lazily(monkeypatch, tmp_path):
+    monkeypatch.setattr(mainmod.app.state, "avatar_cache", None)
+    store = mainmod._avatar_store()
+    assert store is mainmod.app.state.avatar_cache
+    assert store.root == settings.avatar_cache_dir
 
 
 def test_calendar_uses_scoped_token(client):
@@ -859,7 +943,7 @@ def test_player_privacy_about_and_animal_participant(client):
     coach_card = next(t for t in coach_view if t["id"] == tid)
     real = next(p for p in coach_card["participants"] if p["first_name"] == "Иван")
     assert real["anonymous"] is False
-    assert real["avatar_url"].startswith("/api/avatar/555?token=")
+    assert re.search(r"/api/avatar/555/[0-9a-f]{12}\?token=", real["avatar_url"])
 
 
 def test_avatar_endpoint_hides_photo_in_animal_mode(client):
@@ -1136,19 +1220,6 @@ def test_readyz_cache_and_failures(client, monkeypatch):
 
     monkeypatch.setattr(mainmod.db, "ping", db_down)
     assert client.get("/readyz").status_code == 503
-
-
-def test_store_avatar_evicts_expired_and_oldest(monkeypatch):
-    mainmod._avatar_cache.clear()
-    now = time.time()
-    mainmod._avatar_cache[1] = (now - mainmod._AVATAR_TTL_SECONDS - 1, b"old", "image/png")
-    for key in range(100, 100 + mainmod._AVATAR_CACHE_MAX_ENTRIES):
-        mainmod._avatar_cache[key] = (now, b"", "image/png")
-    mainmod._store_avatar(999, b"x", "image/png")
-    assert 1 not in mainmod._avatar_cache
-    assert 999 in mainmod._avatar_cache
-    assert len(mainmod._avatar_cache) <= mainmod._AVATAR_CACHE_MAX_ENTRIES
-    mainmod._avatar_cache.clear()
 
 
 def test_auth_rejects_bad_telegram_id(client):
@@ -1837,67 +1908,131 @@ def test_lifespan_webhook_startup(tmp_path, monkeypatch):
     assert session_closed == [True]
 
 
-def test_avatar_not_found_cache_and_download(client, monkeypatch):
-    assert client.get("/api/me", headers=PLAYER).status_code == 200
+def test_avatar_negative_cache_download_and_revalidation(client, monkeypatch):
+    """Аватарка: negative cache, диск, ETag/304 и защита от сбоев Telegram."""
+    lookups = {"cache_avatar": 0, "get_file": 0}
 
-    missing_token = issue_scoped_token(settings.bot_token, "avatar", 999, 999)
-    assert client.get(
-        "/api/avatar/999", params={"token": missing_token}
-    ).status_code == 404
+    async def no_photo(bot, telegram_id):
+        lookups["cache_avatar"] += 1
 
-    mainmod._avatar_cache[555] = (
-        time.time(), b"cached", "image/png"
-    )
-    token = issue_scoped_token(settings.bot_token, "avatar", 555, 555)
-    cached_response = client.get("/api/avatar/555", params={"token": token})
-    assert cached_response.status_code == 200
-    assert cached_response.content == b"cached"
+    monkeypatch.setattr(botmod, "_cache_avatar", no_photo)
+    assert client.get("/api/me", headers=PLAYER2).status_code == 200
 
-    mainmod._avatar_cache.pop(555, None)
-    asyncio.run(mainmod.db.set_user_avatar(555, "avatar-file"))
+    token_556 = issue_scoped_token(settings.bot_token, "avatar", 556, 556)
+    legacy_556 = f"/api/avatar/556?token={token_556}"
+    assert client.get(legacy_556).status_code == 404
+    assert client.get(legacy_556).status_code == 404
+    assert lookups["cache_avatar"] == 1  # второй запрос не идёт в Telegram
 
+    # Пользователь появился в боте позже: file_id подтягивается на лету.
+    # Negative cache живёт сутки, поэтому «перематываем» monotonic вперёд.
+    now = time.monotonic()
+    monkeypatch.setattr(avatarsmod.time, "monotonic", lambda: now + 86401)
     class FakeFile:
         file_path = "photo.jpg"
 
     class FakeBuffer:
+        def __init__(self, content=b"\xff\xd8\xffdownloaded"):
+            self._content = content
+
         def getvalue(self):
-            return b"downloaded"
+            return self._content
 
     async def fake_get_file(file_id):
+        lookups["get_file"] += 1
         return FakeFile()
 
     async def fake_download_file(file_path):
         return FakeBuffer()
 
+    async def fetch_photo(bot, telegram_id):
+        lookups["cache_avatar"] += 1
+        await mainmod.db.set_user_avatar(telegram_id, "fetched-file")
+
+    monkeypatch.setattr(botmod, "_cache_avatar", fetch_photo)
     monkeypatch.setattr(mainmod.app.state.bot, "get_file", fake_get_file)
     monkeypatch.setattr(
         mainmod.app.state.bot, "download_file", fake_download_file
     )
-    downloaded = client.get("/api/avatar/555", params={"token": token})
-    assert downloaded.status_code == 200
-    assert downloaded.content == b"downloaded"
-    assert downloaded.headers["content-type"] == "image/jpeg"
 
+    # Старый URL (версия «нет фото») отдаёт картинку, но не кэшируется:
+    # следующая сериализация уже вернёт актуальный версионированный адрес.
+    legacy = client.get(legacy_556)
+    assert legacy.status_code == 200
+    assert legacy.content == b"\xff\xd8\xffdownloaded"
+    assert legacy.headers["cache-control"] == "private, no-cache"
+    assert legacy.headers["content-type"] == "image/jpeg"
+
+    fresh_url = client.get("/api/me", headers=PLAYER2).json()["user"]["avatar_url"]
+    first = client.get(fresh_url)
+    assert first.status_code == 200
+    assert first.content == b"\xff\xd8\xffdownloaded"
+    assert first.headers["cache-control"] == "private, max-age=604800, immutable"
+    assert first.headers["content-length"] == str(len(first.content))
+    etag = first.headers["etag"]
+    assert etag.startswith('"') and etag.endswith('"')
+
+    downloads = lookups["get_file"]
+    assert client.get(fresh_url).status_code == 200
+    assert lookups["get_file"] == downloads  # повторно из кэша
+
+    assert client.get(fresh_url, headers={"If-None-Match": etag}).status_code == 304
+    assert client.get(
+        fresh_url, headers={"If-None-Match": f"W/{etag}"}
+    ).status_code == 304
+    assert client.get(
+        fresh_url, headers={"If-None-Match": '"other"'}
+    ).status_code == 200
+
+    # Нет file_path в ответе Telegram -> 404 и negative cache.
     class NoPathFile:
         file_path = None
 
     async def no_path(file_id):
         return NoPathFile()
 
-    mainmod._avatar_cache.pop(555, None)
+    asyncio.run(mainmod.db.set_user_avatar(556, "no-path-file"))
     monkeypatch.setattr(mainmod.app.state.bot, "get_file", no_path)
-    assert client.get(
-        "/api/avatar/555", params={"token": token}
-    ).status_code == 404
+    no_path_url = client.get("/api/me", headers=PLAYER2).json()["user"]["avatar_url"]
+    assert client.get(no_path_url).status_code == 404
+    assert client.get(no_path_url).status_code == 404
 
+    # Пустой файл — тоже «нет фото».
+    async def empty_download(file_path):
+        return FakeBuffer(b"")
+
+    asyncio.run(mainmod.db.set_user_avatar(556, "empty-file"))
+    monkeypatch.setattr(mainmod.app.state.bot, "get_file", fake_get_file)
+    monkeypatch.setattr(
+        mainmod.app.state.bot, "download_file", empty_download
+    )
+    empty_url = client.get("/api/me", headers=PLAYER2).json()["user"]["avatar_url"]
+    assert client.get(empty_url).status_code == 404
+
+    # Слишком большой файл не кладём в память/на диск.
+    monkeypatch.setattr(mainmod, "_AVATAR_MAX_BYTES", 3)
+    monkeypatch.setattr(
+        mainmod.app.state.bot, "download_file", fake_download_file
+    )
+    asyncio.run(mainmod.db.set_user_avatar(556, "big-file"))
+    big_url = client.get("/api/me", headers=PLAYER2).json()["user"]["avatar_url"]
+    assert client.get(big_url).status_code == 502
+
+    # Сбой Telegram -> 502 (и не отрицательный кэш).
     async def broken_file(file_id):
         raise RuntimeError("telegram")
 
     monkeypatch.setattr(mainmod.app.state.bot, "get_file", broken_file)
+    asyncio.run(mainmod.db.set_user_avatar(556, "broken-file"))
+    broken_url = client.get("/api/me", headers=PLAYER2).json()["user"]["avatar_url"]
+    assert client.get(broken_url).status_code == 502
+    assert client.get(broken_url).status_code == 502
+
+    # Несуществующий пользователь — 404 без обращения к Telegram.
+    missing_token = issue_scoped_token(settings.bot_token, "avatar", 999, 999)
     assert client.get(
-        "/api/avatar/555", params={"token": token}
-    ).status_code == 502
-    mainmod._avatar_cache.pop(555, None)
+        "/api/avatar/999", params={"token": missing_token}
+    ).status_code == 404
 
 
 def test_profile_descriptions_allow_450_characters(client):

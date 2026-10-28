@@ -43,6 +43,7 @@ class Settings:
     coach_telegram_id: int
     timezone: ZoneInfo
     db_path: Path
+    avatar_cache_dir: Path
     bot_mode: str
     webhook_base_url: str
     webhook_secret: str
@@ -93,6 +94,10 @@ def load_settings() -> Settings:
         coach_telegram_id=coach_id,
         timezone=tz,
         db_path=Path(_optional("DB_PATH", "./data/squash.db") or "./data/squash.db"),
+        avatar_cache_dir=Path(
+            _optional("AVATAR_CACHE_DIR", "./data/cache/avatars")
+            or "./data/cache/avatars"
+        ),
         bot_mode=bot_mode,
         webhook_base_url=webhook_base_url,
         webhook_secret=webhook_secret,

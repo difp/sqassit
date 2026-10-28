@@ -344,6 +344,15 @@ def test_cache_avatar_uses_largest_photo(monkeypatch):
     assert stored == {555: "big"}
 
 
+def test_cache_avatar_swallows_telegram_errors():
+    """Аватарка — не критичная операция: сбой Telegram не должен ломать старт."""
+    class BrokenBot:
+        async def get_user_profile_photos(self, user_id, limit=1):
+            raise RuntimeError("telegram")
+
+    asyncio.run(botmod._cache_avatar(BrokenBot(), 555))
+
+
 def test_send_training_reminder_counts_only_delivered(monkeypatch):
     async def fake_targets(training_id):
         return [{"telegram_id": 1}, {"telegram_id": 2}]

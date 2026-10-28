@@ -122,8 +122,16 @@ def issue_scoped_token(
     *,
     ttl_seconds: int = 86400,
 ) -> str:
-    """Создаёт подписанный токен для конкретного ресурса и пользователя."""
-    expires_at = int(time.time()) + max(1, int(ttl_seconds))
+    """
+    Создаёт подписанный токен для конкретного ресурса и пользователя.
+
+    ``expires_at`` округляется вверх до границы периода ``ttl_seconds``:
+    токен, выданный в любой момент периода, живёт от одного до двух TTL, но
+    его текст не меняется внутри периода. Без этого аватарки получали новый
+    URL каждую секунду, и браузерный кэш не работал вообще.
+    """
+    period = max(1, int(ttl_seconds))
+    expires_at = (int(time.time()) // period + 2) * period
     payload = f"{kind}:{int(resource_id)}:{int(user_id)}:{expires_at}"
     signature = hmac.new(
         _scoped_key(secret), payload.encode("utf-8"), hashlib.sha256

@@ -68,6 +68,7 @@ BOT_TOKEN=123456789:AA...
 COACH_TELEGRAM_ID=123456789
 TIMEZONE=Europe/Moscow
 DB_PATH=./data/squash.db
+AVATAR_CACHE_DIR=./data/cache/avatars
 
 BOT_MODE=polling
 WEBHOOK_BASE_URL=https://app.example.com
@@ -79,6 +80,9 @@ ENABLE_API_DOCS=false
 ```
 
 - `COACH_TELEGRAM_ID` — числовой Telegram ID администратора (`@userinfobot`).
+- `AVATAR_CACHE_DIR` — каталог кэша аватарок (по умолчанию
+  `./data/cache/avatars`). В бэкапы не входит; каталог можно удалить, файлы
+  заново скачаются из Telegram.
 - `WEBHOOK_BASE_URL` нужен даже при `polling`: это адрес кнопки Web App в боте.
 - `BOT_PROXY` — опционально, если `api.telegram.org` недоступен напрямую:
   `socks5://127.0.0.1:1080` или `http://user:pass@proxy:3128`.

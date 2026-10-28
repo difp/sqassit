@@ -99,8 +99,27 @@ def test_scoped_token_expired(monkeypatch):
     monkeypatch.setattr(secure_auth.time, "time", lambda: 1_000_000)
     token = issue_scoped_token(TOKEN, "avatar", 1, 2, ttl_seconds=10)
     assert verify_scoped_token(TOKEN, token, "avatar", 1) == 2
-    monkeypatch.setattr(secure_auth.time, "time", lambda: 1_000_011)
+    # expires_at = (1000000 // 10 + 2) * 10 = 1000020
+    monkeypatch.setattr(secure_auth.time, "time", lambda: 1_000_019)
+    assert verify_scoped_token(TOKEN, token, "avatar", 1) == 2
+    monkeypatch.setattr(secure_auth.time, "time", lambda: 1_000_020)
+    assert verify_scoped_token(TOKEN, token, "avatar", 1) == 2
+    monkeypatch.setattr(secure_auth.time, "time", lambda: 1_000_021)
     assert verify_scoped_token(TOKEN, token, "avatar", 1) is None
+
+
+def test_scoped_token_is_stable_within_period(monkeypatch):
+    """URL аватарки не должен меняться каждую секунду."""
+    monkeypatch.setattr(secure_auth.time, "time", lambda: 1_000_000)
+    first = issue_scoped_token(TOKEN, "avatar", 555, 555, ttl_seconds=3600)
+    monkeypatch.setattr(secure_auth.time, "time", lambda: 1_000_799)
+    assert issue_scoped_token(TOKEN, "avatar", 555, 555, ttl_seconds=3600) == first
+
+    monkeypatch.setattr(secure_auth.time, "time", lambda: 1_000_800)
+    second = issue_scoped_token(TOKEN, "avatar", 555, 555, ttl_seconds=3600)
+    assert second != first
+    # Первый токен ещё жив: запас до конца следующего периода.
+    assert verify_scoped_token(TOKEN, first, "avatar", 555) == 555
 
 
 def test_empty_token_rejected():

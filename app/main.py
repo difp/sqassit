@@ -24,13 +24,19 @@ from urllib.parse import urlencode
 import aiosqlite
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from . import bot as bot_module
 from . import database as db
+from .avatars import (
+    AVATAR_URL_TTL_SECONDS,
+    AvatarCache,
+    avatar_version,
+    sniff_media_type,
+)
 from .config import (
     BOOKING_CANCEL_LOCK_MINUTES,
     DEFAULT_REMINDER_OFFSET_MINUTES,
@@ -56,10 +62,9 @@ logger = logging.getLogger("squash")
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
-# Простой in-memory кэш аватарок (TTL), на диск ничего не пишем.
-_avatar_cache: dict[int, tuple[float, bytes, str]] = {}
-_AVATAR_TTL_SECONDS = 60 * 60
-_AVATAR_CACHE_MAX_ENTRIES = 256
+# Аватарки: диск-кэш создаётся в lifespan. Ограничение на размер одного файла,
+# чтобы повреждённый/подменённый file_id не съел память.
+_AVATAR_MAX_BYTES = 10 * 1024 * 1024
 
 
 _bot_check_cache: tuple[float, bool] = (0.0, False)
@@ -105,16 +110,13 @@ async def _bot_is_ready() -> bool:
     return ok
 
 
-def _store_avatar(telegram_id: int, content: bytes, media_type: str) -> None:
-    """Кладёт аватарку в память, вытесняя просроченные/самые старые записи."""
-    now = time.time()
-    for key, (created_at, _, _) in list(_avatar_cache.items()):
-        if now - created_at >= _AVATAR_TTL_SECONDS:
-            _avatar_cache.pop(key, None)
-    if len(_avatar_cache) >= _AVATAR_CACHE_MAX_ENTRIES:
-        oldest = min(_avatar_cache, key=lambda key: _avatar_cache[key][0])
-        _avatar_cache.pop(oldest, None)
-    _avatar_cache[telegram_id] = (now, content, media_type)
+def _avatar_store() -> AvatarCache:
+    """Возвращает диск-кэш аватарок (создаёт лениво для тестов/скриптов)."""
+    store = getattr(app.state, "avatar_cache", None)
+    if not isinstance(store, AvatarCache):
+        store = AvatarCache(settings.avatar_cache_dir)
+        app.state.avatar_cache = store
+    return store
 
 
 # --------------------------------------------------------------------------- #
@@ -182,19 +184,36 @@ async def current_user(
     return await _authenticate(x_init_data)
 
 
-def _avatar_url(telegram_id: int, *, real: bool = False) -> str:
+def _avatar_url(
+    telegram_id: int, *, real: bool = False, file_id: str | None = None
+) -> str:
     """
-    Возвращает URL аватарки с узким токеном.
+    Возвращает URL аватарки с узким токеном и версией.
 
     ``real=True`` — только для ответов самому пользователю и тренерам:
     такой токен обходит режим «животное». Публичные карточки используют
     обычный токен, который уважает настройку приватности.
+
+    ``file_id`` превращается в версию: при смене фото URL меняется сам,
+    а всё остальное время остаётся одинаковым и кэшируется браузером.
     """
     kind = "avatar_real" if real else "avatar"
     token = issue_scoped_token(
-        settings.bot_token, kind, telegram_id, telegram_id, ttl_seconds=86400
+        settings.bot_token,
+        kind,
+        telegram_id,
+        telegram_id,
+        ttl_seconds=AVATAR_URL_TTL_SECONDS,
     )
-    return f"/api/avatar/{telegram_id}?{urlencode({'token': token})}"
+    version = avatar_version(settings.bot_token, telegram_id, file_id)
+    query = urlencode({"token": token})
+    return f"/api/avatar/{telegram_id}/{version}?{query}"
+
+
+def _row_file_id(row: Any) -> str | None:
+    """file_id аватарки из строки БД; в урезанных dict колонки может не быть."""
+    # keys() нужен именно для aiosqlite.Row: `in row` проверяет значения.
+    return row["avatar_file_id"] if "avatar_file_id" in row.keys() else None  # noqa: SIM118
 
 
 async def require_coach(user: Annotated[dict, Depends(current_user)]) -> dict:
@@ -303,7 +322,9 @@ def participant_identity(row: aiosqlite.Row) -> dict[str, Any]:
         }
     return {
         "first_name": row["first_name"] or "Игрок",
-        "avatar_url": _avatar_url(row["telegram_id"]),
+        "avatar_url": _avatar_url(
+            row["telegram_id"], file_id=_row_file_id(row)
+        ),
         "avatar_emoji": "",
         "anonymous": False,
         "profile_token": issue_scoped_token(
@@ -381,7 +402,9 @@ def serialize_coach(row: aiosqlite.Row | None) -> dict[str, Any] | None:
     return {
         "telegram_id": row["telegram_id"],
         "first_name": row["first_name"] or "Тренер",
-        "avatar_url": _avatar_url(row["telegram_id"], real=True),
+        "avatar_url": _avatar_url(
+            row["telegram_id"], real=True, file_id=_row_file_id(row)
+        ),
         "bio": row["bio"] or "",
     }
 
@@ -646,6 +669,8 @@ async def lifespan(app: FastAPI):
     dp = bot_module.create_dispatcher()
     app.state.bot = tg_bot
     app.state.dp = dp
+    app.state.avatar_cache = AvatarCache(settings.avatar_cache_dir)
+    await app.state.avatar_cache.load_disk_usage()
 
     tasks: list[asyncio.Task] = []
     polling_ctx = None
@@ -787,7 +812,9 @@ async def api_me(user: Annotated[dict, Depends(current_user)]):
             "notify_matches": bool(user["notify_matches"]),
             "notify_trainings": bool(user["notify_trainings"]),
             "notify_messages": bool(user["notify_messages"]),
-            "avatar_url": _avatar_url(user["telegram_id"], real=True),
+            "avatar_url": _avatar_url(
+                user["telegram_id"], real=True, file_id=_row_file_id(user)
+            ),
             "about": user["about"] or "",
             "display_mode": user["display_mode"] or "name",
             "show_username": bool(user["show_username"]),
@@ -978,7 +1005,7 @@ async def api_delete_me(
             _spawn(_notify_promoted(int(promoted), training))
 
     await db.delete_user_data(user["telegram_id"])
-    _avatar_cache.pop(user["telegram_id"], None)
+    await _avatar_store().delete_user(user["telegram_id"])
     return {"ok": True, "deleted": True}
 
 
@@ -1900,7 +1927,11 @@ async def api_coach_messages(coach: Annotated[dict, Depends(require_coach)]):
                 "first_name": animal_identity(r["other_id"])["name"]
                 if r["display_mode"] == "animal"
                 else (r["first_name"] or "Игрок"),
-                "avatar_url": "" if r["display_mode"] == "animal" else _avatar_url(r["other_id"], real=True),
+                "avatar_url": ""
+                if r["display_mode"] == "animal"
+                else _avatar_url(
+                    r["other_id"], real=True, file_id=_row_file_id(r)
+                ),
                 "last_text": r["text"],
                 "last_at": r["created_at"],
             }
@@ -3163,7 +3194,9 @@ async def api_training_coauthors(
                 "telegram_id": r["telegram_id"],
                 "first_name": r["first_name"] or "Тренер",
                 "username": r["username"],
-                "avatar_url": _avatar_url(r["telegram_id"], real=True),
+                "avatar_url": _avatar_url(
+                    r["telegram_id"], real=True, file_id=_row_file_id(r)
+                ),
             }
             for r in rows
         ],
@@ -3223,7 +3256,9 @@ async def api_match_coauthors(
                 "telegram_id": r["telegram_id"],
                 "first_name": r["first_name"] or "Игрок",
                 "username": r["username"],
-                "avatar_url": _avatar_url(r["telegram_id"], real=True),
+                "avatar_url": _avatar_url(
+                    r["telegram_id"], real=True, file_id=_row_file_id(r)
+                ),
             }
             for r in rows
         ],
@@ -3279,7 +3314,9 @@ async def api_list_coaches(coach: Annotated[dict, Depends(require_coach)]):
                 "first_name": r["first_name"] or "Тренер",
                 "username": r["username"] if r["show_username"] else None,
                 "username_visible": bool(r["show_username"]),
-                "avatar_url": _avatar_url(r["telegram_id"], real=True),
+                "avatar_url": _avatar_url(
+                    r["telegram_id"], real=True, file_id=_row_file_id(r)
+                ),
                 "is_owner": r["telegram_id"] == settings.coach_telegram_id,
                 "is_manager": bool(r["is_manager"]),
             }
@@ -3549,14 +3586,70 @@ async def api_transfer_training(
 # Прокси аватарок (без сохранения файлов на диск)
 # --------------------------------------------------------------------------- #
 
-@app.get("/api/avatar/{telegram_id}")
-async def api_avatar(telegram_id: int, token: str = ""):
-    """
-    Отдаёт аватарку из Telegram через бота, не раскрывая токен и не сохраняя файл.
+def _etag_matches(header: str, etag: str) -> bool:
+    """Сравнивает ``If-None-Match`` с текущим ETag (включая ``W/``)."""
+    for candidate in header.split(","):
+        value = candidate.strip()
+        if value in {"*", etag, f"W/{etag}"}:
+            return True
+    return False
 
-    Авторизация — узким токеном из ``avatar_url``: браузерный <img> не может
-    передать заголовок X-Init-Data, а полный initData в URL светить нельзя.
-    """
+
+def _avatar_response(
+    request: Request,
+    content: bytes,
+    media_type: str,
+    version: str,
+    *,
+    immutable: bool,
+) -> Response:
+    """Ответ с ETag/304 и правильным кэшированием версионированного URL."""
+    etag = f'"{version}"'
+    cache_control = (
+        f"private, max-age={AVATAR_URL_TTL_SECONDS}, immutable"
+        if immutable
+        else "private, no-cache"
+    )
+    headers = {"Cache-Control": cache_control, "ETag": etag}
+    if _etag_matches(request.headers.get("if-none-match", ""), etag):
+        return Response(status_code=304, headers=headers)
+    headers["Content-Length"] = str(len(content))
+    return Response(content, media_type=media_type, headers=headers)
+
+
+async def _download_avatar(
+    telegram_id: int, file_id: str | None
+) -> tuple[bytes, str] | None:
+    """Скачивает файл из Telegram; ``None`` — фото нет, исключение — сбой."""
+    if not file_id:
+        return None
+    try:
+        file = await app.state.bot.get_file(file_id)
+        if not file.file_path:
+            return None
+        buffer = await app.state.bot.download_file(file.file_path)
+    except Exception as exc:
+        logger.warning("Не удалось скачать аватарку %s", telegram_id, exc_info=True)
+        raise HTTPException(status_code=502, detail="Telegram недоступен.") from exc
+
+    content = buffer.getvalue()
+    if not content:
+        return None
+    if len(content) > _AVATAR_MAX_BYTES:
+        logger.warning(
+            "Аватарка %s слишком большая: %d байт", telegram_id, len(content)
+        )
+        raise HTTPException(status_code=502, detail="Аватарка слишком большая.")
+    return content, sniff_media_type(content)
+
+
+async def _serve_avatar(
+    request: Request,
+    telegram_id: int,
+    token: str,
+    requested_version: str | None,
+) -> Response:
+    """Общая логика версионированного и старого (без версии) URL."""
     real = (
         verify_scoped_token(settings.bot_token, token, "avatar_real", telegram_id)
         == telegram_id
@@ -3574,43 +3667,62 @@ async def api_avatar(telegram_id: int, token: str = ""):
         # должна отдавать его фотографию, даже если старый токен ещё жив.
         raise HTTPException(status_code=404, detail="Аватарка скрыта.")
 
-    cached = _avatar_cache.get(telegram_id)
-    if cached and time.time() - cached[0] < _AVATAR_TTL_SECONDS:
-        return StreamingResponse(
-            iter([cached[1]]),
-            media_type=cached[2],
-            headers={"Cache-Control": "private, max-age=3600"},
-        )
-
-    if not row["avatar_file_id"]:
+    file_id = row["avatar_file_id"]
+    store = _avatar_store()
+    version = avatar_version(settings.bot_token, telegram_id, file_id)
+    if not file_id:
         # Пользователь мог запустить бота до появления кэша аватарок.
+        # Negative cache не даёт дёргать Telegram на каждый <img>.
+        if store.is_missing(telegram_id, version):
+            raise HTTPException(status_code=404, detail="Аватарка недоступна.")
         await bot_module._cache_avatar(app.state.bot, telegram_id)
         row = await db.get_user(telegram_id)
-    if row is None or not row["avatar_file_id"]:
-        raise HTTPException(status_code=404, detail="Аватарка недоступна.")
+        file_id = row["avatar_file_id"] if row is not None else None
+        version = avatar_version(settings.bot_token, telegram_id, file_id)
 
-    tg_bot = app.state.bot
-    try:
-        file = await tg_bot.get_file(row["avatar_file_id"])
-        if not file.file_path:
+    cached = await store.get(telegram_id, version)
+
+    if cached is None:
+        if store.is_missing(telegram_id, version):
             raise HTTPException(status_code=404, detail="Аватарка недоступна.")
-        buffer = await tg_bot.download_file(file.file_path)
-        content = buffer.getvalue()
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.warning("Не удалось скачать аватарку %s", telegram_id, exc_info=True)
-        raise HTTPException(status_code=502, detail="Telegram недоступен.") from exc
+        async with store.single_flight(telegram_id, version):
+            cached = await store.get(telegram_id, version)
+            if cached is None:
+                downloaded = await _download_avatar(telegram_id, file_id)
+                if downloaded is None:
+                    store.mark_missing(telegram_id, version)
+                    raise HTTPException(status_code=404, detail="Аватарка недоступна.")
+                cached = downloaded
+                await store.put(telegram_id, version, *cached)
 
-    media_type = "image/png"
-    if file.file_path.lower().endswith((".jpg", ".jpeg")):
-        media_type = "image/jpeg"
-    _store_avatar(telegram_id, content, media_type)
-    return StreamingResponse(
-        iter([content]),
-        media_type=media_type,
-        headers={"Cache-Control": "private, max-age=3600"},
+    content, media_type = cached
+    # Старый URL без версии и URL с устаревшей версией не кэшируем надолго:
+    # следующая сериализация уже отдаст актуальный версионированный адрес.
+    immutable = requested_version == version
+    return _avatar_response(
+        request, content, media_type, version, immutable=immutable
     )
+
+
+@app.get("/api/avatar/{telegram_id}")
+async def api_avatar_legacy(telegram_id: int, request: Request, token: str = "") -> Response:
+    """Старый URL без версии: работает, но не кэшируется (для открытых страниц)."""
+    return await _serve_avatar(request, telegram_id, token, requested_version=None)
+
+
+@app.get("/api/avatar/{telegram_id}/{version}")
+async def api_avatar(
+    telegram_id: int, version: str, request: Request, token: str = ""
+) -> Response:
+    """
+    Отдаёт аватарку из кэша или Telegram.
+
+    Авторизация — узким токеном из ``avatar_url``: браузерный <img> не может
+    передать заголовок X-Init-Data, а полный initData в URL светить нельзя.
+    Версия в пути меняется только при смене фото, поэтому браузер кэширует
+    картинку между рендерами и после действий тренера.
+    """
+    return await _serve_avatar(request, telegram_id, token, requested_version=version)
 
 
 # --------------------------------------------------------------------------- #
