@@ -273,3 +273,13 @@ def test_coach_always_sees_username() -> None:
     assert "username скрыт" not in coach
     assert "Тренер видит ваш username всегда" in index
     assert "Тренер видит его всегда" in (TEMPLATES.parents[1] / "docs" / "PRIVACY.md").read_text()
+
+
+def test_coach_opens_tournament_room() -> None:
+    coach = (TEMPLATES / "coach.html").read_text()
+
+    # Турнир — переход в squashtabs; код комнаты выдаёт сервер, а не URL.
+    assert 'data-tournament="${t.id}"' in coach
+    assert "if (tournament) { openTournament(tournament); return; }" in coach
+    assert "difp.github.io/squashtabs/#room=" in coach
+    assert "${t.can_manage ? tournamentRow(t) : ''}" in coach

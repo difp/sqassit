@@ -14,6 +14,7 @@ import hmac
 import html
 import logging
 import re
+import secrets
 import time
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
@@ -649,6 +650,14 @@ async def _resolve_user_id(payload: CoachIn | CoauthorIn) -> int | None:
         found = await db.find_user_by_username(payload.username)
         return int(found["telegram_id"]) if found is not None else None
     return None
+
+
+_ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # без похожих 0/O и 1/I
+
+
+def _new_room_code() -> str:
+    """Код комнаты турнира: 8 знаков, около 40 бит энтропии."""
+    return "SQ-" + "".join(secrets.choice(_ROOM_CODE_ALPHABET) for _ in range(8))
 
 
 _TRAINING_BATCH_MAX_DAYS = 92
@@ -1678,6 +1687,34 @@ async def api_coach_participants(training_id: int, coach: Annotated[dict, Depend
         }
     except Exception:
         logger.exception("Ошибка чтения участников")
+        return error_json("Внутренняя ошибка сервера", 500)
+
+
+@app.post("/api/coach/trainings/{training_id}/room")
+async def api_training_room(
+    training_id: int, user: Annotated[dict, Depends(require_coach)]
+):
+    """
+    Код комнаты squashtabs для занятия.
+
+    Код случайный и хранится на сервере: ntfy не авторизует топики, поэтому
+    выводить его из адреса приложения нельзя — кто знает код, тот читает
+    состав и может подменить счёт. Права те же, что на управление занятием.
+    """
+    try:
+        training = await db.get_training(training_id)
+        if training is None or training["deleted_at"]:
+            return error_json("Тренировка не найдена", 404)
+        if not await _can_manage_training(training, user["telegram_id"]):
+            return error_json("Нет прав на это занятие", 403)
+        code = training["room_code"]
+        if not code:
+            await db.set_training_room(training_id, _new_room_code())
+            # Перечитываем: параллельный тап мог записать свой код первым.
+            code = await db.get_training_room(training_id)
+        return {"ok": True, "code": code}
+    except Exception:
+        logger.exception("Ошибка кода комнаты турнира")
         return error_json("Внутренняя ошибка сервера", 500)
 
 

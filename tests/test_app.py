@@ -769,6 +769,58 @@ def _create_training(client, *, day: int, time_str: str, **extra) -> int:
     return response.json()["id"]
 
 
+def test_training_room_code_is_server_side_and_stable(client, monkeypatch):
+    tid = _create_training(client, day=24, time_str="12:00")
+
+    first = client.post(f"/api/coach/trainings/{tid}/room", headers=COACH)
+    assert first.status_code == 200
+    code = first.json()["code"]
+    # Алфавит без 0/O и 1/I: код диктуют вслух и вводят руками.
+    assert re.fullmatch(r"SQ-[A-HJ-NP-Z2-9]{8}", code)
+
+    # Повторный тап отдаёт тот же код, а не создаёт второй.
+    again = client.post(f"/api/coach/trainings/{tid}/room", headers=COACH)
+    assert again.json()["code"] == code
+
+    # В расписании кода нет: он нужен только в панели тренера.
+    for viewer in (PLAYER, COACH):
+        cards = client.get("/api/trainings?days=31", headers=viewer).json()["trainings"]
+        card = next(t for t in cards if t["id"] == tid)
+        assert "room_code" not in card
+
+    # Игрок и чужой тренер код не получают.
+    assert client.post(
+        f"/api/coach/trainings/{tid}/room", headers=PLAYER
+    ).status_code == 403
+    assert client.get("/api/me", headers=COACH2).status_code == 200
+    assert client.post(
+        "/api/coach/coaches", headers=COACH, json={"telegram_id": 777}
+    ).json()["ok"]
+    assert client.post(
+        f"/api/coach/trainings/{tid}/room", headers=COACH2
+    ).status_code == 403
+
+    # Несуществующая и удалённая тренировки.
+    assert client.post(
+        "/api/coach/trainings/999999/room", headers=COACH
+    ).status_code == 404
+    assert client.delete(f"/api/coach/trainings/{tid}", headers=COACH).status_code == 200
+    assert client.post(
+        f"/api/coach/trainings/{tid}/room", headers=COACH
+    ).status_code == 404
+
+    # Сбой записи кода не должен отдавать 200 с пустым кодом.
+    tid2 = _create_training(client, day=25, time_str="12:00")
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(mainmod.db, "set_training_room", boom)
+    failed = client.post(f"/api/coach/trainings/{tid2}/room", headers=COACH)
+    assert failed.status_code == 500
+    assert failed.json()["ok"] is False
+
+
 def test_coach_api_includes_waitlist_count(client):
     tid = _create_training(client, day=15, time_str="10:00", capacity=1)
     client.post(f"/api/trainings/{tid}/book", headers=PLAYER)

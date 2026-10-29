@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS trainings (
     deleted_at            INTEGER,                    -- мягкое удаление (корзина)
     deleted_by            INTEGER,
     created_by            INTEGER,
+    room_code             TEXT,                       -- код комнаты турнира (squashtabs)
     created_at            INTEGER NOT NULL
 );
 
@@ -242,6 +243,7 @@ async def _migrate() -> None:
         ("trainings", "deleted_at"): "ALTER TABLE trainings ADD COLUMN deleted_at INTEGER",
         ("trainings", "deleted_by"): "ALTER TABLE trainings ADD COLUMN deleted_by INTEGER",
         ("trainings", "level"): "ALTER TABLE trainings ADD COLUMN level TEXT NOT NULL DEFAULT ''",
+        ("trainings", "room_code"): "ALTER TABLE trainings ADD COLUMN room_code TEXT",
         ("users", "bio"): "ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''",
         ("users", "links"): "ALTER TABLE users ADD COLUMN links TEXT NOT NULL DEFAULT '[]'",
         ("users", "about"): "ALTER TABLE users ADD COLUMN about TEXT NOT NULL DEFAULT ''",
@@ -899,6 +901,22 @@ async def update_reminder_settings(
 
 async def get_training(training_id: int) -> aiosqlite.Row | None:
     return await _fetchone("SELECT * FROM trainings WHERE id = ?", (training_id,))
+
+
+async def get_training_room(training_id: int) -> str | None:
+    """Код комнаты турнира для занятия (None, если ещё не создавали)."""
+    row = await _fetchone(
+        "SELECT room_code FROM trainings WHERE id = ?", (training_id,)
+    )
+    return row["room_code"] if row is not None else None
+
+
+async def set_training_room(training_id: int, code: str) -> None:
+    """Записывает код, только если его ещё нет: два тапа не создадут два кода."""
+    await _execute_rowcount(
+        "UPDATE trainings SET room_code = ? WHERE id = ? AND room_code IS NULL",
+        (code, training_id),
+    )
 
 
 async def get_training_with_count(training_id: int) -> aiosqlite.Row | None:

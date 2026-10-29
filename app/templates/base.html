@@ -403,6 +403,10 @@
     .list-action svg { width: 18px; height: 18px; flex: none; }
     .list-action__chevron { margin-inline-start: auto; color: var(--text-3); }
     .list-action--danger { color: var(--danger); }
+    /* Строка-переход в другое приложение: подпись в две строки. */
+    .tournament-row { margin-top: 12px; }
+    .list-action__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .list-action__hint { font-size: 12px; font-weight: 400; color: var(--text-3); }
     .list-action:active { background: var(--surface-2); }
 
     /* Плитки быстрых действий тренера: иконка + подпись под ней. */

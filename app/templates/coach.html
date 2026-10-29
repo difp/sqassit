@@ -778,6 +778,28 @@ function reminderEditor(t) {
   </details>`;
 }
 
+// Турнир — отдельной строкой: это переход в другое приложение, а не
+// действие над занятием, поэтому не плитка среди «Удалить».
+function tournamentRow(t) {
+  return `
+  <button type="button" class="list-action tournament-row" data-tournament="${t.id}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M8 4h8v4.5a4 4 0 0 1-8 0V4Z"/>
+      <path d="M8 5H5.5v1.5A3.5 3.5 0 0 0 9 10M16 5h2.5v1.5A3.5 3.5 0 0 1 15 10"/>
+      <path d="M12 12.5V16M9.5 20h5M10.5 20v-2.5h3V20"/>
+    </svg>
+    <span class="list-action__text">
+      <span>Турнир</span>
+      <span class="list-action__hint">сетка и судейство</span>
+    </span>
+    <svg class="list-action__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M9 18l6-6-6-6"/>
+    </svg>
+  </button>`;
+}
+
 // Плитка быстрого действия: иконка и подпись. Подпись важна — по одной
 // иконке тренер не всегда понимает, что именно произойдёт.
 function quickBtn(attr, label, path, danger) {
@@ -815,6 +837,7 @@ function activeRow(t) {
       <span>${wait ? 'Очередь: ' + wait : 'Очередь пуста'}</span>
     </div>
     <div class="quick-actions">${actions}</div>
+    ${t.can_manage ? tournamentRow(t) : ''}
     ${t.is_owner ? reminderEditor(t) : ''}
     <details class="disclosure" data-pid="${t.id}" open>
       <summary>Участники${pending ? ` · заявок ${pending}` : ''}</summary>
@@ -968,6 +991,7 @@ document.getElementById('list').addEventListener('click', async (ev) => {
   const xfer = ev.target.closest('[data-xfer]')?.getAttribute('data-xfer');
   const coauthors = ev.target.closest('[data-coauthors]')?.getAttribute('data-coauthors');
   const book = ev.target.closest('[data-book]')?.getAttribute('data-book');
+  const tournament = ev.target.closest('[data-tournament]')?.getAttribute('data-tournament');
   const row = ev.target.closest('.p-row');
 
   if (cal) {
@@ -978,6 +1002,7 @@ document.getElementById('list').addEventListener('click', async (ev) => {
   if (xfer) { openTransfer(xfer); return; }
   if (coauthors) { openCoauthors(coauthors); return; }
   if (book) { openBook(book); return; }
+  if (tournament) { openTournament(tournament); return; }
 
   try {
     if (del) {
@@ -1257,6 +1282,24 @@ bookList.addEventListener('click', (ev) => {
   }
   addBookPlayer(parseInt(btn.getAttribute('data-book-user'), 10), btn);
 });
+
+// ===== Турнир (squashtabs) =====
+// Код комнаты выдаёт сервер и хранит у занятия: из адреса приложения его
+// выводить нельзя — публичный топик ntfy знает любой, кому известен код.
+async function openTournament(id) {
+  const btn = document.querySelector(`[data-tournament="${id}"]`);
+  if (btn) btn.disabled = true;
+  try {
+    const d = await api(`/api/coach/trainings/${id}/room`, 'POST');
+    haptic('light');
+    openExternal('https://difp.github.io/squashtabs/#room=' + encodeURIComponent(d.code));
+  } catch (e) {
+    hapticNotify('error');
+    toast(e.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
 
 // ===== Напоминание =====
 function readReminder(id) {
