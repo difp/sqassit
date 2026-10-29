@@ -770,43 +770,53 @@ def _create_training(client, *, day: int, time_str: str, **extra) -> int:
 
 
 def test_training_room_code_is_server_side_and_stable(client, monkeypatch):
-    tid = _create_training(client, day=24, time_str="12:00")
+    tid = _create_training(client, day=24, time_str="12:00", capacity=1)
 
-    first = client.post(f"/api/coach/trainings/{tid}/room", headers=COACH)
+    first = client.post(f"/api/trainings/{tid}/room", headers=COACH)
     assert first.status_code == 200
     code = first.json()["code"]
     # Алфавит без 0/O и 1/I: код диктуют вслух и вводят руками.
     assert re.fullmatch(r"SQ-[A-HJ-NP-Z2-9]{8}", code)
 
     # Повторный тап отдаёт тот же код, а не создаёт второй.
-    again = client.post(f"/api/coach/trainings/{tid}/room", headers=COACH)
+    again = client.post(f"/api/trainings/{tid}/room", headers=COACH)
     assert again.json()["code"] == code
 
-    # В расписании кода нет: он нужен только в панели тренера.
+    # Записавшийся и даже стоящий в очереди открывают ту же комнату.
+    assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER).status_code == 200
+    assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER2).status_code == 200
+    for viewer in (PLAYER, PLAYER2):
+        own = client.post(f"/api/trainings/{tid}/room", headers=viewer)
+        assert own.status_code == 200
+        assert own.json()["code"] == code
+
+    # В расписании кода нет: он нужен только участникам.
     for viewer in (PLAYER, COACH):
         cards = client.get("/api/trainings?days=31", headers=viewer).json()["trainings"]
         card = next(t for t in cards if t["id"] == tid)
         assert "room_code" not in card
 
-    # Игрок и чужой тренер код не получают.
+    # Не записанный игрок и чужой тренер код не получают.
+    outsider = {"X-Init-Data": _init({"id": 558, "first_name": "Без записи"})}
+    assert client.get("/api/me", headers=outsider).status_code == 200
     assert client.post(
-        f"/api/coach/trainings/{tid}/room", headers=PLAYER
+        f"/api/trainings/{tid}/room", headers=outsider
     ).status_code == 403
     assert client.get("/api/me", headers=COACH2).status_code == 200
     assert client.post(
         "/api/coach/coaches", headers=COACH, json={"telegram_id": 777}
     ).json()["ok"]
     assert client.post(
-        f"/api/coach/trainings/{tid}/room", headers=COACH2
+        f"/api/trainings/{tid}/room", headers=COACH2
     ).status_code == 403
 
     # Несуществующая и удалённая тренировки.
     assert client.post(
-        "/api/coach/trainings/999999/room", headers=COACH
+        "/api/trainings/999999/room", headers=COACH
     ).status_code == 404
     assert client.delete(f"/api/coach/trainings/{tid}", headers=COACH).status_code == 200
     assert client.post(
-        f"/api/coach/trainings/{tid}/room", headers=COACH
+        f"/api/trainings/{tid}/room", headers=COACH
     ).status_code == 404
 
     # Сбой записи кода не должен отдавать 200 с пустым кодом.
@@ -816,9 +826,54 @@ def test_training_room_code_is_server_side_and_stable(client, monkeypatch):
         raise RuntimeError("db down")
 
     monkeypatch.setattr(mainmod.db, "set_training_room", boom)
-    failed = client.post(f"/api/coach/trainings/{tid2}/room", headers=COACH)
+    failed = client.post(f"/api/trainings/{tid2}/room", headers=COACH)
     assert failed.status_code == 500
     assert failed.json()["ok"] is False
+
+
+def test_match_room_code_for_participants(client, monkeypatch):
+    from datetime import datetime, timedelta
+
+    day = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
+    created = client.post(
+        "/api/matches",
+        headers=PLAYER,
+        json={"date": day, "time": "19:00", "title": "Турнирный матч", "max_players": 5},
+    )
+    assert created.status_code == 200, created.text
+    mid = created.json()["id"]
+    assert client.post(f"/api/matches/{mid}/join", headers=PLAYER2).status_code == 200
+
+    first = client.post(f"/api/matches/{mid}/room", headers=PLAYER)
+    assert first.status_code == 200
+    code = first.json()["code"]
+    assert re.fullmatch(r"SQ-[A-HJ-NP-Z2-9]{8}", code)
+    # Участник получает ту же комнату, что и организатор.
+    assert client.post(f"/api/matches/{mid}/room", headers=PLAYER2).json()["code"] == code
+    # Код не утекает в ленту матчей.
+    feed = client.get("/api/matches?days=30", headers=PLAYER).json()["matches"]
+    assert "room_code" not in next(m for m in feed if m["id"] == mid)
+
+    outsider = {"X-Init-Data": _init({"id": 559, "first_name": "Мимо"})}
+    assert client.get("/api/me", headers=outsider).status_code == 200
+    assert client.post(f"/api/matches/{mid}/room", headers=outsider).status_code == 403
+    assert client.post("/api/matches/999999/room", headers=PLAYER).status_code == 404
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    mid2 = client.post(
+        "/api/matches",
+        headers=PLAYER,
+        json={"date": day, "time": "21:00", "title": "Второй", "max_players": 4},
+    ).json()["id"]
+    monkeypatch.setattr(mainmod.db, "set_match_room", boom)
+    failed = client.post(f"/api/matches/{mid2}/room", headers=PLAYER)
+    assert failed.status_code == 500
+    assert failed.json()["ok"] is False
+
+    assert client.delete(f"/api/matches/{mid}", headers=PLAYER).status_code == 200
+    assert client.post(f"/api/matches/{mid}/room", headers=PLAYER).status_code == 404
 
 
 def test_coach_api_includes_waitlist_count(client):
@@ -1045,6 +1100,19 @@ def test_telegram_webapp_script_is_served_locally(client):
     assert script.status_code == 200
     assert "WebView" in script.text[:200]
     assert "max-age=" in script.headers["cache-control"]
+
+
+def test_tabs_page_is_served_from_own_origin(client):
+    response = client.get("/tabs")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "Сквош · сетка и судейство" in response.text
+    # Своя CSP: ntfy нужен для синхронизации, встраивать страницу можно
+    # только своему origin — иначе iframe в мини-приложении не откроется.
+    csp = response.headers["content-security-policy"]
+    assert "connect-src 'self' https://ntfy.sh" in csp
+    assert "frame-ancestors 'self'" in csp
+    assert "frame-ancestors https://telegram.org" not in csp
 
 
 def test_player_privacy_about_and_animal_participant(client):

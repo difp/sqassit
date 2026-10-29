@@ -25,7 +25,7 @@ from urllib.parse import urlencode
 import aiosqlite
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -750,6 +750,25 @@ app = FastAPI(
 )
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
+# Сборка squashtabs лежит в app/static/squashtabs и отдаётся с нашего origin:
+# турнир открывается внутри приложения, без перехода на сторонний сайт.
+TABS_HTML = BASE_DIR / "static" / "squashtabs" / "index.html"
+
+# Своя CSP: странице нужен ntfy.sh для синхронизации, а встраивать её
+# разрешено только нам (frame-ancestors 'self'), не Telegram-доменам.
+_TABS_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "media-src 'self' data: blob:; "
+    "connect-src 'self' https://ntfy.sh; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "form-action 'self'; "
+    "frame-ancestors 'self'"
+)
+
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
@@ -797,6 +816,16 @@ async def page_player(request: Request):
 async def page_coach(request: Request):
     return templates.TemplateResponse(
         request, "coach.html", {"allow_dev_init_data": settings.allow_dev_init_data}
+    )
+
+
+@app.get("/tabs")
+async def page_tabs():
+    """Турнир: статическая сборка squashtabs с нашего origin, для iframe."""
+    return FileResponse(
+        TABS_HTML,
+        media_type="text/html",
+        headers={"Content-Security-Policy": _TABS_CSP},
     )
 
 
@@ -1086,6 +1115,42 @@ async def api_trainings(user: Annotated[dict, Depends(current_user)], days: int 
     return {"ok": True, "trainings": result}
 
 
+@app.post("/api/trainings/{training_id}/room")
+async def api_training_room(
+    training_id: int, user: Annotated[dict, Depends(current_user)]
+):
+    """
+    Код комнаты squashtabs для занятия.
+
+    Турнир открывает участник записи (записан, в очереди или с заявкой) либо
+    тренер занятия. Код случайный и хранится на сервере: ntfy не авторизует
+    топики, поэтому выводить его из адреса приложения нельзя — кто знает код,
+    тот читает состав и может подменить счёт.
+    """
+    try:
+        training = await db.get_training(training_id)
+        if training is None or training["deleted_at"]:
+            return error_json("Тренировка не найдена", 404)
+        booking = await db.get_booking(training_id, user["telegram_id"])
+        is_participant = (
+            booking is not None
+            and booking["status"] in {"booked", "waitlist", "pending"}
+        )
+        if not is_participant and not await _can_manage_training(
+            training, user["telegram_id"]
+        ):
+            return error_json("Турнир доступен участникам занятия", 403)
+        code = training["room_code"]
+        if not code:
+            await db.set_training_room(training_id, _new_room_code())
+            # Перечитываем: параллельный тап мог записать свой код первым.
+            code = await db.get_training_room(training_id)
+        return {"ok": True, "code": code}
+    except Exception:
+        logger.exception("Ошибка кода комнаты турнира")
+        return error_json("Внутренняя ошибка сервера", 500)
+
+
 @app.post("/api/trainings/{training_id}/book")
 async def api_book(training_id: int, user: Annotated[dict, Depends(current_user)]):
     _booking_limiter.check(str(user["telegram_id"]))
@@ -1277,6 +1342,34 @@ async def api_create_match(
         raise
     except Exception:
         logger.exception("Ошибка создания матча")
+        return error_json("Внутренняя ошибка сервера", 500)
+
+
+@app.post("/api/matches/{match_id}/room")
+async def api_match_room(
+    match_id: int, user: Annotated[dict, Depends(current_user)]
+):
+    """Код комнаты squashtabs для матча: участникам и организаторам."""
+    try:
+        match = await db.get_match(match_id)
+        if match is None or match["deleted_at"]:
+            return error_json("Матч не найден", 404)
+        players = await db.get_match_players(match_id)
+        is_participant = any(
+            p["telegram_id"] == user["telegram_id"] and p["status"] == "booked"
+            for p in players
+        )
+        if not is_participant and not await _can_manage_match(
+            match, user["telegram_id"]
+        ):
+            return error_json("Турнир доступен участникам матча", 403)
+        code = match["room_code"]
+        if not code:
+            await db.set_match_room(match_id, _new_room_code())
+            code = await db.get_match_room(match_id)
+        return {"ok": True, "code": code}
+    except Exception:
+        logger.exception("Ошибка кода комнаты матча")
         return error_json("Внутренняя ошибка сервера", 500)
 
 
@@ -1687,34 +1780,6 @@ async def api_coach_participants(training_id: int, coach: Annotated[dict, Depend
         }
     except Exception:
         logger.exception("Ошибка чтения участников")
-        return error_json("Внутренняя ошибка сервера", 500)
-
-
-@app.post("/api/coach/trainings/{training_id}/room")
-async def api_training_room(
-    training_id: int, user: Annotated[dict, Depends(require_coach)]
-):
-    """
-    Код комнаты squashtabs для занятия.
-
-    Код случайный и хранится на сервере: ntfy не авторизует топики, поэтому
-    выводить его из адреса приложения нельзя — кто знает код, тот читает
-    состав и может подменить счёт. Права те же, что на управление занятием.
-    """
-    try:
-        training = await db.get_training(training_id)
-        if training is None or training["deleted_at"]:
-            return error_json("Тренировка не найдена", 404)
-        if not await _can_manage_training(training, user["telegram_id"]):
-            return error_json("Нет прав на это занятие", 403)
-        code = training["room_code"]
-        if not code:
-            await db.set_training_room(training_id, _new_room_code())
-            # Перечитываем: параллельный тап мог записать свой код первым.
-            code = await db.get_training_room(training_id)
-        return {"ok": True, "code": code}
-    except Exception:
-        logger.exception("Ошибка кода комнаты турнира")
         return error_json("Внутренняя ошибка сервера", 500)
 
 

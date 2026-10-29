@@ -1,0 +1,3458 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Сквош · сетка и судейство</title>
+<meta name="theme-color" content="#0b0b0b">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='11.6' fill='%23111111' stroke='%23ffe14d' stroke-width='2.2'/%3E%3Ccircle cx='12.7' cy='13.6' r='2.3' fill='%23ffe14d'/%3E%3Ccircle cx='19.3' cy='18.4' r='2.3' fill='%23ffe14d'/%3E%3C/svg%3E">
+<style id="pageRule"></style>
+<style>
+  :root{
+    /* палитра: чёрный корт и жёлтый мяч (профессиональный мяч — чёрный с двумя жёлтыми точками) */
+    --bg:#0b0b0b; --panel:#131313; --panel2:#1a1a1a; --panel3:#222222; --line:#2a2a2a;
+    --text:#f0efe9; --muted:#9c9a91; --accent:#ffe14d; --accent2:#ffd60a;
+    --danger:#ff9f5a; --warn:#ffd60a; --ink:#12120a;
+    /* зелёный — только для актуального: связь, текущая волна, подтверждённые результаты */
+    --live:#38e07b; --live-ink:#08130c;
+    /* красный — матч идёт прямо сейчас */
+    --on-air:#ff5252;
+    /* типографика: одна шкала на всё приложение */
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Ubuntu,sans-serif;
+    --fs-cap:11.5px;   /* подписи заглавными */
+    --fs-xs:12.5px;    /* пояснения */
+    --fs-sm:13.5px;    /* вторичный текст */
+    --fs-md:15px;      /* основной */
+    --fs-lg:17px;      /* заголовок блока */
+    --fs-xl:22px;      /* заголовок страницы, имена игроков */
+    /* ритм и радиусы */
+    --sp1:4px; --sp2:8px; --sp3:12px; --sp4:16px; --sp5:24px;
+    --r-sm:8px; --r-md:10px; --r-lg:14px;
+    --pad:16px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:var(--fs-md)/1.45 var(--font)}
+  .num,.sc,.time,input[type=number],td.num,.steps input{font-variant-numeric:tabular-nums}
+  .wrap{max-width:1000px;margin:0 auto;padding:var(--sp5) var(--sp4) 72px}
+  /* шапка */
+  header.top{display:flex;align-items:center;gap:var(--sp3);flex-wrap:wrap;margin-bottom:var(--sp1)}
+  h1{font-size:var(--fs-xl);line-height:1.25;margin:0;letter-spacing:.2px}
+  .logo{width:30px;height:30px;flex:none;display:block}
+  .logo svg{display:block;width:100%;height:100%}
+  .sub{color:var(--muted);font-size:var(--fs-xs);margin:0 0 var(--sp4)}
+  .spacer{flex:1}
+  .badge{font-size:var(--fs-xs);padding:5px 10px;border-radius:999px;border:1px solid var(--line);
+    background:var(--panel2);color:var(--muted);white-space:nowrap}
+  .badge.on{color:var(--live-ink);background:var(--live);border-color:var(--live);font-weight:600}
+  .badge.off{color:var(--accent);border-color:#4a4020}
+  /* карточки и заголовки */
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--pad);margin-bottom:var(--sp4)}
+  h2{font-size:var(--fs-cap);text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
+    font-weight:600;margin:0 0 var(--sp3)}
+  .card h2+p{margin-top:0}
+  label,.lbl{display:block;font-size:var(--fs-cap);text-transform:uppercase;letter-spacing:.07em;
+    color:var(--muted);font-weight:600;margin-bottom:6px}
+  /* поля: ровная сетка; число столбцов задаётся через --cols */
+  .fields{display:grid;grid-template-columns:repeat(var(--cols,5),minmax(0,1fr));
+    gap:var(--sp3);align-items:end}
+  .fields .wide{grid-column:span 2}
+  .player-add{display:flex;flex-wrap:wrap;gap:var(--sp2);align-items:flex-end}
+  .player-add .grow{flex:1 1 240px}
+  .actions-row{display:flex;gap:var(--sp2);flex-wrap:wrap;margin-top:var(--sp3)}
+  input,select{background:var(--panel2);border:1px solid var(--line);color:var(--text);
+    border-radius:var(--r-md);padding:0 var(--sp3);height:42px;font:var(--fs-md)/1 var(--font);outline:none;width:100%}
+  select{padding-right:26px;text-overflow:ellipsis}
+  input::placeholder{color:#6a675e}
+  /* у числовых полей убираем стрелки, чтобы цифра стояла ровно по центру */
+  input[type=number]{-moz-appearance:textfield;appearance:textfield}
+  input[type=number]::-webkit-outer-spin-button,
+  input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;appearance:none;margin:0}
+  input:focus,select:focus{border-color:var(--accent2)}
+  input:disabled,select:disabled,button:disabled{opacity:.45;cursor:not-allowed}
+  /* кнопки */
+  button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:var(--r-md);
+    height:42px;padding:0 var(--sp4);font:600 var(--fs-md)/1 var(--font);cursor:pointer;transition:.15s;
+    white-space:nowrap}
+  button:hover:not(:disabled){border-color:var(--muted)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:var(--ink)}
+  button.primary:hover:not(:disabled){filter:brightness(1.08)}
+  button.ghost{background:transparent;font-weight:400}
+  button.danger{color:var(--danger);border-color:#463020}
+  button.mini{height:32px;padding:0 10px;font-size:var(--fs-xs);border-radius:var(--r-sm)}
+  /* игроки */
+  .chips{display:flex;flex-wrap:wrap;gap:var(--sp2);margin-top:var(--sp3)}
+  .chip{display:flex;align-items:center;gap:var(--sp2);background:var(--panel2);border:1px solid var(--line);
+    border-radius:999px;padding:5px 6px 5px 14px;font-size:var(--fs-sm)}
+  .chip b{font-weight:600}
+  .chip button{background:none;border:none;height:auto;color:var(--muted);padding:0 4px;
+    font-size:16px;line-height:1;cursor:pointer}
+  .chip button:hover:not(:disabled){color:var(--danger)}
+  .chip button[data-edit]{font-size:13px}
+  .chip button[data-edit]:hover:not(:disabled){color:var(--accent)}
+  .chip-hist{font-size:var(--fs-cap);color:var(--live);cursor:help;white-space:nowrap}
+  textarea{background:var(--panel2);border:1px solid var(--line);color:var(--text);
+    border-radius:var(--r-md);padding:10px var(--sp3);font:var(--fs-md)/1.45 var(--font);
+    width:100%;min-height:78px;resize:vertical;outline:none}
+  textarea:focus{border-color:var(--accent2)}
+  textarea::placeholder{color:#6a675e}
+  .paste{margin-top:var(--sp3)}
+  .paste .actions-row{margin-top:var(--sp2)}
+  .paste .note{margin-top:var(--sp2)}
+  .paste .note b{color:var(--text)}
+  .empty{color:var(--muted);font-size:var(--fs-sm);margin:var(--sp3) 0 0}
+  .explain{color:var(--muted);font-size:var(--fs-xs);line-height:1.55;margin:var(--sp3) 0 0;
+    padding-left:10px;border-left:2px solid var(--line)}
+  .explain b{color:var(--text);font-weight:600}
+  .stale{display:flex;gap:var(--sp2);align-items:center;margin:var(--sp3) 0 0;font-size:var(--fs-xs);color:var(--accent)}
+  .stale::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}
+  /* вкладки */
+  .tabs{display:flex;gap:var(--sp1);margin-bottom:var(--sp4);background:var(--panel);
+    border:1px solid var(--line);border-radius:var(--r-md);padding:5px}
+  .tabs button{flex:1 1 0;border:none;background:transparent;color:var(--muted);height:38px;padding:0 var(--sp2)}
+  .tabs button.active{background:var(--panel2);color:var(--text);box-shadow:0 0 0 1px var(--line) inset}
+  /* сводка: две ровные строки — сетка и время */
+  .summary{display:flex;flex-direction:column;gap:6px;margin-top:var(--sp3)}
+  .sum-row{display:flex;flex-wrap:wrap;gap:2px var(--sp4);font-size:var(--fs-sm);color:var(--muted)}
+  .sum-row b{color:var(--text);font-weight:600}
+  .sum-row.time b{color:var(--accent)}
+  .sum-row.hint{font-size:var(--fs-xs)}
+  .sum-row .air-sum b{color:var(--on-air)}
+  .alert{display:flex;gap:var(--sp2);align-items:flex-start;margin-top:var(--sp3);padding:10px 14px;
+    border-radius:var(--r-md);background:var(--panel2);border:1px solid var(--line);
+    border-left:3px solid var(--accent);color:var(--muted);font-size:var(--fs-xs)}
+  .alert b{color:var(--accent)}
+  .banner{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--accent);
+    color:var(--muted);border-radius:var(--r-md);padding:10px 14px;font-size:var(--fs-xs);margin-bottom:var(--sp4)}
+  .banner b{color:var(--live)}
+  /* сетка */
+  .round{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);
+    margin-bottom:var(--sp3);overflow:hidden}
+  .round.drop{outline:2px dashed var(--accent);outline-offset:-3px}
+  .court .grip{color:var(--line);margin-right:6px;cursor:grab;font-size:13px}
+  .court:hover .grip{color:var(--muted)}
+  .court.dragging{opacity:.4}
+  .court.history{opacity:.55}
+  .court.history .hist{font-size:var(--fs-sm);font-weight:600;color:var(--muted)}
+  /* матч, который идёт прямо сейчас */
+  .court.on-air{box-shadow:inset 3px 0 0 var(--on-air)}
+  .jitem.on-air{box-shadow:inset 3px 0 0 var(--on-air)}
+  .air{display:inline-flex;align-items:center;gap:5px;font-size:var(--fs-cap);
+    font-weight:600;color:var(--on-air);letter-spacing:.02em}
+  .air::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--on-air);
+    animation:pulse 1.8s ease-in-out infinite}
+  .badge.air-badge{color:var(--on-air);border-color:#4a2626;background:#241114;font-weight:600}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.2}}
+  @media (prefers-reduced-motion:reduce){ .air::before{animation:none} }
+  .drag-ghost{position:fixed;z-index:60;pointer-events:none;opacity:.9;
+    background:var(--panel2);border:1px solid var(--accent);border-radius:var(--r-md);padding:10px var(--sp3);
+    box-shadow:0 12px 30px rgba(0,0,0,.5)}
+  .drag-ghost .score,.drag-ghost .court-title{display:none}
+  .round>header{display:flex;justify-content:space-between;align-items:baseline;gap:var(--sp3);
+    padding:11px var(--pad);background:var(--panel2)}
+  .round>header h3{margin:0;font-size:var(--fs-lg);font-weight:600;display:flex;align-items:baseline;gap:var(--sp3)}
+  .round>header h3 .idx{font-size:var(--fs-xs);font-weight:600;color:var(--muted);min-width:34px}
+  .round>header .meta{display:flex;gap:var(--sp3);align-items:baseline;flex-wrap:wrap;justify-content:flex-end}
+  .time{font-size:var(--fs-xs);color:var(--accent);white-space:nowrap}
+  .rest{color:var(--muted);font-size:var(--fs-xs)}
+  .court{padding:var(--sp3) var(--pad);border-top:1px solid var(--line)}
+  .court-title{font-size:var(--fs-cap);color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:var(--sp2);
+    display:flex;align-items:center;gap:6px}
+  .game{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:var(--sp3)}
+  .team{background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-md);
+    padding:10px var(--sp3);font-weight:600;min-height:42px;display:flex;align-items:center}
+  .team.win{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+  .vs{color:var(--muted);font-size:var(--fs-cap);font-weight:700}
+  .score{display:flex;gap:6px;justify-content:center;margin-top:var(--sp2)}
+  .score input{width:60px;text-align:center;height:34px;padding:0;font-size:var(--fs-md)}
+  .fin{margin-top:6px;font-size:var(--fs-cap);color:var(--live)}
+  /* таблица */
+  table{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-size:var(--fs-cap);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+  td.num,th.num{text-align:center;width:56px}
+  td:first-child,th:first-child{width:34px;color:var(--muted)}
+  /* судейство */
+  .courttabs{display:flex;gap:var(--sp2);flex-wrap:wrap;margin-bottom:var(--sp3)}
+  .courttabs button.active{background:var(--accent);border-color:var(--accent);color:var(--ink);font-weight:700}
+  .jhead{display:flex;justify-content:space-between;align-items:baseline;gap:var(--sp3);
+    flex-wrap:wrap;margin-bottom:var(--sp3)}
+  .jhead .rnd{font-size:var(--fs-sm);color:var(--muted)}
+  .jhead .rnd b{color:var(--live);font-size:var(--fs-md)}
+  .jhead .time{color:var(--live)}
+  .jcard{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);
+    padding:var(--sp2) var(--sp4) var(--sp3)}
+  /* строка игрока: мяч подачи, имя, счёт */
+  .crow{display:grid;grid-template-columns:26px 1fr auto;align-items:center;gap:var(--sp3);padding:9px 0}
+  .crow+.crow{border-top:1px solid var(--line)}
+  .crow .ball{width:26px;height:26px;border-radius:50%;border:1px solid var(--line);
+    background:var(--panel2);padding:0;display:grid;place-items:center;flex:none}
+  .crow .ball i{width:9px;height:9px;border-radius:50%;background:var(--line);display:block}
+  .crow.serving .ball{border-color:var(--live);background:#16281d}
+  .crow.serving .ball i{background:var(--live)}
+  .crow .who{min-width:0;display:flex;align-items:baseline;gap:var(--sp2);flex-wrap:wrap}
+  .crow .nm{font-size:var(--fs-lg);font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .crow.win .nm{color:var(--accent)}
+  .crow .tag{font-size:var(--fs-cap);white-space:nowrap}
+  .crow .tag.srv{color:var(--live)}
+  .crow .tag.win{color:var(--accent)}
+  .crow .tag.flip{color:var(--muted)}
+  .crow .tag.flip button{background:none;border:none;height:auto;padding:0;color:var(--muted);font-size:13px;line-height:1}
+  .crow .tag.flip button:hover{color:var(--text)}
+  .crow .boxbtn{height:24px;padding:0 8px;margin-left:4px;font-size:var(--fs-xs);
+    border-radius:var(--r-sm);background:var(--panel3);color:var(--muted)}
+  .crow .boxbtn:hover:not(:disabled){color:var(--text);border-color:var(--accent)}
+  .crow .steps{display:flex;gap:6px;align-items:center;flex:none}
+  .crow .steps button{width:42px;height:42px;padding:0;font-size:var(--fs-xl);border-radius:var(--r-md);flex:none}
+  .crow .steps input{width:64px;height:42px;text-align:center;font-size:20px;font-weight:700;padding:0}
+  .jactions{display:flex;gap:var(--sp2);flex-wrap:wrap;align-items:center;margin-top:var(--sp3)}
+  .jactions .badge{margin-left:auto}
+  /* таймер матча */
+  .timer{display:flex;align-items:center;gap:var(--sp2);flex-wrap:wrap;
+    padding-bottom:var(--sp3);margin-bottom:var(--sp2);border-bottom:1px solid var(--line)}
+  .t-disp{font-variant-numeric:tabular-nums;font-size:var(--fs-xl);font-weight:700;letter-spacing:.5px;
+    min-width:86px}
+  .t-disp.hot{color:var(--on-air)}
+  .timer.running .t-disp{color:var(--accent)}
+  .timer.running .t-disp.hot{color:var(--on-air)}
+  .timer .sound-lbl{font-size:var(--fs-cap);text-transform:uppercase;letter-spacing:.06em;
+    color:var(--muted);font-weight:600}
+  .timer select{height:32px;width:auto;padding:0 24px 0 var(--sp2);font-size:var(--fs-xs);background:var(--panel2)}
+  body.bell .jcard{animation:bell .35s 4}
+  @keyframes bell{0%,100%{border-color:var(--line)}50%{border-color:var(--on-air)}}
+  @media (prefers-reduced-motion:reduce){ body.bell .jcard{animation:none;border-color:var(--on-air)} }
+  details{margin-top:var(--sp3)}
+  summary{cursor:pointer;font-size:var(--fs-xs);color:var(--muted)}
+  .jlist{margin-top:var(--sp5)}
+  .jitem{display:flex;justify-content:space-between;gap:var(--sp3);align-items:center;
+    padding:9px var(--sp3);border:1px solid var(--line);border-radius:var(--r-md);
+    background:var(--panel2);margin-bottom:var(--sp2);cursor:pointer;font-size:var(--fs-sm)}
+  .jitem:hover{border-color:var(--muted)}
+  .jitem.now{border-color:var(--live);background:#131a16}
+  .jitem .l{display:flex;gap:var(--sp2);align-items:baseline;min-width:0}
+  .jitem .tag{font-size:var(--fs-cap);color:var(--muted);flex:none;width:46px;font-variant-numeric:tabular-nums}
+  .jitem.now .tag{color:var(--live)}
+  .jitem .sc{color:var(--muted);font-weight:600;flex:none}
+  .jitem .sc.done{color:var(--live)}
+  .jitem .r{display:flex;gap:var(--sp3);align-items:center;flex:none}
+  .jitem .who{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* подсказка «кто следующий» */
+  .suggest{margin-top:var(--sp3);padding:var(--sp3) var(--sp4);background:var(--panel);
+    border:1px solid var(--line);border-left:3px solid var(--live);border-radius:var(--r-lg);
+    display:flex;flex-direction:column;gap:var(--sp2)}
+  .suggest .sug-head{font-size:var(--fs-cap);text-transform:uppercase;letter-spacing:.07em;
+    color:var(--muted);font-weight:600}
+  .suggest .sug-pair{font-size:var(--fs-lg);font-weight:700}
+  .suggest .sug-note{font-size:var(--fs-xs);color:var(--live)}
+  .suggest .jactions{margin-top:0}
+  /* судейские решения и история */
+  .decide{display:flex;gap:var(--sp2);flex-wrap:wrap;align-items:center;margin-top:var(--sp3);
+    padding-top:var(--sp3);border-top:1px solid var(--line)}
+  .decide-cap{font-size:var(--fs-cap);text-transform:uppercase;letter-spacing:.06em;
+    color:var(--muted);font-weight:600;margin-right:var(--sp1)}
+  .finish summary,.history summary{font-size:var(--fs-xs);color:var(--muted)}
+  .finish .jactions,.history .jactions{margin-top:var(--sp2)}
+  select.mini{height:32px;padding:0 var(--sp2);font-size:var(--fs-xs);width:auto}
+  .hist-list{display:flex;flex-direction:column;margin-top:var(--sp2);
+    max-height:260px;overflow:auto}
+  .hrow{display:grid;grid-template-columns:64px 1fr auto;gap:var(--sp3);align-items:baseline;
+    padding:5px 0;border-bottom:1px solid var(--line);font-size:var(--fs-xs)}
+  .hrow:last-child{border-bottom:none}
+  .hsc{font-variant-numeric:tabular-nums;font-weight:700;color:var(--text)}
+  .hwho{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hkind{color:var(--muted);white-space:nowrap}
+  /* общий доступ */
+  .peers{display:flex;gap:var(--sp2);flex-wrap:wrap;margin-top:var(--sp3)}
+  .share-link{display:flex;gap:var(--sp2);flex-wrap:wrap;align-items:flex-end;margin-top:var(--sp3)}
+  .share-link .grow{flex:1 1 240px}
+  .share-link input{font-size:var(--fs-xs);color:var(--accent2)}
+  /* QR-код для входа в комнату */
+  .qrbox{display:flex;gap:var(--sp4);align-items:center;flex-wrap:wrap;margin-top:var(--sp4);
+    padding:var(--sp3);background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-md)}
+  .qr{width:190px;height:190px;flex:none;background:#fff;border-radius:var(--r-sm);padding:8px}
+  .qr svg{display:block;width:100%;height:100%}
+  .qr-cap{flex:1 1 220px;font-size:var(--fs-xs);color:var(--muted);line-height:1.6}
+  .qr-cap b{color:var(--text)}
+  .qr-cap code{color:var(--accent);font-size:var(--fs-xs);word-break:break-all}
+  .note{color:var(--muted);font-size:var(--fs-xs);margin:var(--sp3) 0 0;line-height:1.5}
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);
+    background:var(--accent);color:var(--ink);font:600 var(--fs-md)/1.2 var(--font);
+    padding:11px 18px;border-radius:999px;opacity:0;transition:.25s;pointer-events:none;z-index:50;max-width:90vw}
+  .print-head{display:none}
+  /* предпросмотр листа */
+  [hidden]{display:none!important}          /* display:flex у .preview не должен показывать скрытый лист */
+  .preview{position:fixed;inset:0;z-index:100;background:#0b0b0b;display:flex;flex-direction:column}
+  .pv-bar{display:flex;gap:var(--sp2);align-items:center;flex-wrap:wrap;padding:10px var(--sp4);
+    border-bottom:1px solid var(--line);background:var(--panel)}
+  .pv-title{font-weight:600}
+  .pv-note{font-size:var(--fs-xs);color:var(--muted)}
+  .pv-stage{flex:1 1 auto;overflow:auto;padding:16px;display:flex;justify-content:center;
+    align-items:flex-start;background:#565b63}
+  .pv-holder{flex:none}
+  #pvFrame{border:0;background:#565b63;display:block}
+  @media (max-width:620px){ .pv-bar button{font-size:var(--fs-sm);height:38px} }
+  .print-grid-list{display:none}
+  .toast.show{opacity:1;transform:translateX(-50%)}
+  /* таблица: компактные строки и полоска прогресса */
+  #panel-table table{font-size:var(--fs-sm)}
+  #panel-table th,#panel-table td{padding:5px 8px;white-space:nowrap}
+  #panel-table th.num,#panel-table td.num{width:52px}
+  #panel-table td.rk{color:var(--muted)}
+  #panel-table td.goals{color:var(--muted)}
+  #panel-table td.prog{width:130px}
+  #panel-table .bar{display:inline-block;vertical-align:middle;width:72px;height:6px;border-radius:3px;
+    background:var(--panel3);overflow:hidden;margin-right:6px}
+  #panel-table .bar i{display:block;height:100%;background:var(--accent)}
+  #panel-table .bar-num{color:var(--muted);font-size:var(--fs-cap);font-variant-numeric:tabular-nums}
+  /* плей-офф: сетка навылет */
+  .court-title .air{margin-left:auto}
+  .mv{margin-left:auto;border:0;background:transparent;color:var(--muted);cursor:pointer;
+    font:inherit;font-size:var(--fs-xs);padding:2px 5px;border-radius:var(--r-sm);white-space:nowrap}
+  .mv:hover{color:var(--accent);background:var(--panel3)}
+  .court.src{opacity:.5}
+  .court.free{border-style:dashed;background:transparent}
+  .court.free .fn{font-size:var(--fs-xs);color:var(--muted);padding:6px 0}
+  .picking .court{cursor:pointer}
+  .picking .court:not(.src):hover{border-color:var(--accent)}
+  .court.drop{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent) inset}
+  .pick-bar{display:flex;align-items:center;gap:var(--sp2);flex-wrap:wrap;margin:0 0 var(--sp3);
+    padding:10px var(--sp3);border:1px solid var(--accent);border-radius:var(--r-md);
+    background:var(--panel2);font-size:var(--fs-sm)}
+  .po-size{display:flex;align-items:center;gap:6px;font-size:var(--fs-sm);color:var(--muted)}
+  .po-size select{height:36px}
+  .bracket{display:flex;gap:34px;overflow-x:auto;padding:var(--sp2) 2px}
+  .bround{display:flex;flex-direction:column;justify-content:space-around;gap:10px;
+    flex:0 0 178px}
+  .bround .br-name{font-size:var(--fs-cap);text-transform:uppercase;letter-spacing:.07em;
+    color:var(--muted);font-weight:600;text-align:center;margin-bottom:2px}
+  .bpair{position:relative;display:flex;flex-direction:column;justify-content:center;gap:12px;flex:1}
+  .bpair::after{content:'';position:absolute;right:-17px;top:50%;width:17px;height:2px;background:var(--line)}
+  .bpair::before{content:'';position:absolute;right:-17px;top:25%;bottom:25%;width:2px;background:var(--line)}
+  .bround:last-child .bpair::before,.bround:last-child .bpair::after{display:none}
+  .bm{background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-md);padding:6px}
+  .bm.done{border-color:var(--live)}
+  .bm.champ{margin:auto 0;text-align:center;padding:14px}
+  .bm.champ .bnm{font-size:var(--fs-lg);font-weight:700}
+  .brow{display:grid;grid-template-columns:1fr 46px;align-items:center;gap:6px;padding:3px 4px}
+  .brow+.brow{border-top:1px solid var(--line)}
+  .brow .bnm{font-size:var(--fs-sm);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .brow.empty .bnm{color:var(--muted);font-weight:400}
+  .brow.win{background:#131a16;border-radius:var(--r-sm)}
+  .brow.win .bnm{color:var(--live)}
+  .brow input{height:28px;width:46px;text-align:center;padding:0;font-size:var(--fs-sm);font-weight:700}
+  /* таблица: соревновательный режим */
+  .tbl-head{display:flex;justify-content:space-between;align-items:baseline;gap:var(--sp3);flex-wrap:wrap;margin-bottom:var(--sp3)}
+  .tbl-head h2{margin:0}
+  .chk{display:inline-flex;align-items:center;gap:8px;font-size:var(--fs-xs);color:var(--muted);
+    text-transform:none;letter-spacing:0;font-weight:400;cursor:pointer;margin:0}
+  .chk input{width:16px;height:16px;accent-color:var(--accent);margin:0;flex:none}
+  td.pos{color:var(--live);font-weight:700}
+  td.neg{color:var(--danger);font-weight:700}
+  .td-tag{margin-left:6px;font-size:var(--fs-cap);color:var(--muted);text-transform:none;letter-spacing:0}
+  .td-tag.sub{color:var(--live)}
+  /* подвал */
+  .foot{margin-top:var(--sp5);padding-top:var(--sp4);border-top:1px solid var(--line);
+    display:flex;flex-direction:column;gap:6px;font-size:var(--fs-xs);color:var(--muted)}
+  .foot b{color:var(--text);font-weight:600}
+  .foot a{color:var(--accent);text-decoration:none}
+  .foot a:hover{text-decoration:underline}
+  .foot-links{display:flex;align-items:center;gap:var(--sp2);flex-wrap:wrap;margin-bottom:2px}
+  .foot-cap{font-size:var(--fs-xs);color:var(--muted);margin-right:2px}
+  .foot .icon{width:38px;height:38px;display:grid;place-items:center;background:var(--panel2);
+    border:1px solid var(--line);border-radius:var(--r-md);color:var(--muted);transition:.15s}
+  .foot .icon:hover{color:var(--accent);border-color:var(--accent);text-decoration:none}
+  .foot .icon svg{width:20px;height:20px;display:block;fill:currentColor}
+  .foot-note{color:var(--muted);opacity:.8;line-height:1.5;max-width:62ch}
+  .foot-build{font-size:var(--fs-xs);color:var(--muted);opacity:.65}
+  .foot-build span{font-variant-numeric:tabular-nums;color:var(--text);opacity:.85}
+  @media print{
+    body{background:#fff;color:#000}
+    .no-print,#panel-judge,#panel-share,.tabs,.toast,.alert,.preview{display:none!important}
+    body.print-grid #panel-table,body.print-po #panel-table,body.print-po #panel-grid,
+    body.print-table #panel-po,body.print-grid #panel-po{display:none!important}
+    body.print-table #panel-grid{display:none!important}
+    .card,.round,.team,.jcard{background:#fff;border-color:#ccc;color:#000}
+    .round>header{background:#eee}
+    .time{color:#000}
+    .team.win{border-color:#000;box-shadow:0 0 0 1px #000 inset}
+    .court-title,.rest,.vs,th{color:#333}
+    .badge{display:none!important}
+    .air{display:none!important}
+    .court.on-air{box-shadow:none}
+    .foot{display:none}
+    .print-head{display:block;margin:0 0 16px;padding-bottom:10px;border-bottom:2px solid #000}
+    header.top,.sub,#banner,.tbl-head h2,.jlist h2{display:none!important}
+    .print-head h1{font-size:20px;margin:0 0 4px;color:#000}
+    .print-head .ph-meta{font-size:13px;color:#333}
+    .print-head .ph-sign{margin-top:8px;font-size:13px;color:#333}
+    table{font-size:12px}
+    th,td{padding:5px 8px;border-bottom:1px solid #bbb}
+    body.print-table #panel-table th{background:#f0f0f0}
+    .tbl-head{display:none!important}
+    #panel-table .bar{background:#ddd!important}
+    #panel-table .bar i{background:#666!important}
+    .bm{background:#fff!important;color:#000!important}
+    .bm .bnm,.brow .bnm{color:#000!important}
+    .brow.win{background:#eee!important}
+    .brow.empty .bnm{color:#888!important}
+    .bracket{gap:18px;overflow:visible!important}
+    /* 1/8 финала: четыре раунда плюс колонка победителя — колонки делаем уже */
+    .brow{grid-template-columns:1fr 36px}
+    .bm{padding:4px 5px}
+    .bm.champ{padding:10px}
+    .bround{flex:0 0 150px}
+    .bm,.brow{border-color:#bbb}
+    .brow.win{background:#eee}
+    .brow.win .bnm{color:#000}
+    .bpair::before,.bpair::after{background:#999}
+    input,select,textarea{background:#fff!important;color:#000!important;border-color:#bbb!important}
+    body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    /* лист расписания — компактным списком, чтобы влезало на A4 */
+    body.print-grid #panel-grid{display:none!important}
+    body.print-grid .print-grid-list{display:block!important}
+    .pg-round{margin:0 0 8px;page-break-inside:avoid}
+    .pg-head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:11.5px;
+      border-bottom:1px solid #ccc;padding-bottom:2px;margin-bottom:3px}
+    .pg-head b{font-weight:700}
+    .pg-rest{color:#666}
+    .pg-line{display:flex;gap:10px;font-size:11.5px;padding:1px 0}
+    .pg-court{width:50px;color:#666;flex:none}
+    .pg-pair{flex:1 1 auto}
+    .pg-score{font-weight:700;font-variant-numeric:tabular-nums}
+    /* расписание карточками на печать не выводим — только списком */
+    body.print-grid .round{display:none}
+    .bracket{page-break-inside:avoid}
+    .round,.bm,.brow,tr{page-break-inside:avoid}
+    input::placeholder{color:#999!important}
+    td.pos{color:#0a7a3d!important}
+    td.neg{color:#b3261e!important}
+    .td-tag{color:#666!important}
+    tr{page-break-inside:avoid}
+    #panel-grid,#panel-table,#panel-po{display:block!important}
+  }
+  @media (max-width:820px){
+    .fields{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .fields .wide{grid-column:span 2}
+  }
+  @media (max-width:480px){
+    .fields{grid-template-columns:1fr}
+    .fields .wide{grid-column:span 1}
+  }
+  @media (max-width:620px){
+    :root{--pad:14px}
+    .game{grid-template-columns:1fr;gap:6px}
+    .vs{text-align:center}
+    .crow{grid-template-columns:24px 1fr auto;gap:var(--sp2)}
+    .crow .steps button{width:38px;height:38px;font-size:var(--fs-lg)}
+    .crow .steps input{width:56px;height:38px;font-size:var(--fs-lg)}
+    .crow .nm{font-size:var(--fs-md)}
+    .tabs button{font-size:var(--fs-sm)}
+    .round>header{flex-direction:column;align-items:flex-start;gap:2px}
+    .round>header .meta{justify-content:flex-start}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="print-head" id="printHead"></div>
+  <div class="print-grid-list" id="printGrid"></div>
+  <header class="top">
+    <span class="logo" aria-hidden="true"><svg viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="11.6" fill="#111111" stroke="var(--accent)" stroke-width="2.2"/>
+      <circle cx="12.7" cy="13.6" r="2.3" fill="var(--accent)"/>
+      <circle cx="19.3" cy="18.4" r="2.3" fill="var(--accent)"/>
+    </svg></span>
+    <h1>Сквош · сетка и судейство</h1>
+    <div class="spacer"></div>
+    <span class="badge" id="syncBadge">офлайн</span>
+  </header>
+  <p class="sub">Одиночные матчи 1 на 1. До 16 игроков и 3 кортов. Режим «каждый с каждым», судейская консоль и общая таблица для нескольких судей.</p>
+
+  <div id="banner"></div>
+
+  <section class="card no-print" id="setupCard">
+    <h2>Игроки</h2>
+    <div class="player-add">
+      <div class="grow">
+        <label for="name">Имя игрока</label>
+        <input id="name" placeholder="Например, Анна" autocomplete="off" maxlength="24">
+      </div>
+      <div class="actions-row" style="margin-top:0">
+        <button class="primary" id="addBtn">Добавить</button>
+        <button class="ghost" id="demoBtn">Пример (12)</button>
+        <button class="ghost" id="clearBtn">Очистить</button>
+      </div>
+    </div>
+    <div class="chips" id="chips"></div>
+
+    <details class="paste no-print">
+      <summary>Вставить список игроков из сообщения</summary>
+      <textarea id="pasteBox" rows="4" placeholder="Вставьте сообщение как есть, например:&#10;Играем в 21:00, будут: 1. Анна, 2. Борис, 3. Вера&#10;Глеб+79161234567&#10;Дина, Егор и Жанна"></textarea>
+      <div class="actions-row">
+        <button class="primary" id="pasteAdd">Добавить найденных</button>
+        <button class="ghost" id="pasteReplace">Заменить состав</button>
+      </div>
+      <p class="note" id="pasteReport">Вставьте текст — приложение само выберет имена и покажет, что нашло.</p>
+    </details>
+
+    <h2 style="margin-top:var(--sp5)">Сетка и время</h2>
+    <div class="fields" style="--cols:7">
+      <div>
+        <label for="courts">Кортов</label>
+        <select id="courts"><option>1</option><option selected>2</option><option>3</option></select>
+      </div>
+      <div class="wide">
+        <label for="mode">Формат</label>
+        <select id="mode">
+          <option value="everyone" selected>Каждый с каждым</option>
+          <option value="equal">По времени</option>
+        </select>
+      </div>
+      <div>
+        <label for="sessionMin">Играем, ч</label>
+        <select id="sessionMin">
+          <option value="60">1 ч</option>
+          <option value="90">1,5 ч</option>
+          <option value="120" selected>2 ч</option>
+          <option value="150">2,5 ч</option>
+          <option value="180">3 ч</option>
+          <option value="240">4 ч</option>
+        </select>
+      </div>
+      <div>
+        <label for="matchMin">Матч, мин</label>
+        <input id="matchMin" type="number" min="5" max="180" step="5" value="30" inputmode="numeric">
+      </div>
+      <div class="wide">
+        <label for="startTime">Начало</label>
+        <input id="startTime" type="time" value="18:00">
+      </div>
+    </div>
+    <div class="actions-row">
+      <button class="primary" id="genBtn">Построить сетку</button>
+      <button class="ghost" id="resetScoresBtn">Очистить счёт</button>
+    </div>
+    <p class="stale" id="genNote" hidden></p>
+    <p class="explain">
+      Все корты работают одновременно: на каждом идёт один матч. Кто в этот момент не играет — отдыхает
+      и выходит в следующем. Формат «Каждый с каждым» — все пары встречаются ровно один раз.
+    </p>
+    <p class="empty" id="hint"></p>
+    <div class="summary" id="summary"></div>
+    <div id="timeAlert"></div>
+  </section>
+
+  <nav class="tabs no-print" id="tabs">
+    <button data-view="grid" class="active">Сетка</button>
+    <button data-view="judge">Судья</button>
+    <button data-view="table">Таблица</button>
+    <button data-view="po">Плей-офф</button>
+    <button data-view="share">Поделиться</button>
+  </nav>
+
+  <div id="panel-grid"></div>
+
+  <div id="panel-judge" hidden></div>
+
+  <section class="card" id="panel-table" hidden>
+    <div class="tbl-head">
+      <h2>Таблица</h2>
+      <div class="actions-row" style="margin-top:0">
+        <label class="chk no-print">
+          <input type="checkbox" id="competitive">
+          <span>Соревновательный режим — по разнице очков</span>
+        </label>
+        <button class="ghost mini no-print" id="printTableBtn">Печать таблицы</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th class="num">#</th><th>Игрок</th>
+          <th class="num">В–П</th><th class="num">Голы</th><th class="num">±</th>
+          <th class="num" id="thProg"></th>
+        </tr></thead>
+        <tbody id="standings"></tbody>
+      </table>
+    </div>
+    <p class="note">В–П — победы и поражения; Голы — забитые и пропущенные очки; ± — их разница.
+    В соревновательном режиме места считаются по победам, затем по разнице очков.</p>
+  </section>
+
+  <div id="panel-po" hidden></div>
+
+  <div id="panel-share" hidden>
+    <section class="card">
+      <h2>Общая таблица для нескольких судей</h2>
+      <p class="note" style="margin-top:0">
+        Создайте комнату — и судьи на любых устройствах увидят одну и ту же сетку и смогут вносить счёт.
+        Обмен идёт через открытый сервис ntfy.sh (ключ не нужен). Кто знает код комнаты, тот видит данные,
+        поэтому не используйте реальные персональные данные.
+      </p>
+      <div class="fields" style="--cols:3">
+        <div>
+          <label for="role">Роль</label>
+          <select id="role">
+            <option value="judge" selected>Судья (вносит счёт)</option>
+            <option value="owner">Организатор (всё)</option>
+            <option value="viewer">Зритель (только просмотр)</option>
+          </select>
+        </div>
+        <div>
+          <label for="judgeName">Ваше имя</label>
+          <input id="judgeName" placeholder="Судья 1" maxlength="20">
+        </div>
+        <div>
+          <label for="roomInput">Код комнаты</label>
+          <input id="roomInput" placeholder="SQ-4F7K2" maxlength="20" autocomplete="off">
+        </div>
+      </div>
+      <div class="actions-row">
+        <button class="primary" id="connectBtn">Подключиться</button>
+        <button class="ghost" id="createRoomBtn">Создать комнату</button>
+        <button class="ghost" id="disconnectBtn">Отключиться</button>
+      </div>
+      <details>
+        <summary>Настройки сервера обмена</summary>
+        <div class="fields" style="--cols:1;margin-top:var(--sp3)">
+          <div>
+            <label for="serverInput">Адрес сервера (ntfy-совместимый)</label>
+            <input id="serverInput" placeholder="https://ntfy.sh" autocomplete="off">
+          </div>
+        </div>
+        <p class="note">По умолчанию используется публичный ntfy.sh: бесплатно, без ключей, данные видит любой,
+          кто знает код комнаты. Ограничения сервиса: 250 сообщений в сутки на всех и сообщение до 4 КБ.
+          Для регулярных турниров укажите свой ntfy-сервер (self-hosted или платный тариф).</p>
+      </details>
+      <div class="share-link" id="linkBox" hidden>
+        <div class="grow">
+          <label class="lbl">Ссылка для других судей</label>
+          <input id="shareLink" readonly>
+        </div>
+        <button class="ghost" id="copyLinkBtn">Копировать ссылку</button>
+      </div>
+      <div class="qrbox" id="qrBox" hidden>
+        <div class="qr" id="qrCode"></div>
+        <div class="qr-cap">
+          <b>Наведите камеру телефона</b> — откроется это же приложение с кодом комнаты.
+          Ссылку можно показать или переслать.<br>
+          <span id="qrWhat"></span>
+        </div>
+      </div>
+      <p class="note" id="syncStatus">Не подключено — приложение работает локально.</p>
+      <div class="peers" id="peers"></div>
+    </section>
+
+    <section class="card">
+      <h2>Резервный обмен без интернета</h2>
+      <div class="actions-row" style="margin-top:0">
+        <button class="ghost" id="exportBtn">Экспорт файла</button>
+        <button class="ghost" id="importBtn">Импорт файла</button>
+        <button class="ghost" id="printBtn2">Печать сетки</button>
+        <button class="ghost" id="printTableBtn2">Печать таблицы</button>
+        <button class="ghost" id="copyTextBtn">Скопировать текстом</button>
+        <input type="file" id="importFile" accept="application/json" hidden>
+        <input type="file" id="soundFile" accept="audio/*" hidden>
+      </div>
+      <p class="note">Файл со всей сеткой и счётом можно передать судье любым способом и загрузить у него.</p>
+    </section>
+  </div>
+
+  <footer class="foot">
+    <div class="foot-links" id="footLinks" hidden>
+      <span class="foot-cap">Связь</span>
+      <a class="icon" id="tgIcon" target="_blank" rel="noopener" aria-label="Telegram" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71L12.6 16.3l-1.99 1.93c-.23.23-.42.42-.83.42z"/></svg>
+      </a>
+      <a class="icon" id="ghIcon" target="_blank" rel="noopener" aria-label="GitHub" hidden>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
+    </div>
+    <div class="foot-note">Приложение работает офлайн; данные хранятся в браузере.
+      Общий режим передаёт данные через открытый сервис — не вводите персональные данные.</div>
+    <div class="foot-build" title="Дата файла, который отдал сервер. Если она старая — браузер показал
+копию из кэша: обновите страницу клавишами Ctrl+F5 (на Mac — Cmd+Shift+R).">
+      сборка <span id="buildStamp">—</span></div>
+  </footer>
+</div>
+<div class="toast" id="toast"></div>
+<div class="preview" id="pvOverlay" hidden>
+  <div class="pv-bar">
+    <button class="primary" id="pvPrint">Печать / Сохранить в PDF</button>
+    <button class="ghost" id="pvSave">Скачать файлом</button>
+    <span class="pv-title" id="pvTitle"></span>
+    <span class="pv-note" id="pvNote"></span>
+    <span class="grow"></span>
+    <button class="ghost" id="pvClose">Закрыть</button>
+  </div>
+  <div class="pv-stage" id="pvStage">
+    <div class="pv-holder" id="pvHolder">
+      <iframe id="pvFrame" title="Предпросмотр листа"></iframe>
+    </div>
+  </div>
+</div>
+
+<script>
+/* QR-код без библиотек: версии 1–6, уровни коррекции L и M, байтовый режим (UTF-8).
+   Этого хватает для ссылки-приглашения. Рисуется в SVG одним контуром. */
+const QRCode = (() => {
+  // уровень -> версия -> [ECC на блок, [[блоков, данных в блоке], ...]]
+  const EC = {
+    L: { 1:[7,[[1,19]]], 2:[10,[[1,34]]], 3:[15,[[1,55]]], 4:[20,[[1,80]]], 5:[26,[[1,108]]], 6:[18,[[2,68]]] },
+    M: { 1:[10,[[1,16]]], 2:[16,[[1,28]]], 3:[26,[[1,44]]], 4:[18,[[2,32]]], 5:[24,[[2,43]]], 6:[16,[[4,27]]] }
+  };
+  const ALIGN = { 1:[], 2:[6,18], 3:[6,22], 4:[6,26], 5:[6,30], 6:[6,34] };
+  const ECL = { L:1, M:0, Q:3, H:2 };
+
+  // арифметика GF(256)
+  const EXP = new Array(512), LOG = new Array(256);
+  (function () {
+    let x = 1;
+    for (let i = 0; i < 255; i++) { EXP[i] = x; LOG[x] = i; x <<= 1; if (x & 0x100) x ^= 0x11d; }
+    for (let i = 255; i < 512; i++) EXP[i] = EXP[i - 255];
+  })();
+  const mul = (a, b) => (a && b) ? EXP[LOG[a] + LOG[b]] : 0;
+
+  function genPoly(n) {
+    let p = [1];
+    for (let i = 0; i < n; i++) {
+      const r = new Array(p.length + 1).fill(0);
+      for (let j = 0; j < p.length; j++) { r[j] ^= p[j]; r[j + 1] ^= mul(p[j], EXP[i]); }
+      p = r;
+    }
+    return p;
+  }
+  function rsEcc(data, n) {
+    const g = genPoly(n);
+    const res = data.concat(new Array(n).fill(0));
+    for (let i = 0; i < data.length; i++) {
+      const coef = res[i];
+      if (!coef) continue;
+      for (let j = 0; j < g.length; j++) res[i + j] ^= mul(g[j], coef);
+    }
+    return res.slice(data.length);
+  }
+
+  function utf8(str) {
+    const out = [];
+    for (const ch of unescape(encodeURIComponent(str))) out.push(ch.charCodeAt(0));
+    return out;
+  }
+  function versionFor(len, ecl) {
+    for (let v = 1; v <= 6; v++) {
+      const total = EC[ecl][v][1].reduce((s, [n, d]) => s + n * d, 0);
+      const header = 4 + 8;                          // режим + длина (версии 1–9)
+      if (len * 8 + header <= total * 8) return v;
+    }
+    return null;                                     // слишком длинная строка
+  }
+
+  function codewords(bytes, version, ecl) {
+    const [ecPer, groups] = EC[ecl][version];
+    const totalData = groups.reduce((s, [n, d]) => s + n * d, 0);
+    const bits = [];
+    const push = (val, len) => { for (let i = len - 1; i >= 0; i--) bits.push((val >> i) & 1); };
+    push(4, 4);                                      // байтовый режим
+    push(bytes.length, 8);
+    bytes.forEach(b => push(b, 8));
+    for (let i = 0; i < 4 && bits.length < totalData * 8; i++) bits.push(0);
+    while (bits.length % 8) bits.push(0);
+    const data = [];
+    for (let i = 0; i < bits.length; i += 8) {
+      let b = 0;
+      for (let j = 0; j < 8; j++) b = (b << 1) | bits[i + j];
+      data.push(b);
+    }
+    let k = 0;
+    while (data.length < totalData) data.push(k++ % 2 ? 0x11 : 0xEC);
+
+    const blocks = [], eccs = [];
+    let pos = 0;
+    groups.forEach(([n, d]) => {
+      for (let i = 0; i < n; i++) {
+        const b = data.slice(pos, pos + d);
+        pos += d;
+        blocks.push(b);
+        eccs.push(rsEcc(b, ecPer));
+      }
+    });
+    const out = [];
+    const maxD = Math.max(...blocks.map(b => b.length));
+    for (let i = 0; i < maxD; i++) blocks.forEach(b => { if (i < b.length) out.push(b[i]); });
+    for (let i = 0; i < ecPer; i++) eccs.forEach(e => out.push(e[i]));
+    return out;
+  }
+
+  function maskAt(k, i, j) {
+    switch (k) {
+      case 0: return (i + j) % 2 === 0;
+      case 1: return i % 2 === 0;
+      case 2: return j % 3 === 0;
+      case 3: return (i + j) % 3 === 0;
+      case 4: return (((i / 2) | 0) + ((j / 3) | 0)) % 2 === 0;
+      case 5: return ((i * j) % 2 + (i * j) % 3) === 0;
+      case 6: return (((i * j) % 2 + (i * j) % 3) % 2) === 0;
+      default: return (((i + j) % 2 + (i * j) % 3) % 2) === 0;
+    }
+  }
+
+  function formatBits(ecl, mask) {
+    const data = (ECL[ecl] << 3) | mask;
+    let rem = data << 10;
+    for (let i = 14; i >= 10; i--) if ((rem >> i) & 1) rem ^= 0x537 << (i - 10);
+    return ((data << 10) | (rem & 0x3ff)) ^ 0x5412;
+  }
+
+  function build(version, ecl, cw, mask) {
+    const size = version * 4 + 17;
+    const m = Array.from({ length: size }, () => new Array(size).fill(0));
+    const fn = Array.from({ length: size }, () => new Array(size).fill(false));
+    const set = (r, c, v) => { m[r][c] = v; fn[r][c] = true; };
+
+    const finder = (r0, c0) => {
+      for (let r = -1; r <= 7; r++) for (let c = -1; c <= 7; c++) {
+        const rr = r0 + r, cc = c0 + c;
+        if (rr < 0 || cc < 0 || rr >= size || cc >= size) continue;
+        const on = (r >= 0 && r <= 6 && (c === 0 || c === 6)) ||
+                   (c >= 0 && c <= 6 && (r === 0 || r === 6)) ||
+                   (r >= 2 && r <= 4 && c >= 2 && c <= 4);
+        set(rr, cc, on ? 1 : 0);
+      }
+    };
+    finder(0, 0); finder(0, size - 7); finder(size - 7, 0);
+
+    for (let i = 8; i < size - 8; i++) { set(6, i, i % 2 === 0 ? 1 : 0); set(i, 6, i % 2 === 0 ? 1 : 0); }
+
+    const ap = ALIGN[version];
+    ap.forEach(r0 => ap.forEach(c0 => {
+      if ((r0 === 6 && c0 === 6) || (r0 === 6 && c0 === size - 7) || (r0 === size - 7 && c0 === 6)) return;
+      for (let r = -2; r <= 2; r++) for (let c = -2; c <= 2; c++)
+        set(r0 + r, c0 + c, Math.max(Math.abs(r), Math.abs(c)) === 1 ? 0 : 1);
+    }));
+
+    set(size - 8, 8, 1);                              // тёмный модуль
+
+    // форматная информация — 15 бит, старший бит идёт первым
+    const fb = formatBits(ecl, mask);
+    const bitOf = i => (fb >> (14 - i)) & 1;
+    for (let i = 0; i <= 5; i++) set(8, i, bitOf(i));
+    set(8, 7, bitOf(6));
+    set(8, 8, bitOf(7));
+    set(7, 8, bitOf(8));
+    for (let i = 9; i <= 14; i++) set(14 - i, 8, bitOf(i));
+    for (let i = 0; i <= 6; i++) set(size - 1 - i, 8, bitOf(i));
+    for (let i = 7; i <= 14; i++) set(8, size - 15 + i, bitOf(i));
+
+    // данные «змейкой»
+    const total = cw.length * 8;
+    let bit = 0, up = true;
+    for (let col = size - 1; col > 0; col -= 2) {
+      if (col === 6) col--;
+      for (let k = 0; k < size; k++) {
+        const r = up ? size - 1 - k : k;
+        for (const c of [col, col - 1]) {
+          if (fn[r][c]) continue;
+          const v = bit < total ? (cw[bit >> 3] >> (7 - (bit & 7))) & 1 : 0;
+          m[r][c] = v;
+          bit++;
+        }
+      }
+      up = !up;
+    }
+
+    for (let r = 0; r < size; r++) for (let c = 0; c < size; c++)
+      if (!fn[r][c] && maskAt(mask, r, c)) m[r][c] ^= 1;
+
+    return { size, modules: m };
+  }
+
+  function penalty(m, size) {
+    let score = 0;
+    const runs = line => {
+      let s = 0, run = 1;
+      for (let i = 1; i < size; i++) {
+        if (line[i] === line[i - 1]) run++;
+        else { if (run >= 5) s += 3 + (run - 5); run = 1; }
+      }
+      if (run >= 5) s += 3 + (run - 5);
+      return s;
+    };
+    for (let i = 0; i < size; i++) { score += runs(m[i]); score += runs(m.map(r => r[i])); }
+    for (let r = 0; r < size - 1; r++) for (let c = 0; c < size - 1; c++)
+      if (m[r][c] === m[r][c + 1] && m[r][c] === m[r + 1][c] && m[r][c] === m[r + 1][c + 1]) score += 3;
+    const pat1 = [1,0,1,1,1,0,1,0,0,0,0], pat2 = [0,0,0,0,1,0,1,1,1,0,1];
+    const hasPat = line => {
+      let n = 0;
+      for (let i = 0; i + 11 <= size; i++) {
+        let ok1 = true, ok2 = true;
+        for (let k = 0; k < 11; k++) { if (line[i + k] !== pat1[k]) ok1 = false; if (line[i + k] !== pat2[k]) ok2 = false; }
+        if (ok1 || ok2) n++;
+      }
+      return n * 40;
+    };
+    for (let i = 0; i < size; i++) { score += hasPat(m[i]); score += hasPat(m.map(r => r[i])); }
+    let dark = 0;
+    for (let r = 0; r < size; r++) for (let c = 0; c < size; c++) dark += m[r][c];
+    const pct = dark * 100 / (size * size);
+    score += Math.floor(Math.abs(pct - 50) / 5) * 10;
+    return score;
+  }
+
+  function matrix(text, ecl = 'M', forceMask = null) {
+    const bytes = utf8(text);
+    const version = versionFor(bytes.length, ecl);
+    if (!version) return null;                       // строка не влезает
+    const cw = codewords(bytes, version, ecl);
+    let best = null, bestScore = Infinity;
+    for (let mask = 0; mask < 8; mask++) {
+      if (forceMask != null && mask !== forceMask) continue;
+      const built = build(version, ecl, cw, mask);
+      const score = penalty(built.modules, built.size);
+      if (score < bestScore) { bestScore = score; best = { ...built, mask }; }
+    }
+    return best;
+  }
+
+  function svg(text, opts = {}) {
+    const r = matrix(text, opts.ecl || 'M', opts.mask);
+    if (!r) return '';
+    const q = opts.quiet == null ? 2 : opts.quiet;
+    const n = r.size + q * 2;
+    let path = '';
+    for (let y = 0; y < r.size; y++) for (let x = 0; x < r.size; x++)
+      if (r.modules[y][x]) path += `M${x + q} ${y + q}h1v1h-1z`;
+    return `<svg viewBox="0 0 ${n} ${n}" width="100%" height="100%" shape-rendering="crispEdges" role="img" aria-label="QR-код">
+      <rect width="${n}" height="${n}" fill="#fff"/><path d="${path}" fill="#000"/></svg>`;
+  }
+
+  return { matrix, svg, versionFor: (t, e = 'M') => versionFor(utf8(t).length, e) };
+})();
+
+/* ================= константы и состояние ================= */
+const MAX_PLAYERS = 16, MAX_COURTS = 3;
+
+/* Метка сборки в подвале. Берётся дата файла, которую отдал сервер:
+   если видите старую дату — значит браузер показал копию из кэша,
+   и страницу надо обновить (Ctrl+F5). Запасное значение — на случай,
+   когда дата недоступна. */
+const BUILD_FALLBACK = '16.10';
+function buildStamp(){
+  let d = null;
+  try{ d = new Date(document.lastModified || ''); }catch(e){}
+  if(!d || isNaN(d.getTime())) return BUILD_FALLBACK;
+  const p = n => String(n).padStart(2, '0');
+  return p(d.getDate()) + '.' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+const LS = 'squash-grid-v2';
+// SQASSIT: состояние хранится по комнате, иначе тренер, открывший
+// турнир другого занятия, увидит в нём состав прошлого.
+const lsKey = () => LS + (sync.room ? ':' + sync.room : '');
+const state = {
+  players: [], courts: 2, rounds: 7, mode: 'everyone',
+  matchMin: 30, sessionMin: 120, startTime: '', competitive: true,
+  past: {},                                  // index -> [{from, to, name}] — кто играл раньше
+  schedule: [], scores: {}, structTs: 0, scoresTs: 0
+};
+// Необязательные ссылки в подвале. Оставьте заглушку или пустую строку — иконка не появится.
+const REPO_URL = 'https://github.com/difp/squashtabs';
+const TG_URL = 'https://t.me/sailofsoul';
+const isPlaceholder = u => !u || /ВАШ_|ваш-|ваш_/.test(u);
+const sync = {
+  on: false, room: '', role: 'judge', name: '', clientId: randId(),
+  lastId: '', peers: {}, timer: null, status: 'off'
+};
+const judge = { court: 0, round: 0, view: 'grid', suggest: null };
+
+/* ================= утилиты ================= */
+const $ = id => document.getElementById(id);
+function randId(){ return Math.random().toString(36).slice(2,10); }
+function esc(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function pairKey(a,b){ return a < b ? a+'|'+b : b+'|'+a; }
+function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+// матч идёт прямо сейчас: начали, но ещё не закончили
+function isOnAir(g){
+  const s = state.scores[g];
+  if(!s) return false;
+  if(matchResult(g) != null) return false;
+  return s.a != null || s.b != null || (s.log && s.log.length > 0);
+}
+function airCount(){
+  return state.schedule.reduce((n, r, ri) =>
+    n + r.courts.filter((m, ci) => m && isOnAir(gid(ri, ci))).length, 0);
+}
+function gid(ri,ci){ return ri+'-'+ci; }
+// итог матча: либо доигранная партия, либо решение судьи (травма, поведение и т.п.)
+function matchResult(g){
+  const s = state.scores[g];
+  if(!s) return null;
+  if(s.end && s.end.winner) return s.end.winner;
+  return gameWon(g);
+}
+// партия до 11, при 10:10 и далее — нужна разница в 2 очка
+function gameWon(g){
+  const s = state.scores[g];
+  if(!s) return null;
+  const a = s.a, b = s.b;
+  if(a == null || b == null) return null;
+  const hi = Math.max(+a, +b), lo = Math.min(+a, +b);
+  if(hi < 11 || hi - lo < 2) return null;      // партия ещё идёт
+  return +a > +b ? 'a' : 'b';
+}
+// подача после выигранного очка: взял очко — берёшь подачу
+function serveAfterPoint(s, team){
+  const sv = Object.assign({ server:'a', box:null, auto:true }, s.sv || {});
+  if(sv.server === team){
+    sv.auto = true;                            // подающий взял очко — квадрат по счёту
+  } else {
+    sv.server = team;                          // принимавший взял очко — подача к нему
+    sv.auto = false;                           // квадрат выбирает он сам, за него не решаем
+    sv.box = null;
+  }
+  s.sv = sv;
+}
+const LOGKIND = {
+  p:'очко', l:'let — переигровка', n:'no let — отказ',
+  s:'stroke — очко по решению', w:'предупреждение за поведение',
+  e:'матч завершён', '-':'исправление счёта'
+};
+const ENDREASON = { injury:'травма', retire:'отказ продолжать', conduct:'поведение', noshow:'неявка' };
+function logEvent(g, kind, who){
+  const s = state.scores[g] || (state.scores[g] = {});
+  if(!s.log) s.log = [];
+  s.log.push([kind, who || '', s.a ?? 0, s.b ?? 0]);
+  if(s.log.length > 60) s.log = s.log.slice(-60);   // держим историю компактной
+}
+function totalPairs(n){ return n*(n-1)/2; }
+function playedCounts(){
+  const c = new Array(state.players.length).fill(0);
+  state.schedule.forEach(r => r.courts.forEach(([a,b]) => { c[a]++; c[b]++; }));
+  return c;
+}
+
+/* ================= время ================= */
+function pad2(n){ return String(n).padStart(2, '0'); }
+function parseHM(s){
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(s || ''));
+  return m ? (+m[1]) * 60 + (+m[2]) : 18 * 60;
+}
+function fmtHM(total){
+  const t = ((Math.round(total) % 1440) + 1440) % 1440;
+  return pad2(Math.floor(t / 60)) + ':' + pad2(t % 60);
+}
+function matchMinutes(){ return Math.max(5, Math.min(180, +state.matchMin || 30)); }
+// окно волны ri: матчи в волнах идут параллельно на всех кортах
+function waveWindow(ri){
+  const start = parseHM(state.startTime) + ri * matchMinutes();
+  return { start, end: start + matchMinutes(), text: fmtHM(start) + '–' + fmtHM(start + matchMinutes()) };
+}
+function totalMinutes(){ return state.schedule.length * matchMinutes(); }
+function durationText(mins){
+  const h = Math.floor(mins / 60), m = Math.round(mins % 60);
+  if(h && m) return `${h} ч ${m} мин`;
+  if(h) return `${h} ч`;
+  return `${m} мин`;
+}
+function finishTime(){ return fmtHM(parseHM(state.startTime) + totalMinutes()); }
+
+/* ================= хранение ================= */
+function save(){
+  try{ localStorage.setItem(lsKey(), JSON.stringify({
+    players: state.players, courts: state.courts, rounds: state.rounds, mode: state.mode,
+    matchMin: state.matchMin, sessionMin: state.sessionMin, startTime: state.startTime,
+    competitive: state.competitive,
+    past: state.past,
+    po: state.po,
+    schedule: state.schedule, scores: state.scores, structTs: state.structTs, scoresTs: state.scoresTs,
+    room: sync.room, role: sync.role, name: sync.name, server: sync.server, view: judge.view
+  })); }catch(e){}
+}
+function load(){
+  try{
+    const d = JSON.parse(localStorage.getItem(lsKey()) || '{}');
+    if(Array.isArray(d.players)) state.players = d.players.slice(0, MAX_PLAYERS);
+    if(d.courts) state.courts = Math.min(d.courts, MAX_COURTS);
+    if(d.rounds) state.rounds = d.rounds;
+    if(d.mode) state.mode = d.mode;
+    if(d.matchMin) state.matchMin = d.matchMin;
+    if(d.sessionMin) state.sessionMin = d.sessionMin;
+    if(d.competitive != null) state.competitive = !!d.competitive;
+    if(d.startTime) state.startTime = d.startTime;
+    if(Array.isArray(d.schedule)) state.schedule = d.schedule;
+    if(d.scores) state.scores = d.scores;
+    if(d.past) state.past = d.past;
+    if(d.po !== undefined) state.po = d.po;
+    state.structTs = d.structTs || 0; state.scoresTs = d.scoresTs || 0;
+    sync.room = d.room || ''; sync.role = d.role || 'judge'; sync.name = d.name || '';
+    if(d.server) sync.server = d.server;
+    judge.view = d.view || 'grid';
+  }catch(e){}
+}
+
+/* ================= генераторы сетки ================= */
+
+// круговая система (circle method): каждый с каждым, все пары ровно один раз
+function circleRounds(n){
+  const idx = [...Array(n).keys()];
+  if(n % 2) idx.push(-1);            // «пустой» игрок (bye)
+  const m = idx.length, rounds = [];
+  for(let r = 0; r < m - 1; r++){
+    const pairs = [];
+    for(let i = 0; i < m / 2; i++){
+      const a = idx[i], b = idx[m-1-i];
+      if(a !== -1 && b !== -1) pairs.push([a,b]);
+    }
+    rounds.push(pairs);
+    idx.splice(1, 0, idx.pop());     // поворот, первый фиксирован
+  }
+  return rounds;
+}
+
+// каждый с каждым: круг — все играют ровно один раз, волна — одновременные матчи
+function buildEveryone(players, courts){
+  const n = players.length;
+  const circles = circleRounds(n);
+  const plans = circles.map(pairs => circlePlans(pairs, courts));
+  let waves;
+  if(plans.every(Boolean)){
+    waves = optimalWaves(plans, n);            // точный минимум «отдыха подряд»
+  } else {
+    waves = [];
+    circles.forEach((pairs, ci) => {
+      const chunks = [];
+      for(let k = 0; k < pairs.length; k += courts) chunks.push(pairs.slice(k, k + courts));
+      chunks.forEach((ch, wi) => waves.push({
+        circle: ci, waveInCircle: wi, wavesInCircle: chunks.length, courts: ch
+      }));
+    });
+    balanceRest(waves, n);
+  }
+  return waves.map(w => ({
+    ...w,
+    resting: players.map((_,i)=>i).filter(i => !w.courts.some(([a,b]) => a===i || b===i))
+  }));
+}
+
+// возможные разбиения круга на волны (перебираем, пока волн не больше двух)
+function circlePlans(pairs, courts){
+  const m = pairs.length;
+  if(m <= courts) return [[pairs]];
+  if(m > 2 * courts) return null;
+  const out = [];
+  for(let mask = 0; mask < (1 << m); mask++){
+    const a = [], b = [];
+    for(let k = 0; k < m; k++){ ((mask >> k) & 1 ? b : a).push(pairs[k]); }
+    if(a.length && b.length && a.length <= courts && b.length <= courts) out.push([a, b]);
+  }
+  return out;
+}
+
+// динамическое программирование по кругам: минимизируем число случаев,
+// когда игрок отдыхает две волны подряд
+function optimalWaves(plans, n){
+  const mkStats = plan => {
+    const sets = plan.map(w => {
+      const s = new Set();
+      w.forEach(([a,b]) => { s.add(a); s.add(b); });
+      return s;
+    });
+    let intra = 0;
+    for(let i = 1; i < plan.length; i++)
+      for(let p = 0; p < n; p++) if(!sets[i].has(p) && !sets[i-1].has(p)) intra++;
+    return { plan, first: sets[0], last: sets[sets.length-1], intra, cost: intra, prev: -1 };
+  };
+  const layers = [plans[0].map(mkStats)];
+  for(let c = 1; c < plans.length; c++){
+    const prev = layers[c-1];
+    layers.push(plans[c].map(plan => {
+      const st = mkStats(plan);
+      let best = Infinity, bp = 0;
+      prev.forEach((q, qi) => {
+        let b = 0;
+        for(let p = 0; p < n; p++) if(!q.last.has(p) && !st.first.has(p)) b++;
+        if(q.cost + b < best){ best = q.cost + b; bp = qi; }
+      });
+      st.cost = best + st.intra;
+      st.prev = bp;
+      return st;
+    }));
+  }
+  const last = layers[layers.length - 1];
+  let bi = 0;
+  last.forEach((st, i) => { if(st.cost < last[bi].cost) bi = i; });
+  const perCircle = new Array(layers.length);
+  let idx = bi;
+  for(let c = layers.length - 1; c >= 0; c--){
+    const st = layers[c][idx];
+    perCircle[c] = st.plan.map((w, wi) => ({
+      circle: c, waveInCircle: wi, wavesInCircle: st.plan.length, courts: w
+    }));
+    idx = st.prev;
+  }
+  return perCircle.flat();
+}
+
+// Выравнивание отдыха: меняем матчи между волнами, чтобы никто не отдыхал
+// две волны подряд. Обмен целыми матчами не меняет состав пар —
+// поэтому «все пары ровно один раз» и «круг = все играют» сохраняются.
+// Для режима «каждый с каждым» обмен идёт только внутри одного круга.
+function balanceRest(waves, n){
+  const setOf = w => {
+    const s = new Set();
+    w.courts.forEach(m => { s.add(m[0]); s.add(m[1]); });
+    return s;
+  };
+  const fits = (w, skip, m) => {
+    const s = new Set();
+    w.courts.forEach((x, k) => { if(k !== skip){ s.add(x[0]); s.add(x[1]); } });
+    return !s.has(m[0]) && !s.has(m[1]);
+  };
+  const penalty = () => {
+    const sets = waves.map(setOf);
+    let p = 0;
+    for(let i = 1; i < waves.length; i++)
+      for(let pl = 0; pl < n; pl++)
+        if(!sets[i].has(pl) && !sets[i-1].has(pl)) p++;
+    return p;
+  };
+  let cur = penalty();
+  for(let pass = 0; pass < 60 && cur > 0; pass++){
+    let improved = false;
+    for(let i = 0; i < waves.length; i++){
+      for(let j = i + 1; j < waves.length; j++){
+        if(waves[i].circle != null && waves[i].circle !== waves[j].circle) continue;
+        for(let mi = 0; mi < waves[i].courts.length; mi++){
+          for(let mj = 0; mj < waves[j].courts.length; mj++){
+            const A = waves[i].courts[mi], B = waves[j].courts[mj];
+            if(!fits(waves[i], mi, B) || !fits(waves[j], mj, A)) continue;
+            waves[i].courts[mi] = B; waves[j].courts[mj] = A;
+            const np = penalty();
+            if(np < cur){ cur = np; improved = true; }
+            else { waves[i].courts[mi] = A; waves[j].courts[mj] = B; }
+          }
+        }
+      }
+    }
+    if(!improved) break;
+  }
+  return cur;
+}
+
+// равномерно: заданное число раундов, минимум повторов соперников
+function buildEqual(players, courts, rounds){
+  let best = null, bestScore = Infinity;
+  const tries = state.players.length <= 12 ? 20 : 8;
+  for(let t = 0; t < tries; t++){
+    const out = buildEqualOnce(players, courts, rounds);
+    if(!out.length) return [];
+    const seen = {}, c = new Array(players.length).fill(0);
+    out.forEach(r => r.courts.forEach(([a,b]) => {
+      const k = pairKey(a,b); seen[k] = (seen[k]||0)+1; c[a]++; c[b]++;
+    }));
+    const dup = Object.values(seen).reduce((s,v) => s + Math.max(0, v-1), 0);
+    const spread = Math.max(...c) - Math.min(...c);
+    const score = dup * 10 + spread;
+    if(score < bestScore){ bestScore = score; best = out; }
+    if(score === 0) break;
+  }
+  return best;
+}
+
+function buildEqualOnce(players, courts, rounds){
+  const n = players.length;
+  const playing = 2 * Math.floor(Math.min(n, courts * 2) / 2);
+  if(playing < 2) return [];
+  const playCount = {}, oppCount = {};
+  players.forEach((_,i) => playCount[i] = 0);
+  const out = [];
+  for(let r = 0; r < rounds; r++){
+    const sitCount = n - playing;
+    const order = players.map((_,i)=>i).sort((a,b) => playCount[b]-playCount[a] || Math.random()-.5);
+    const playingIdx = order.slice(sitCount);
+    const resting = order.slice(0, sitCount);
+    const allPairs = [];
+    for(let i=0;i<playingIdx.length;i++) for(let j=i+1;j<playingIdx.length;j++)
+      allPairs.push({ a:playingIdx[i], b:playingIdx[j],
+        c:(oppCount[pairKey(playingIdx[i],playingIdx[j])]||0)*100 + Math.random() });
+    allPairs.sort((x,y)=> x.c - y.c);
+    const used = new Set(), matches = [];
+    for(const p of allPairs){
+      if(used.has(p.a) || used.has(p.b)) continue;
+      used.add(p.a); used.add(p.b); matches.push([p.a,p.b]);
+      if(matches.length === playing/2) break;
+    }
+    improveRound(matches, oppCount);
+    playingIdx.forEach(i => playCount[i]++);
+    matches.forEach(([a,b]) => { const k = pairKey(a,b); oppCount[k] = (oppCount[k]||0)+1; });
+    out.push({ courts: matches, resting });
+  }
+  balanceRest(out, n);
+  return out;
+}
+
+// убираем повторные пары перестановкой партнёров внутри раунда
+function improveRound(matches, oppCount){
+  const cost = (a,b) => oppCount[pairKey(a,b)] || 0;
+  let improved = true;
+  while(improved){
+    improved = false;
+    for(let i = 0; i < matches.length && !improved; i++){
+      for(let j = i+1; j < matches.length && !improved; j++){
+        const [a,b] = matches[i], [c,d] = matches[j];
+        const base = cost(a,b) + cost(c,d);
+        const s1 = cost(a,c) + cost(b,d);
+        const s2 = cost(a,d) + cost(b,c);
+        if(s1 < base){ matches[i] = [a,c]; matches[j] = [b,d]; improved = true; }
+        else if(s2 < base){ matches[i] = [a,d]; matches[j] = [b,c]; improved = true; }
+      }
+    }
+  }
+}
+
+function buildSchedule(){
+  if(state.players.length < 2) return [];
+  return state.mode === 'everyone'
+    ? buildEveryone(state.players, state.courts)
+    : buildEqual(state.players, state.courts, state.rounds);
+}
+
+/* ================= синхронизация (ntfy) =================
+   Бесплатный ntfy.sh: сообщение ≤ 4 КБ, пополнение ~1 запрос / 5 с,
+   250 сообщений в сутки. Поэтому: приём — один поток SSE (не опрос),
+   отправка — склеенная очередь (счёт уходит одним пакетом).          */
+const DEFAULT_SERVER = 'https://ntfy.sh';
+const canEditScores = () => sync.role !== 'viewer';
+const canEditAll = () => !sync.on || sync.role === 'owner';
+const baseUrl = () => (sync.server || DEFAULT_SERVER).replace(/\/+$/, '');
+const topicUrl = () => baseUrl() + '/squashgrid-' + encodeURIComponent(sync.room);
+
+/* --- исходящая очередь --- */
+let outbox = { full:null, scores:{}, other:[] }, flushTimer = null, retryTimer = null;
+
+function queueMsg(m){
+  if(!sync.on || !sync.room) return;
+  if(m.t === 'full') outbox.full = m;
+  else if(m.t === 'score') outbox.scores[m.g] = m;
+  else outbox.other.push(m);
+  if(!flushTimer) flushTimer = setTimeout(() => { flushTimer = null; flush(); }, 1500);
+}
+function takeBatch(){
+  const msgs = [];
+  // порядок важен: сначала новая сетка, потом служебные (очистка счёта), затем счёт
+  if(outbox.full) msgs.push(outbox.full);
+  msgs.push(...outbox.other);
+  const sc = Object.values(outbox.scores);
+  if(sc.length) msgs.push({ t:'scores', from: sync.clientId, nm: sync.name, list: sc });
+  outbox = { full:null, scores:{}, other:[] };
+  return msgs;
+}
+function requeue(m){
+  if(m.t === 'full') outbox.full = outbox.full || m;
+  else if(m.t === 'scores') m.list.forEach(x => { if(!outbox.scores[x.g]) outbox.scores[x.g] = x; });
+  else outbox.other.push(m);
+}
+async function flush(){
+  if(!sync.on) return;
+  const msgs = takeBatch();
+  if(!msgs.length) return;
+  for(const m of msgs){
+    try{
+      const r = await fetch(topicUrl(), { method:'POST', body: JSON.stringify(m) });
+      if(r.status === 429){ requeue(m); setStatus('limit'); scheduleRetry(); return; }
+      if(!r.ok) throw new Error(r.status);
+      setStatus('ok');
+    }catch(e){ requeue(m); setStatus('err'); scheduleRetry(); return; }
+  }
+}
+function scheduleRetry(){
+  if(retryTimer) return;
+  retryTimer = setTimeout(() => { retryTimer = null; flush(); }, 15000);
+}
+function flushNow(){                       // при уходе со страницы
+  if(!sync.on) return;
+  const msgs = takeBatch();
+  if(!msgs.length) return;
+  for(const m of msgs){
+    try{ navigator.sendBeacon(topicUrl(), new Blob([JSON.stringify(m)], { type:'text/plain' })); }catch(e){}
+  }
+}
+
+function publishFull(){
+  state.structTs = Date.now();
+  queueMsg({ t:'full', from: sync.clientId, nm: sync.name, ts: state.structTs, p: state.players,
+             k: state.courts, n: state.rounds, m: state.mode, past: state.past, po: state.po,
+             c: state.schedule.map(r=>r.courts), r: state.schedule.map(r=>r.resting) });
+}
+function publishScore(g){
+  const s = state.scores[g]; if(!s) return;
+  queueMsg({ t:'score', from: sync.clientId, nm: sync.name, g, a: s.a ?? null, b: s.b ?? null,
+             ts: s.ts || Date.now(), sv: s.sv || null, log: s.log || null, end: s.end || null });
+}
+// первичная передача всего счёта новому судье: без истории очков, чтобы влезть в лимит сообщения
+function publishAllScores(){
+  let queued = 0;
+  state.schedule.forEach((r, ri) => r.courts.forEach((m, ci) => {
+    if(!m) return;
+    const g = gid(ri, ci), s = state.scores[g];
+    if(!s) return;
+    queueMsg({ t:'score', from: sync.clientId, nm: sync.name, g, a: s.a ?? null, b: s.b ?? null,
+               ts: s.ts || Date.now(), sv: s.sv || null, end: s.end || null });
+    queued++;
+    if(queued % 40 === 0) flush();          // крупные турниры уходят несколькими сообщениями
+  }));
+  return queued;
+}
+
+/* --- приём: поток SSE, при проблемах — редкий опрос --- */
+function openStream(){
+  closeStream();
+  if(!('EventSource' in window)) return startPolling();
+  let es;
+  try{ es = new EventSource(topicUrl() + '/sse?since=all'); }
+  catch(e){ return startPolling(); }
+  sync.es = es; sync.errors = 0;
+  es.onopen = () => { sync.errors = 0; setStatus('ok'); };
+  es.onmessage = ev => {
+    let raw; try{ raw = JSON.parse(ev.data); }catch(e){ return; }
+    if(raw.id) sync.lastId = raw.id;
+    if(raw.event && raw.event !== 'message') return;
+    if(raw.message){ let m; try{ m = JSON.parse(raw.message); }catch(e){ return; }
+      applyRemote(m, raw.time ? raw.time * 1000 : 0); }
+  };
+  es.onerror = () => {
+    sync.errors = (sync.errors || 0) + 1;
+    setStatus(es.readyState === EventSource.CLOSED ? 'err' : 'wait');
+    if(sync.errors >= 3) startPolling();       // поток не идёт — переходим на опрос
+  };
+}
+function closeStream(){
+  if(sync.es){ try{ sync.es.close(); }catch(e){} sync.es = null; }
+}
+function startPolling(){
+  if(sync.pollTimer) return;
+  closeStream();
+  sync.pollTimer = setInterval(async () => {
+    if(!sync.on) return;
+    try{
+      const url = topicUrl() + '/json?poll=1' + (sync.lastId ? '&since='+encodeURIComponent(sync.lastId) : '&since=all');
+      const r = await fetch(url);
+      if(!r.ok) throw new Error(r.status);
+      const text = await r.text();
+      setStatus('ok');
+      text.split('\n').forEach(line => {
+        if(!line.trim()) return;
+        let raw; try{ raw = JSON.parse(line); }catch(e){ return; }
+        if(raw.id) sync.lastId = raw.id;
+        if(raw.event === 'message' && raw.message){
+          let m; try{ m = JSON.parse(raw.message); }catch(e){ return; }
+          applyRemote(m, raw.time ? raw.time * 1000 : 0);
+        }
+      });
+    }catch(e){ setStatus('err'); }
+  }, 20000);
+}
+function stopPolling(){ if(sync.pollTimer){ clearInterval(sync.pollTimer); sync.pollTimer = null; } }
+
+/* --- применение чужих изменений --- */
+function touchPeer(m){
+  if(!m.from || m.from === sync.clientId) return;
+  sync.peers[m.from] = { role: m.role || (sync.peers[m.from] && sync.peers[m.from].role) || 'judge',
+                         name: m.nm || m.name || (sync.peers[m.from] && sync.peers[m.from].name) || '',
+                         ts: Date.now() };
+}
+function applyScore(m){
+  if((m.ts || 0) < state.scoresTs) return false;
+  const cur = state.scores[m.g];
+  if(cur && (cur.ts || 0) > (m.ts || 0)) return false;   // наша запись свежее
+  state.scores[m.g] = {
+    a: m.a, b: m.b, ts: m.ts || Date.now(),
+    sv: m.sv || (cur && cur.sv) || null,
+    log: m.log || (cur && cur.log) || null,
+    end: ('end' in m) ? m.end : ((cur && cur.end) || null)
+  };
+  return true;
+}
+// timeMs — время сообщения на сервере. «Свежими» считаем только те,
+// что пришли после нашего подключения: история не засоряет список судей.
+function applyRemote(m, timeMs){
+  if(!m) return;
+  if(m.from === sync.clientId) return;                   // своё эхо не применяем
+  const fresh = !timeMs || timeMs >= (sync.joinedAt || 0) - 5000;
+  if(fresh) touchPeer(m);
+  if(m.t === 'hello'){
+    if(fresh){
+      queueMsg({ t:'ping', from: sync.clientId, nm: sync.name, role: sync.role });
+      if(sync.role === 'owner' && state.schedule.length){
+        publishFull();
+        publishAllScores();                 // новый судья получает и уже внесённый счёт
+      }
+    }
+    renderShare();
+    return;
+  }
+  if(m.t === 'ping'){ renderShare(); return; }
+  if(m.t === 'full'){
+    if((m.ts || 0) < state.structTs) return;             // у нас новее
+    state.structTs = m.ts || Date.now();
+    state.players = (m.p || []).slice(0, MAX_PLAYERS);
+    state.courts = Math.min(m.k || 2, MAX_COURTS);
+    state.rounds = m.n || state.rounds;
+    state.mode = m.m || state.mode;
+    state.past = m.past || {};
+    state.po = m.po || null;
+    state.schedule = (m.c || []).map((ms, i) => ({ courts: ms, resting: (m.r && m.r[i]) || [] }));
+    save(); renderAll(); renderSetupValues();
+    toast('Сетка обновлена другим судьёй');
+    return;
+  }
+  if(m.t === 'scores' || m.t === 'score'){
+    const list = m.t === 'scores' ? (m.list || []) : [m];
+    let changed = false;
+    list.forEach(x => { if(applyScore(x)) changed = true; });
+    if(!changed) return;
+    save(); updateGames();
+    list.forEach(x => applyScoreToDom(x.g));
+    renderTable();
+    const typing = $('panel-judge').contains(document.activeElement);
+    if(judge.view === 'judge' && !typing) renderJudge();
+    return;
+  }
+  if(m.t === 'reset'){
+    if((m.ts || 0) < state.scoresTs) return;
+    state.scoresTs = m.ts || Date.now(); state.scores = {};
+    save(); renderGrid(); renderTable(); renderJudge();
+    toast('Счёт очищен организатором');
+  }
+}
+
+function connect(room, role, name, server){
+  room = String(room || '').trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
+  if(!room) return toast('Введите код комнаты');
+  disconnect(true);
+  sync.room = room; sync.role = role || 'judge'; sync.name = name || '';
+  sync.server = (server || sync.server || DEFAULT_SERVER);
+  sync.on = true; sync.lastId = ''; sync.peers = {}; sync.errors = 0; sync.joinedAt = Date.now();
+  location.hash = shareHash();
+  save(); renderShare(); renderGrid(); renderJudge(); renderBanner();
+  openStream();                                          // сначала слушаем (since=all подхватит историю)
+  queueMsg({ t:'hello', from: sync.clientId, nm: sync.name, role: sync.role });
+  flush();
+  if(sync.role === 'owner' && state.schedule.length){
+    publishFull();
+    publishAllScores();
+  }
+  renderSetupValues();
+  toast('Комната ' + room);
+}
+function disconnect(quiet){
+  sync.on = false;
+  closeStream(); stopPolling();
+  clearTimeout(flushTimer); flushTimer = null;
+  clearTimeout(retryTimer); retryTimer = null;
+  outbox = { full:null, scores:{}, other:[] };
+  sync.peers = {}; setStatus('off');
+  if(!quiet){ sync.room = ''; location.hash = ''; save(); }
+  renderSetupValues(); renderShare(); renderGrid(); renderJudge(); renderBanner();
+}
+function prunePeers(){
+  const now = Date.now();
+  Object.keys(sync.peers).forEach(k => { if(now - sync.peers[k].ts > 90000) delete sync.peers[k]; });
+}
+setInterval(() => { if(sync.on){ prunePeers(); renderShare(); } }, 10000);
+window.addEventListener('pagehide', flushNow);
+window.addEventListener('beforeunload', flushNow);
+function setStatus(s){
+  if(sync.status === s) return;
+  sync.status = s; renderShare(); renderBanner();
+}
+
+/* ================= рендер: игроки и настройки ================= */
+function renderSetupValues(){
+  $('courts').value = state.courts;
+  $('mode').value = state.mode;
+  $('sessionMin').value = state.sessionMin || 120;
+  $('matchMin').value = state.matchMin || 30;
+  $('startTime').value = state.startTime || '18:00';
+  $('role').value = sync.role;
+  $('judgeName').value = sync.name;
+  $('roomInput').value = sync.room || '';
+  $('serverInput').value = sync.server || DEFAULT_SERVER;
+}
+function renderPlayers(){
+  const box = $('chips');
+  hint();
+  if(!state.players.length){
+    box.innerHTML = '<span class="empty">Пока никого нет. Добавьте игроков (2–12).</span>';
+    return;
+  }
+  box.innerHTML = state.players.map((p,i) => {
+    const prev = ((state.past && state.past[i]) || []).map(s => s.name).filter(Boolean);
+    const hist = prev.length
+      ? `<span class="chip-hist" title="Раньше в этом слоте играл(а): ${esc(prev.join(', '))}">⟲ ${prev.length}</span>` : '';
+    return `<span class="chip"><b>${esc(p)}</b>${hist}
+      <button data-edit="${i}" title="Заменить игрока — сетка и счёт сохранятся">✎</button>
+      <button data-del="${i}" title="Убрать из состава">×</button></span>`;
+  }).join('');
+  box.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => replacePlayer(+b.dataset.edit));
+  box.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+    if(!canEditAll()) return toast('Ваша роль — только просмотр');
+    if(!confirmWipe('Убрать игрока и построить сетку заново? Внесённый счёт будет потерян.')) return;
+    state.players.splice(+b.dataset.del, 1);
+    resetSchedule(); renderPlayers(); save(); publishFull();
+  });
+}
+function hint(){
+  const n = state.players.length, onCourt = state.courts * 2, el = $('hint');
+  if(n < 2) el.textContent = 'Добавьте минимум 2 игрока — на корте играют двое (1 на 1).';
+  else if(n > onCourt) el.textContent = `Игроков ${n}, а одновременно играют ${onCourt} — остальные ${n - onCourt} будут ждать по очереди.`;
+  else el.textContent = '';
+}
+function renderSummary(){
+  const el = $('summary'), alertBox = $('timeAlert');
+  if(!state.schedule.length){ el.innerHTML = ''; alertBox.innerHTML = ''; return; }
+  const matches = state.schedule.reduce((s,r) => s + r.courts.length, 0);
+  const pc = playedCounts();
+  const min = Math.min(...pc), max = Math.max(...pc);
+  const onCourt = Math.min(state.players.length, state.courts * 2);
+  const row1 = [
+    `<span>Матчей: <b>${matches}</b></span>`,
+    `<span>Игр на человека: <b>${min === max ? min : min + '–' + max}</b></span>`,
+    `<span>Одновременно: <b>${onCourt}</b> на кортах, <b>${state.players.length - onCourt}</b> отдыхают</span>`
+  ];
+  const air = airCount();
+  if(air) row1.push(`<span class="air-sum">В эфире: <b>${air}</b></span>`);
+  if(state.mode === 'everyone')
+    row1.push(`<span>Все пары: <b>${matches}/${totalPairs(state.players.length)}</b> ${matches === totalPairs(state.players.length) ? '✓' : ''}</span>`);
+
+  // волны идут параллельно, поэтому общее время = волны × длительность матча
+  const start = fmtHM(parseHM(state.startTime));
+  const row2 = [];
+  if(state.mode !== 'everyone')
+    row2.push(`<span>Играем: <b>${durationText(state.sessionMin || 120)}</b></span>`);
+  row2.push(
+    `<span>План: <b>${durationText(totalMinutes())}</b></span>`,
+    `<span><b>${start} → ${finishTime()}</b></span>`,
+    `<span>Матч: <b>${matchMinutes()} мин</b></span>`,
+    `<span>На корте у игрока: <b>≈ ${durationText(max * matchMinutes())}</b></span>`
+  );
+  el.innerHTML = `<div class="sum-row">${row1.join('')}</div>
+                  <div class="sum-row time">${row2.join('')}</div>`;
+
+  alertBox.innerHTML = totalMinutes() > 300
+    ? `<div class="alert"><b>Не влезет в один вечер:</b>
+       <span>это ${durationText(totalMinutes())}. Уменьшите время игры, добавьте корты или укоротите матч.</span></div>`
+    : '';
+}
+
+/* ================= рендер: сетка ================= */
+// подпись шага: просто порядковый номер — время видно рядом
+function roundTitle(ri){ return `№${ri + 1}`; }
+// какой матч сейчас переносим нажатием («⇄»): {ri, ci}
+let pickMove = null;
+function startPick(str){
+  if(!canEditScores()) return toast('Роль «зритель» не может менять сетку');
+  const m = /^(\d+)-(\d+)$/.exec(String(str));
+  if(!m) return;
+  pickMove = { ri: +m[1], ci: +m[2] };
+  renderGrid();
+  const bar = $('pickBar');
+  if(bar) bar.scrollIntoView({ block: 'nearest' });
+}
+function cancelPick(){
+  if(!pickMove) return;
+  pickMove = null;
+  renderGrid();
+}
+function renderGrid(){
+  const box = $('panel-grid');
+  $('sessionMin').disabled = $('mode').value === 'everyone';
+  updateGenBtn();
+  hint();
+  renderSummary();
+  if(!state.schedule.length){
+    box.innerHTML = '<p class="empty">Введите игроков и нажмите «Построить сетку».</p>';
+    return;
+  }
+  const lock = !canEditScores();
+  box.classList.toggle('picking', !!pickMove);
+  const pickBar = pickMove ? (() => {
+    const M = state.schedule[pickMove.ri] && state.schedule[pickMove.ri].courts[pickMove.ci];
+    if(!M) return '';
+    return `<div class="pick-bar no-print" id="pickBar">
+      <span>Матч <b>${esc(nameAt(M[0], pickMove.ri))} — ${esc(nameAt(M[1], pickMove.ri))}</b>
+      (${waveWindow(pickMove.ri).text}): нажмите корт, с которым поменяться временем.</span>
+      <span class="grow"></span>
+      <button class="ghost mini" id="pickCancel">Отмена</button>
+    </div>`;
+  })() : '';
+  box.innerHTML = pickBar + state.schedule.map((round, ri) => {
+    const games = round.courts.map((m, ci) => {
+      // матчи сверх числа кортов — уже сыгранные: они уходят в историю записи
+      if(!m) return '';
+      if(ci >= state.courts){
+        const g0 = gid(ri, ci), s0 = state.scores[g0] || {};
+        const done0 = s0.a != null && s0.b != null;
+        return `<div class="court history">
+          <div class="court-title">Сыграно · ${esc(nameAt(m[0], ri))} — ${esc(nameAt(m[1], ri))}</div>
+          <div class="hist">${done0 ? s0.a + ' : ' + s0.b : 'счёт не внесён'}</div>
+        </div>`;
+      }
+      const [a,b] = m;
+      const g = gid(ri,ci), s = state.scores[g] || {};
+      const winner = matchResult(g);
+      const w1 = winner === 'a', w2 = winner === 'b';
+      const ended = !!(s.end && s.end.winner);
+      const onAir = isOnAir(g);
+      const isSrc = pickMove && pickMove.ri === ri && pickMove.ci === ci;
+      return `<div class="court ${onAir?'on-air':''} ${isSrc?'src':''}" data-ri="${ri}" data-ci="${ci}" ${lock?'':'draggable="true"'}>
+        <div class="court-title"><span class="grip" title="Перетащите, чтобы перенести игру">⠿</span>Корт ${ci+1}
+          ${onAir ? '<span class="air">в эфире</span>' : ''}
+          <button class="mv" data-mv="${ri}-${ci}" title="Перенести этот матч на другое время">⇄ перенести</button></div>
+        <div class="game">
+          <div class="team ${w1?'win':''}">${esc(nameAt(a, ri))}</div>
+          <div class="vs">VS</div>
+          <div class="team ${w2?'win':''}">${esc(nameAt(b, ri))}</div>
+        </div>
+        <div class="score">
+          <input type="number" min="0" max="99" inputmode="numeric" ${lock?'disabled':''} data-game="${g}" data-team="a" value="${s.a ?? ''}" placeholder="—">
+          <input type="number" min="0" max="99" inputmode="numeric" ${lock?'disabled':''} data-game="${g}" data-team="b" value="${s.b ?? ''}" placeholder="—">
+        </div>
+        ${ended ? `<div class="fin">завершён судьёй · ${ENDREASON[s.end.reason] || ''} · победа ${esc(nameAt(winner === 'a' ? a : b, ri))}</div>` : ''}
+      </div>`;
+    }).join('');
+    const rest = round.resting.length
+      ? `<span class="rest">Отдыхают: ${round.resting.map(i => esc(nameAt(i, ri))).join(', ')}</span>` : '';
+    const t = waveWindow(ri);
+    // в режиме переноса показываем свободные корты — как цель
+    let free = '';
+    if(pickMove){
+      for(let k = round.courts.length; k < state.courts; k++)
+        free += `<div class="court free" data-ri="${ri}" data-ci="${k}">
+          <div class="court-title">Корт ${k+1}</div>
+          <div class="fn">свободно · перенести сюда</div></div>`;
+    }
+    return `<section class="round" data-slot="${ri}"><header>
+      <h3><span class="idx">${roundTitle(ri)}</span>${t.text}</h3>
+      <span class="meta">${rest}</span></header>${games}${free}</section>`;
+  }).join('');
+  updateGames();
+  const cancel = $('pickCancel');
+  if(cancel) cancel.onclick = cancelPick;
+}
+
+function updateGames(){
+  $('panel-grid').querySelectorAll('.court').forEach(court => {
+    const inp = court.querySelector('input[data-game]');
+    if(!inp) return;
+    const g = inp.dataset.game;
+    const w = matchResult(g);
+    const air = isOnAir(g);
+    const t = court.querySelectorAll('.team');
+    if(t.length === 2){
+      t[0].classList.toggle('win', w === 'a');
+      t[1].classList.toggle('win', w === 'b');
+    }
+    court.classList.toggle('on-air', air);
+    const title = court.querySelector('.court-title');
+    if(!title) return;
+    let mark = title.querySelector('.air');
+    if(air && !mark){
+      mark = document.createElement('span');
+      mark.className = 'air';
+      mark.style.marginLeft = 'auto';
+      mark.textContent = 'в эфире';
+      title.appendChild(mark);
+    } else if(!air && mark) mark.remove();
+  });
+}
+
+// точечно подставляем счёт из сети, не мешая тому полю, где печатают
+function applyScoreToDom(g){
+  const s = state.scores[g] || {};
+  document.querySelectorAll(`input[data-game="${g}"]`).forEach(inp => {
+    if(document.activeElement === inp) return;
+    const v = s[inp.dataset.team];
+    inp.value = (v == null) ? '' : v;
+  });
+}
+
+/* ================= подача (по правилам сквоша) =================
+   Жребий (вращение ракетки) определяет подающего. Квадрат подачи
+   не задаётся вручную, а считается из счёта подающего:
+   чётный его счёт — правый квадрат, нечётный — левый.
+   Значок ⇄ позволяет поставить другой квадрат для текущего счёта
+   (первый подающий выбирает квадрат сам); после изменения счёта
+   снова действует правило.                                          */
+function scoreVal(g, team){
+  const v = (state.scores[g] || {})[team];
+  return (v == null) ? null : +v;
+}
+function serveOf(g){
+  const sv = (state.scores[g] || {}).sv || {};
+  return {
+    server: sv.server === 'b' ? 'b' : 'a',
+    box: (sv.box === 'left' || sv.box === 'right') ? sv.box : null,  // null = ещё не выбран
+    auto: sv.auto !== false            // auto: квадрат считается из счёта
+  };
+}
+function boxOf(g){
+  const sv = serveOf(g);
+  if(!sv.auto) return sv.box;          // подающий выбирает сам (может быть ещё не выбран)
+  const v = scoreVal(g, sv.server);
+  return (v == null || v % 2 === 0) ? 'right' : 'left';
+}
+function boxName(box){ return box === 'left' ? 'левый квадрат' : box === 'right' ? 'правый квадрат' : 'квадрат не выбран'; }
+function setServe(g, patch){
+  if(!canEditScores()) return toast('Роль «зритель» не может менять подачу');
+  const s = state.scores[g] || {};
+  s.sv = Object.assign(serveOf(g), patch);
+  s.ts = Date.now();
+  state.scores[g] = s;
+  save(); publishScore(g); renderJudge();
+}
+function playerOf(g, team){
+  const po = poPair(g);
+  if(po){
+    const idx = team === 'a' ? po[0] : po[1];
+    return idx == null ? '' : (nameAt(idx, 0) || '');
+  }
+  const [ri, ci] = g.split('-').map(Number);
+  const r = state.schedule[ri];
+  if(!r || !r.courts[ci]) return '';
+  const idx = team === 'a' ? r.courts[ci][0] : r.courts[ci][1];
+  return nameAt(idx, ri) || '';
+}
+
+/* ================= перенос матчей по времени =================
+   Матч двигается в другую запись расписания: на свободный корт, на место
+   уже сыгранного матча (он уходит в историю записи) или меняется местами
+   с матчем соседней записи без общих игроков. Правило «в записи каждый
+   играет один раз» проверяется на каждом шаге.                          */
+function slotPlayers(ms){
+  const s = new Set();
+  ms.forEach(m => { if(m){ s.add(m[0]); s.add(m[1]); } });
+  return s;
+}
+function isDone(g){
+  return matchResult(g) != null;                   // матч доигран или завершён судьёй
+}
+function refreshRest(slot){
+  slot.resting = state.players.map((_,i) => i)
+    .filter(i => !slot.courts.some(m => m && (m[0] === i || m[1] === i)));
+}
+function compact(slot){ slot.courts = slot.courts.filter(Boolean); }
+
+// счёт привязан к месту (запись + корт). При переносе матча он должен
+// ехать вместе с матчем, иначе результат останется на старом корте.
+function scoreSnapshot(rounds){
+  const snap = {};
+  rounds.forEach(ri => {
+    const round = state.schedule[ri]; if(!round) return;
+    snap[ri] = round.courts.map((m, ci) => m ? { m, s: state.scores[gid(ri, ci)] } : null);
+    round.courts.forEach((m, ci) => { delete state.scores[gid(ri, ci)]; });
+  });
+  return snap;
+}
+function scoreRestore(snap){
+  // матч мог уехать в другую запись — ищем счёт по всем местам снимка
+  const byMatch = new Map();
+  Object.keys(snap).forEach(ri => snap[ri].forEach(x => { if(x && x.s !== undefined) byMatch.set(x.m, x.s); }));
+  Object.keys(snap).forEach(ri => {
+    const round = state.schedule[ri]; if(!round) return;
+    round.courts.forEach((m, ci) => {
+      if(!m) return;
+      const s = byMatch.get(m);
+      if(s !== undefined) state.scores[gid(ri, ci)] = s;
+    });
+  });
+}
+// убираем пустые корты из записи (счёт переносит scoreSnapshot/scoreRestore)
+function compactRound(ri){
+  const round = state.schedule[ri]; if(!round) return;
+  round.courts = round.courts.filter(Boolean);
+}
+// кто после переноса играет две записи подряд — предупредим мягко
+function backToBackNames(ri){
+  const round = state.schedule[ri]; if(!round) return [];
+  const cur = slotPlayers(round.courts);
+  const prev = ri > 0 ? slotPlayers(state.schedule[ri - 1].courts) : new Set();
+  const next = ri + 1 < state.schedule.length ? slotPlayers(state.schedule[ri + 1].courts) : new Set();
+  return [...cur].filter(i => prev.has(i) || next.has(i)).map(i => state.players[i]);
+}
+// перенос одного матча в конкретное место: свободный корт — просто перенос,
+// занятый — обмен. После обмена в обеих записях те же игроки, поэтому
+// «занят в это время» случиться не может — матч переносится всегда.
+function placeMatch(srcRi, srcCi, dstRi, dstCi){
+  if(!canEditScores()) return toast('Роль «зритель» не может менять сетку');
+  if(srcRi === dstRi && srcCi === dstCi) return;
+  const A = state.schedule[srcRi], B = state.schedule[dstRi];
+  if(!A || !B) return;
+  const M = A.courts[srcCi]; if(!M) return;
+  const N = B.courts[dstCi] || null;
+  // обмен всегда возможен: в обеих записях остаются те же игроки
+  const snap = scoreSnapshot([srcRi, dstRi]);
+  A.courts[srcCi] = N;
+  B.courts[dstCi] = M;
+  compactRound(srcRi); compactRound(dstRi);
+  scoreRestore(snap);
+  refreshRest(A); refreshRest(B);
+  state.structTs = Date.now();
+  judge.round = dstRi;
+  save(); renderGrid(); renderJudge(); renderSummary(); publishFull();
+  const b2b = [...new Set([...backToBackNames(srcRi), ...backToBackNames(dstRi)])];
+  toast((N ? `Матчи обменялись временем · теперь ${waveWindow(dstRi).text}`
+           : `Матч перенесён на ${waveWindow(dstRi).text}`)
+        + (b2b.length ? ` · подряд играют: ${b2b.join(', ')}` : ''));
+}
+function moveMatchTo(ri, ci, targetRi, targetCi){
+  if(!canEditScores()) return toast('Роль «зритель» не может менять сетку');
+  if(targetRi === ri || targetRi < 0 || targetRi >= state.schedule.length) return;
+  const A = state.schedule[targetRi], B = state.schedule[ri];
+  const M = B.courts[ci];
+  if(!M) return;
+  const want = (targetCi == null || targetCi >= state.courts) ? null : targetCi;
+  const snap = scoreSnapshot([ri, targetRi]);
+  let ok = false, how = '';
+
+  // 1. на нужный корт, если он свободен
+  if(want != null && !A.courts[want] && !M.some(p => slotPlayers(A.courts).has(p))){
+    B.courts.splice(ci, 1); A.courts[want] = M; compact(A); ok = true; how = 'свободный корт';
+  }
+  // 2. на нужный корт, где матч уже сыгран — тот уходит в историю записи
+  else if(want != null && isDone(gid(targetRi, want))
+          && !M.some(p => slotPlayers(A.courts.filter((_,k) => k !== want)).has(p))){
+    const played = A.courts[want];
+    B.courts.splice(ci, 1);
+    A.courts[want] = M;
+    A.courts.push(played);
+    ok = true; how = 'закончили раньше';
+  }
+  // 3. на любой свободный корт этой записи
+  else if(A.courts.filter(Boolean).length < state.courts && !M.some(p => slotPlayers(A.courts).has(p))){
+    B.courts.splice(ci, 1); A.courts.push(M); compact(A); ok = true; how = 'свободный корт';
+  }
+  // 4. обмен с матчем без общих игроков
+  else {
+    for(let j = 0; j < A.courts.length && !ok; j++){
+      const N = A.courts[j];
+      if(!N || j >= state.courts) continue;
+      if(N.some(p => M.includes(p))) continue;
+      const restA = slotPlayers(A.courts.filter((_,k) => k !== j));
+      const restB = slotPlayers(B.courts.filter((_,k) => k !== ci));
+      if(M.some(p => restA.has(p))) continue;
+      if(N.some(p => restB.has(p))) continue;
+      A.courts[j] = M; B.courts[ci] = N; ok = true; how = 'обмен';
+    }
+  }
+  if(!ok){ scoreRestore(snap); return toast('Не получается: эти игроки заняты в то время'); }
+  scoreRestore(snap);
+
+  refreshRest(A); refreshRest(B);
+  state.structTs = Date.now();
+  judge.round = targetRi;
+  save(); renderGrid(); renderJudge(); renderSummary();
+  publishFull();
+  toast(`Перенесено на ${waveWindow(targetRi).text} · ${how}`);
+}
+function moveMatch(ri, ci, dir){
+  if(ri + dir < 0) return toast('Это самая первая игра');
+  if(ri + dir >= state.schedule.length) return toast('Это самая последняя игра');
+  moveMatchTo(ri, ci, ri + dir, ci);
+}
+
+/* --- подсказка: кого выпустить следующим, без игр подряд ---
+   Если перенести матч, он уходит из своей записи — поэтому пара из
+   следующей записи становится свободной (подряд не будет). Игроки,
+   только что игравшие в предыдущей записи, — наоборот, риск подряд. */
+function suggestNext(ri, ci){
+  const busyNow  = slotPlayers(state.schedule[ri].courts);
+  const prev     = state.schedule[ri - 1], next = state.schedule[ri + 1];
+  const busyPrev = prev ? slotPlayers(prev.courts) : new Set();
+  const busyNext = next ? slotPlayers(next.courts) : new Set();
+  // когда каждый игрок выходил последний раз до текущей записи
+  const last = {};
+  state.schedule.forEach((r, i) => {
+    if(i >= ri) return;
+    r.courts.forEach(m => { if(m) m.forEach(p => { last[p] = i; }); });
+  });
+  const waitedFor = m => Math.min(...m.map(p => ri - (last[p] == null ? -1 : last[p])));
+
+  const cands = [];
+  state.schedule.forEach((r, i) => r.courts.forEach((m, k) => {
+    if(!m || i === ri || k >= state.courts) return;
+    if(isDone(gid(i, k))) return;                              // уже сыграно
+    if(m.some(p => busyNow.has(p))) return;                     // сейчас на корте
+    const fromNext = (i === ri + 1);
+    const justPlayed = m.some(p => busyPrev.has(p));            // играли в прошлой записи
+    const stillNext  = !fromNext && m.some(p => busyNext.has(p));
+    cands.push({ r:i, c:k, m, justPlayed, backToBack: justPlayed || stillNext,
+                 waited: waitedFor(m), distance: i - ri });
+  }));
+  if(!cands.length) return null;
+  cands.sort((x, y) =>
+    (x.backToBack - y.backToBack) || (x.distance - y.distance) || (y.waited - x.waited));
+  return cands[0];
+}
+
+/* ================= рендер: судейская консоль ================= */
+function courtMatches(ci){
+  return state.schedule.map((r,ri) => r.courts[ci] ? { ri, ci, m:r.courts[ci] } : null).filter(Boolean);
+}
+function renderJudge(){
+  const box = $('panel-judge');
+  if(!state.schedule.length){
+    box.innerHTML = '<p class="empty">Сначала постройте сетку.</p>'; return;
+  }
+  judge.court = Math.min(judge.court, state.courts - 1);
+  const ci = judge.court;
+  const tabs = state.courts > 1
+    ? `<div class="courttabs no-print">${[...Array(state.courts).keys()].map(i =>
+        `<button data-court="${i}" class="${i===ci?'active':''}">Корт ${i+1}</button>`).join('')}</div>` : '';
+  const rnd = state.schedule[judge.round];
+  const m = rnd && rnd.courts[ci];
+  const lock = !canEditScores();
+  const g = gid(judge.round, ci);
+  const win = waveWindow(judge.round);
+
+  let main;
+  if(!m){
+    main = `<div class="jcard"><p class="empty" style="margin:0 0 var(--sp3)">
+        В это время (${win.text}) на корте игры нет.</p>
+      <div class="jactions">
+        <button class="primary" data-act="next" ${judge.round >= state.schedule.length-1?'disabled':''}>Дальше →</button>
+        <button class="ghost" data-act="prev" ${judge.round <= 0?'disabled':''}>← Назад</button>
+      </div></div>`;
+  } else {
+    const s = state.scores[g] || {};
+    const winner = matchResult(g);
+    const w1 = winner === 'a', w2 = winner === 'b';
+    const bothEntered = s.a != null && s.b != null;
+    const deuce = bothEntered && +s.a >= 10 && +s.b >= 10 && Math.abs(+s.a - +s.b) < 2;
+    const sv = serveOf(g);
+    const box = boxOf(g);
+
+    // строка игрока: мяч подачи · имя · счёт
+    const row = (idx, team, isWin) => {
+      const serving = sv.server === team;
+      return `<div class="crow ${serving?'serving':''} ${isWin?'win':''}">
+        <button class="ball" data-serve="${team}" ${lock?'disabled':''}
+          title="${serving ? 'Подаёт' : 'Передать подачу'}"><i></i></button>
+        <div class="who">
+          <span class="nm">${esc(nameAt(idx, judge.round))}</span>
+          ${serving ? `<span class="tag srv">подаёт</span>${boxTag(box, lock)}` : ''}
+          ${isWin ? '<span class="tag win">победа</span>' : ''}
+        </div>
+        <div class="steps">
+          <button data-step="-1" data-game="${g}" data-team="${team}" ${lock?'disabled':''}>−</button>
+          <input type="number" min="0" max="99" inputmode="numeric" ${lock?'disabled':''} data-game="${g}" data-team="${team}" value="${s[team] ?? ''}" placeholder="—">
+          <button data-step="1" data-game="${g}" data-team="${team}" ${lock?'disabled':''}>+</button>
+        </div>
+      </div>`;
+    };
+
+    const others = rnd.courts.map(([a,b],i) => i===ci ? '' :
+      `Корт ${i+1}: ${esc(nameAt(a, judge.round))} — ${esc(nameAt(b, judge.round))}`).filter(Boolean).join(' · ');
+    const ended = s.end && s.end.winner;
+    const decisionRow = `<div class="decide no-print">
+      <span class="decide-cap">Решение</span>
+      <button class="ghost mini" data-dec="l" ${lock?'disabled':''}
+        title="Let — переигровка, счёт не меняется">Let</button>
+      <button class="ghost mini" data-dec="n" ${lock?'disabled':''}
+        title="No let — отказ, игра продолжается">No let</button>
+      <button class="ghost mini" data-dec="s" data-dec-who="a" ${lock?'disabled':''}
+        title="Stroke — очко в пользу игрока (помешали в розыгрыше)">Stroke → ${esc(nameAt(m[0], judge.round))}</button>
+      <button class="ghost mini" data-dec="s" data-dec-who="b" ${lock?'disabled':''}
+        title="Stroke — очко в пользу игрока (помешали в розыгрыше)">Stroke → ${esc(nameAt(m[1], judge.round))}</button>
+    </div>`;
+    const finishBlock = `<details class="finish no-print" ${ended ? 'open' : ''}>
+      <summary>Поведение и досрочное завершение${ended ? ' · матч завершён' : ''}</summary>
+      <div class="jactions">
+        <span class="decide-cap">Предупреждение за поведение:</span>
+        <button class="ghost mini" data-dec="w" data-dec-who="a" ${lock?'disabled':''}>⚠ ${esc(nameAt(m[0], judge.round))}</button>
+        <button class="ghost mini" data-dec="w" data-dec-who="b" ${lock?'disabled':''}>⚠ ${esc(nameAt(m[1], judge.round))}</button>
+      </div>
+      <div class="jactions">
+        <span class="decide-cap">Завершить досрочно (травма, поведение, неявка):</span>
+        <select class="mini" id="endReason" ${lock?'disabled':''}>
+          ${Object.entries(ENDREASON).map(([k,v]) => `<option value="${k}">${v}</option>`).join('')}
+        </select>
+        <button class="ghost mini" data-finish="a" ${lock?'disabled':''}>Победа ${esc(nameAt(m[0], judge.round))}</button>
+        <button class="ghost mini" data-finish="b" ${lock?'disabled':''}>Победа ${esc(nameAt(m[1], judge.round))}</button>
+        ${ended ? '<button class="ghost mini" data-undo-end="1">Отменить завершение</button>' : ''}
+      </div>
+      <p class="note">По правилам судья может завершить матч: травма или отказ продолжать, неявка,
+      а за неспортивное поведение — снять розыгрыш (stroke), гейм или матч. Победа присваивается
+      выбранному игроку, даже если разница в 2 очка не набрана.</p>
+    </details>`;
+    main = `<div class="jcard">
+      ${timerBlock()}
+      ${row(m[0], 'a', w1)}
+      ${row(m[1], 'b', w2)}
+      ${decisionRow}
+      <div class="jactions no-print">
+        <button class="primary" data-act="next">Сохранить и дальше →</button>
+        <button class="ghost" data-act="prev" ${judge.round <= 0?'disabled':''}>← Назад</button>
+        <button class="ghost mini" data-spin="1" ${lock?'disabled':''} title="Жребий: вращение ракетки">Жребий</button>
+        <button class="ghost mini" data-move="-1" ${judge.round <= 0?'disabled':''}
+          title="Перенести матч на одну запись раньше">↑ раньше</button>
+        <button class="ghost mini" data-move="1" ${judge.round >= state.schedule.length-1?'disabled':''}
+          title="Перенести матч на одну запись позже">↓ позже</button>
+        ${ended ? `<span class="badge on">завершён · ${ENDREASON[s.end.reason] || ''}</span>`
+          : winner ? '<span class="badge on">победа внесена</span>'
+          : deuce ? '<span class="badge air-badge">в эфире · до разницы в 2 очка</span>'
+          : (bothEntered || (s.log && s.log.length)) ? '<span class="badge air-badge">в эфире</span>'
+          : '<span class="badge">ожидает счёта</span>'}
+      </div>
+      ${finishBlock}
+      <details class="history no-print">
+        <summary>История очков${s.log && s.log.length ? ' · ' + s.log.length : ''}</summary>
+        ${historyHTML(g)}
+        <p class="note">Для «let» и «no let» во второй колонке — игрок, по апелляции которого принято решение.</p>
+      </details>
+      <details>
+        <summary>Подача по правилам сквоша</summary>
+        <p class="note">Игра начинается с вращения ракетки — это жребий, который определяет, кто подаёт первым.
+        Квадрат подачи считается по счёту подающего: при чётном — правый, при нечётном — левый, и меняется сам,
+        как только вы вводите очко. Кнопка ⇄ меняет квадрат вручную: это право подающего в начале игры и после
+        отыгранного соперником очка — когда подача перешла, новый подающий выбирает квадрат сам. Как только он
+        берёт очко, квадрат снова чередуется по счёту. Подачу передают нажатием на мяч рядом с игроком.</p>
+      </details>
+      ${others ? `<p class="note">Параллельно — ${others}</p>` : ''}
+    </div>`;
+  }
+
+  const list = courtMatches(ci).map(({ri, m:[a,b]}) => {
+    const gg = gid(ri, ci);
+    const s = state.scores[gg] || {};
+    const won = matchResult(gg) != null;
+    const air = isOnAir(gg);
+    const tag = waveWindow(ri).text.split('–')[0];
+    const hasServe = !!s.sv;
+    const srv = hasServe
+      ? `<span class="rest"> · подача: ${esc(playerOf(gg, serveOf(gg).server))}, ${boxOf(gg) ? boxName(boxOf(gg)) : 'квадрат выбирает'}</span>` : '';
+    return `<div class="jitem ${ri===judge.round?'now':''} ${air?'on-air':''}" data-goto="${ri}">
+      <span class="l"><span class="tag">${tag}</span>
+        <span class="who">${esc(nameAt(a, ri))} — ${esc(nameAt(b, ri))}${srv}</span></span>
+      <span class="r">${air ? '<span class="air">в эфире</span>' : ''}
+        <span class="sc ${won?'done':''}">${s.a != null || s.b != null ? (s.a ?? 0)+' : '+(s.b ?? 0) : '—'}</span></span>
+    </div>`;
+  }).join('');
+
+  box.innerHTML = `
+    ${tabs}
+    <div class="jhead">
+      <div class="rnd"><b>${judge.round+1} из ${state.schedule.length}</b>
+        ${state.courts>1 ? '· Корт '+(ci+1) : ''} · <span class="time">${win.text}</span></div>
+      ${lock ? '<span class="badge off">роль «зритель» — только просмотр</span>' : ''}
+    </div>
+    ${main}
+    ${m ? suggestHTML(lock) : ''}
+    <div class="jlist">
+      <h2>Все игры этого корта</h2>
+      ${list || '<p class="empty">Нет игр.</p>'}
+    </div>`;
+
+  box.querySelectorAll('[data-court]').forEach(b => b.onclick = () => {
+    judge.court = +b.dataset.court; judge.round = 0; save(); renderJudge();
+  });
+  box.querySelectorAll('[data-goto]').forEach(el => el.onclick = () => {
+    judge.round = +el.dataset.goto; judge.suggest = null; renderJudge();
+  });
+  box.querySelectorAll('[data-act]').forEach(b => b.onclick = () => {
+    const list = courtMatches(ci).map(x => x.ri);
+    const pos = list.indexOf(judge.round);
+    if(b.dataset.act === 'next') judge.round = pos >= 0 && list[pos+1] !== undefined ? list[pos+1] : Math.min(judge.round+1, state.schedule.length-1);
+    else judge.round = pos > 0 ? list[pos-1] : Math.max(judge.round-1, 0);
+    judge.suggest = null;
+    if(b.dataset.act === 'next' && timer.running) timer.left = timer.total;   // новый матч — таймер заново
+    renderJudge();
+    $('panel-judge').scrollIntoView({ behavior:'smooth', block:'start' });
+  });
+  box.querySelectorAll('[data-step]').forEach(b => b.onclick = () => {
+    const d = +b.dataset.step;
+    const cur = +(state.scores[b.dataset.game]?.[b.dataset.team] ?? 0);
+    setScore(b.dataset.game, b.dataset.team, Math.max(0, Math.min(99, cur + d)));
+    renderJudge();
+  });
+  const curG = () => gid(judge.round, judge.court);
+  box.querySelectorAll('[data-serve]').forEach(b => b.onclick = () => {
+    setServe(curG(), { server: b.dataset.serve, auto: false, box: null });  // передача подачи: выбирает принимающий
+  });
+  box.querySelectorAll('[data-flip]').forEach(b => b.onclick = () => {
+    const gg = curG(), cur = boxOf(gg) || 'right';
+    setServe(gg, { box: cur === 'left' ? 'right' : 'left', auto: false });
+  });
+  box.querySelectorAll('[data-box]').forEach(b => b.onclick = () => {
+    setServe(curG(), { box: b.dataset.box, auto: false });
+  });
+  box.querySelectorAll('[data-spin]').forEach(b => b.onclick = () => {
+    const server = Math.random() < 0.5 ? 'a' : 'b';
+    setServe(curG(), { server, auto: false, box: null });   // жребий: подающий выбирает квадрат сам
+    toast('Жребий: подаёт ' + playerOf(curG(), server) + ' — выберите квадрат');
+  });
+  box.querySelectorAll('[data-move]').forEach(b => b.onclick = () => {
+    moveMatch(judge.round, judge.court, +b.dataset.move);
+  });
+  wireTimer();
+  box.querySelectorAll('[data-dec]').forEach(b => b.onclick = () => {
+    decision(curG(), b.dataset.dec, b.dataset.decWho || 'a');
+  });
+  box.querySelectorAll('[data-finish]').forEach(b => b.onclick = () => {
+    const reason = ($('endReason') && $('endReason').value) || 'other';
+    const gg = curG(), who = b.dataset.finish;
+    if(!confirm('Завершить матч досрочно?\nПобеда: ' + playerOf(gg, who) +
+                '\nПричина: ' + (ENDREASON[reason] || reason))) return;
+    finishMatch(gg, who, reason);
+  });
+  box.querySelectorAll('[data-undo-end]').forEach(b => b.onclick = () => undoFinish(curG()));
+  box.querySelectorAll('[data-suggest]').forEach(b => b.onclick = () => {
+    const c = suggestNext(judge.round, judge.court);
+    if(!c) return toast('Подходящей пары не нашлось');
+    const why = c.justPlayed ? 'играли в прошлой записи'
+              : c.backToBack ? 'возможна игра подряд'
+              : 'подряд не будет';
+    judge.suggest = { r:c.r, c:c.c, m:c.m,
+      note: `${roundTitle(c.r)} · ${waveWindow(c.r).text} · ${why}` };
+    renderJudge();
+  });
+  box.querySelectorAll('[data-suggest-ok]').forEach(b => b.onclick = () => {
+    const s = judge.suggest;
+    if(!s) return;
+    const ri = judge.round, ci = judge.court;
+    judge.suggest = null;
+    moveMatchTo(s.r, s.c, ri, ci);
+  });
+  box.querySelectorAll('[data-suggest-no]').forEach(b => b.onclick = () => {
+    judge.suggest = null; renderJudge();
+  });
+}
+
+// квадрат подачи: пока подающий не выбрал — предлагаем выбрать
+function boxTag(box, lock){
+  if(!box)
+    return `<span class="tag srv">выберите квадрат:
+      <button class="boxbtn" data-box="left" ${lock?'disabled':''}>левый</button>
+      <button class="boxbtn" data-box="right" ${lock?'disabled':''}>правый</button></span>`;
+  return `<span class="tag flip">${boxName(box)}
+    <button data-flip="1" ${lock?'disabled':''} title="Другой квадрат">⇄</button></span>`;
+}
+
+// история очков и решений в матче
+function historyHTML(g){
+  const s = state.scores[g] || {};
+  const log = (s.log || []).slice().reverse();
+  if(!log.length) return '<p class="note">Пока пусто. Очки и решения попадают сюда по ходу партии.</p>';
+  return `<div class="hist-list">${log.map(([kind, who, a, b]) => `
+    <div class="hrow">
+      <span class="hsc">${a} : ${b}</span>
+      <span class="hwho">${who ? esc(playerOf(g, who)) : '—'}</span>
+      <span class="hkind">${LOGKIND[kind] || kind}</span>
+    </div>`).join('')}</div>`;
+}
+
+// предложение выпустить следующую пару
+function suggestHTML(lock){
+  if(judge.suggest === false || lock) return '';
+  const s = judge.suggest;
+  if(!s)
+    return `<div class="suggest no-print">
+      <button class="ghost" data-suggest="1">Кто следующий? — подсказать пару</button>
+    </div>`;
+  return `<div class="suggest no-print">
+    <div class="sug-head">Предлагаю выпустить</div>
+    <div class="sug-pair">${esc(nameAt(s.m[0], s.r))} — ${esc(nameAt(s.m[1], s.r))}</div>
+    <div class="sug-note">${esc(s.note)}</div>
+    <div class="jactions">
+      <button class="primary" data-suggest-ok="1">Поставить на этот корт</button>
+      <button class="ghost" data-suggest-no="1">Отмена</button>
+    </div>
+  </div>`;
+}
+
+/* ================= рендер: таблица ================= */
+// считаем итоги по именам: у слота с заменой может быть два разных игрока
+function buildStats(){
+  const stats = new Map();
+  const get = name => {
+    if(!stats.has(name)) stats.set(name, { name, p:0, w:0, l:0, sf:0, sa:0, total:0 });
+    return stats.get(name);
+  };
+  state.schedule.forEach((round, ri) => round.courts.forEach(([a,b], ci) => {
+    const g = gid(ri,ci), w = matchResult(g), s = state.scores[g] || {};
+    const A = get(nameAt(a, ri)), B = get(nameAt(b, ri));
+    A.total++; B.total++;
+    if(!w) return;                                 // партия идёт — в зачёт не идёт
+    A.p++; B.p++;
+    A.sf += +s.a || 0; A.sa += +s.b || 0;
+    B.sf += +s.b || 0; B.sa += +s.a || 0;
+    if(w === 'a'){ A.w++; B.l++; } else { B.w++; A.l++; }
+  }));
+  const rows = [...stats.values()];
+  rows.sort(state.competitive
+    ? (a,b) => b.w - a.w || (b.sf - b.sa) - (a.sf - a.sa) || b.sf - a.sf || a.name.localeCompare(b.name)
+    : (a,b) => b.w - a.w || b.sf - a.sf || a.name.localeCompare(b.name));
+  return rows;
+}
+function renderTable(){
+  const progress = state.mode === 'everyone';
+  $('thProg').textContent = progress ? 'Прогресс' : '';
+  const rows = buildStats();
+  // пометки: кто вышел на замену и кто уже не играет
+  const current = new Set(state.players);
+  const subs = new Set(), gone = new Set();
+  Object.keys(state.past || {}).forEach(k => {
+    subs.add(state.players[+k]);
+    state.past[k].forEach(seg => gone.add(seg.name));
+  });
+  $('standings').innerHTML = rows.map((s,i) => {
+    const diff = s.sf - s.sa;
+    const cls = diff > 0 ? 'pos' : diff < 0 ? 'neg' : '';
+    const tag = (gone.has(s.name) && !current.has(s.name)) ? '<span class="td-tag">до замены</span>'
+              : subs.has(s.name) ? '<span class="td-tag sub">замена</span>' : '';
+    const pct = progress && s.total ? Math.round(s.p / s.total * 100) : 0;
+    const bar = progress && s.total
+      ? `<span class="bar"><i style="width:${pct}%"></i></span><span class="bar-num">${s.p}/${s.total}</span>` : '';
+    return `<tr>
+      <td class="num rk">${i+1}</td>
+      <td>${esc(s.name)}${tag}</td>
+      <td class="num"><b>${s.w}</b>–${s.l}</td>
+      <td class="num goals">${s.sf}–${s.sa}</td>
+      <td class="num ${cls}">${diff > 0 ? '+' : ''}${diff}</td>
+      <td class="prog">${bar}</td></tr>`;
+  }).join('');
+  $('competitive').checked = !!state.competitive;
+}
+
+/* ================= рендер: общий доступ ================= */
+// ссылка-приглашение: комната и (если задан) свой адрес сервера
+function shareHash(){
+  const p = new URLSearchParams();
+  if(sync.room) p.set('room', sync.room);
+  if(sync.server && sync.server !== DEFAULT_SERVER) p.set('s', sync.server);
+  return p.toString();
+}
+function shareUrl(){ return location.href.split('#')[0] + '#' + shareHash(); }
+
+let lastQrUrl = '';
+function renderQR(){
+  const box = $('qrBox');
+  if(!sync.on){ box.hidden = true; return; }
+  const url = shareUrl();
+  box.hidden = false;
+  if(url === lastQrUrl) return;                 // не перерисовываем зря
+  lastQrUrl = url;
+  const svg = QRCode.svg(url, { ecl: 'M' });
+  if(!svg){                                     // ссылка длиннее, чем влезает в QR
+    $('qrCode').innerHTML = '';
+    $('qrWhat').textContent = 'Ссылка слишком длинная для QR — передайте её текстом.';
+    return;
+  }
+  $('qrCode').innerHTML = svg;
+  const custom = sync.server && sync.server !== DEFAULT_SERVER;
+  $('qrWhat').textContent = custom
+    ? 'В ссылке зашит и код комнаты, и адрес сервера: ' + sync.server
+    : 'Ссылка ведёт на эту страницу, код комнаты — внутри.';
+}
+
+function renderShare(){
+  const badge = $('syncBadge');
+  const n = Object.keys(sync.peers).length + (sync.on ? 1 : 0);
+  if(!sync.on){ badge.className = 'badge'; badge.textContent = 'офлайн · локально'; }
+  else if(sync.status === 'ok'){ badge.className = 'badge on'; badge.textContent = `🟢 ${sync.room} · ${n} онлайн`; }
+  else if(sync.status === 'limit'){ badge.className = 'badge off'; badge.textContent = `⚠ ${sync.room} · лимит сервиса`; }
+  else if(sync.status === 'wait'){ badge.className = 'badge off'; badge.textContent = `… ${sync.room} · соединение`; }
+  else { badge.className = 'badge off'; badge.textContent = `⚠ ${sync.room} · связь`; }
+
+  $('linkBox').hidden = !sync.on;
+  if(sync.on){
+    $('shareLink').value = shareUrl();
+  }
+  renderQR();
+  $('disconnectBtn').disabled = !sync.on;
+  const roleTxt = { owner:'организатор', judge:'судья', viewer:'зритель' }[sync.role] || sync.role;
+  const st = {
+    off:'Не подключено — приложение работает локально, данные хранятся в этом браузере.',
+    ok:'Связь есть. Изменения счёта сразу видны всем судьям комнаты.',
+    wait:'Устанавливаю соединение…',
+    err:'Нет связи с сервером. Правки копятся и уйдут, когда связь вернётся.',
+    limit:'Достигнут лимит бесплатного сервиса (ntfy: 250 сообщений в сутки на всех). Правки копятся — попробуйте позже или укажите свой сервер.'
+  }[sync.status] || '';
+  $('syncStatus').textContent = !sync.on ? st
+    : `Комната ${sync.room}: вы вошли как ${roleTxt}${sync.name ? ' ('+sync.name+')' : ''}. ${st}`;
+  const peers = Object.entries(sync.peers).map(([id,p]) =>
+    `<span class="badge">${esc(p.name || 'Судья')} · ${({owner:'организатор',judge:'судья',viewer:'зритель'})[p.role]||p.role}</span>`).join('');
+  $('peers').innerHTML = (sync.on
+    ? `<span class="badge on">${esc(sync.name || 'Вы')} · ${roleTxt} (вы)</span>`
+    : '') + peers;
+}
+function renderBanner(){
+  const b = $('banner');
+  if(!sync.on){ b.innerHTML = ''; return; }
+  b.innerHTML = `<div class="banner">Подключено к комнате <b>${esc(sync.room)}</b>. Изменения счёта видны всем судьям этой комнаты.</div>`;
+}
+
+/* ================= общий рендер ================= */
+function renderAll(){ renderPlayers(); renderGrid(); renderTable(); renderPlayoff(); renderJudge(); renderShare(); renderBanner(); }
+
+/* ================= действия ================= */
+function resetSchedule(){
+  state.schedule = []; state.scores = {}; state.past = {}; state.po = null;
+  state.structTs = Date.now(); state.scoresTs = Date.now();
+  $('panel-grid').innerHTML = ''; staleOff(); updateGenBtn();
+  renderSummary(); renderJudge(); renderTable();
+}
+// подтверждение перед действием, которое стирает сетку
+function confirmWipe(msg){
+  return !state.schedule.length || confirm(msg);
+}
+function setScore(g, team, value){
+  if(!canEditScores()) return toast('Роль «зритель» не может вносить счёт');
+  const s = state.scores[g] || (state.scores[g] = {});
+  const before = (s[team] == null) ? null : +s[team];
+  s[team] = (value === '' || value == null) ? null : Math.max(0, Math.min(99, +value));
+  s.ts = Date.now();
+  // счёт изменился ровно на очко — значит разыгран мяч
+  const was = (before == null) ? 0 : before;
+  if(s[team] != null){
+    if(s[team] === was + 1){ serveAfterPoint(s, team); logEvent(g, 'p', team); }
+    else if(s[team] < was) logEvent(g, '-', team);
+  }
+  state.scores[g] = s;
+  save(); updateGames(); renderTable(); renderSummary(); publishScore(g);
+  // в консоли судьи сразу показываем «в эфире», если там сейчас ничего не печатают
+  if(judge.view === 'judge' && !$('panel-judge').contains(document.activeElement)) renderJudge();
+}
+
+/* --- судейские решения: let / no let / stroke --- */
+function decision(g, kind, who){
+  if(!canEditScores()) return toast('Роль «зритель» не может выносить решения');
+  const s = state.scores[g] || (state.scores[g] = {});
+  if(kind === 's'){                       // stroke — очко тому, в чью пользу решение
+    s[who] = Math.min(99, (s[who] == null ? 0 : +s[who]) + 1);
+    serveAfterPoint(s, who);
+  }
+  s.ts = Date.now();
+  logEvent(g, kind, who);
+  state.scores[g] = s;
+  save(); updateGames(); renderTable(); renderSummary(); renderJudge(); publishScore(g);
+  toast(kind === 'l' ? 'Let — переигровка'
+      : kind === 'n' ? 'No let — отказ'
+      : kind === 'w' ? 'Предупреждение: ' + playerOf(g, who)
+      : 'Stroke — очко ' + playerOf(g, who));
+}
+/* --- досрочное завершение матча --- */
+function finishMatch(g, winner, reason){
+  if(!canEditScores()) return toast('Роль «зритель» не может завершать матч');
+  const s = state.scores[g] || (state.scores[g] = {});
+  s.end = { winner, reason, ts: Date.now() };
+  s.ts = Date.now();
+  logEvent(g, 'e', winner);
+  state.scores[g] = s;
+  save(); updateGames(); renderTable(); renderSummary(); renderJudge(); publishScore(g);
+  toast('Матч завершён: ' + playerOf(g, winner) + ' · ' + (ENDREASON[reason] || reason));
+}
+function undoFinish(g){
+  if(!canEditScores()) return;
+  const s = state.scores[g]; if(!s || !s.end) return;
+  s.end = null; s.ts = Date.now();
+  save(); updateGames(); renderTable(); renderSummary(); renderJudge(); publishScore(g);
+  toast('Досрочное завершение отменено');
+}
+function addPlayer(){
+  if(!canEditAll()) return toast('Ваша роль не позволяет менять состав');
+  const inp = $('name'), v = inp.value.trim();
+  if(!v) return;
+  if(state.players.length >= MAX_PLAYERS) return toast(`Максимум ${MAX_PLAYERS} игроков`);
+  if(state.players.some(p => p.toLowerCase() === v.toLowerCase())) return toast('Такой игрок уже есть');
+  state.players.push(v); inp.value = ''; inp.focus();
+  save(); renderPlayers();
+  if(state.schedule.length){
+    // сетка остаётся, но она уже не учитывает нового игрока
+    staleOn('Игрок добавлен — нажмите «Пересобрать сетку», чтобы включить его в расписание.');
+    publishFull();
+  }
+  renderSummary();
+}
+/* ================= звуки и таймер матча =================
+   Звуки синтезируются встроенно (Web Audio), поэтому ничего скачивать
+   не нужно. Можно подключить и свой файл — он хранится в браузере
+   и никуда не отправляется.                                          */
+const PREF_KEY = 'squash-sound-v1';
+const pref = { endSound:'gong', warnSound:'short', warnOn:true, custom:'', customName:'' };
+const SOUND_NAMES = { gong:'гонг', whistle:'свисток', double:'двойной', short:'короткий', long:'длинный', custom:'свой файл' };
+
+function loadPref(){ try{ Object.assign(pref, JSON.parse(localStorage.getItem(PREF_KEY) || '{}')); }catch(e){} renderPrefs(); }
+function savePref(){ try{ localStorage.setItem(PREF_KEY, JSON.stringify(pref)); }catch(e){ toast('Не удалось сохранить настройку звука'); } }
+
+let AC = null;
+function audio(){
+  AC = AC || new (window.AudioContext || window.webkitAudioContext)();
+  if(AC.state === 'suspended') AC.resume();
+  return AC;
+}
+function tone(freq, dur, delay, type, vol){
+  const ctx = audio(), t = ctx.currentTime + (delay || 0);
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.type = type || 'sine';
+  o.frequency.setValueAtTime(freq, t);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol == null ? 0.35 : vol, t + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(ctx.destination);
+  o.start(t); o.stop(t + dur + 0.05);
+}
+function sweep(from, to, dur){
+  const ctx = audio(), t = ctx.currentTime;
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.type = 'sine';
+  o.frequency.setValueAtTime(from, t);
+  o.frequency.linearRampToValueAtTime(to, t + dur * 0.35);
+  o.frequency.linearRampToValueAtTime(from * 0.94, t + dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.28, t + 0.03);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(ctx.destination);
+  o.start(t); o.stop(t + dur + 0.05);
+}
+const SOUNDS = {
+  short:   () => tone(880, 0.18),
+  double:  () => { tone(880, 0.14, 0); tone(1180, 0.2, 0.22); },
+  long:    () => { tone(440, 0.9, 0, 'triangle', 0.4); tone(220, 0.9, 0, 'sine', 0.25); },
+  whistle: () => sweep(1750, 2100, 0.5),
+  gong:    () => { tone(196, 1.8, 0, 'sine', 0.5); tone(294, 1.5, 0.02); tone(392, 1.2, 0.04, 'sine', 0.22); }
+};
+function playSound(name){
+  try{
+    if(name === 'custom'){
+      if(!pref.custom) return toast('Свой звук не загружен');
+      const a = new Audio(pref.custom);
+      a.play().catch(() => toast('Браузер не дал воспроизвести звук — нажмите ещё раз'));
+      return;
+    }
+    (SOUNDS[name] || SOUNDS.short)();
+  }catch(e){ /* звук не критичен */ }
+}
+
+/* --- таймер --- */
+const timer = { total: 0, left: 0, running: false, handle: null, gid: null };
+function timerPaint(){
+  const d = $('tDisp'); if(!d) return;
+  const s = Math.max(0, timer.left);
+  d.textContent = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+  d.classList.toggle('hot', s <= 60);
+  const box = d.closest('.timer');
+  if(box) box.classList.toggle('running', timer.running);
+  const b = $('tStart');
+  if(b) b.textContent = timer.running ? 'Пауза' : (timer.left >= timer.total ? 'Старт' : 'Продолжить');
+}
+function timerStart(){
+  if(timer.running) return;
+  if(!timer.total) timer.total = matchMinutes() * 60;
+  if(timer.left <= 0) timer.left = timer.total;
+  timer.running = true;
+  if(!timer.handle) timer.handle = setInterval(timerStep, 1000);
+  timerPaint();
+}
+function timerPause(){
+  timer.running = false;
+  clearInterval(timer.handle); timer.handle = null;
+  timerPaint();
+}
+function timerReset(){
+  timerPause();
+  timer.total = matchMinutes() * 60;
+  timer.left = timer.total;
+  timerPaint();
+}
+function timerStep(){
+  if(!timer.running) return;
+  timer.left--;
+  if(timer.left === 60 && pref.warnOn) playSound(pref.warnSound);
+  if(timer.left <= 0){
+    timer.left = 0;
+    timerPause();
+    playSound(pref.endSound);
+    document.body.classList.add('bell');
+    setTimeout(() => document.body.classList.remove('bell'), 1500);
+  }
+  timerPaint();
+}
+function timerBlock(){
+  const opts = ['gong','whistle','double','long','short'].map(k =>
+    `<option value="${k}" ${pref.endSound === k ? 'selected' : ''}>${SOUND_NAMES[k]}</option>`).join('')
+    + `<option value="custom" ${pref.endSound === 'custom' ? 'selected' : ''}>${pref.customName ? 'свой: ' + esc(pref.customName) : 'свой файл…'}</option>`;
+  return `<div class="timer no-print">
+    <button class="primary mini" id="tStart">Старт</button>
+    <button class="ghost mini" id="tReset" title="Сбросить на длительность матча">⟲</button>
+    <span class="t-disp" id="tDisp">--:--</span>
+    <span class="grow"></span>
+    <span class="sound-lbl">сигнал</span>
+    <select id="soundPick">${opts}</select>
+    <button class="ghost mini" id="soundDemo" title="Проверить звук">♪</button>
+    <label class="chk" title="Сигнал за минуту до конца">
+      <input type="checkbox" id="warnOn" ${pref.warnOn ? 'checked' : ''}><span>за 1 мин</span>
+    </label>
+  </div>`;
+}
+function wireTimer(){
+  const start = $('tStart'), reset = $('tReset'), demo = $('soundDemo'), pick = $('soundPick'), warn = $('warnOn');
+  if(start) start.onclick = () => timer.running ? timerPause() : timerStart();
+  if(reset) reset.onclick = () => timerReset();
+  if(demo) demo.onclick = () => playSound(pref.endSound);
+  if(pick) pick.onchange = () => {
+    pref.endSound = pick.value;
+    if(pref.endSound === 'custom' && !pref.custom) $('soundFile').click();
+    savePref(); playSound(pref.endSound);
+  };
+  if(warn) warn.onchange = () => { pref.warnOn = warn.checked; savePref(); };
+  if(!timer.total) { timer.total = matchMinutes() * 60; timer.left = timer.total; }
+  timerPaint();
+}
+function renderPrefs(){
+  const pick = $('soundPick');
+  if(pick && pref.endSound) pick.value = pref.endSound;
+}
+function loadSoundFile(file){
+  if(!file) return;
+  if(file.size > 2 * 1024 * 1024) return toast('Файл больше 2 МБ — выберите покороче');
+  const r = new FileReader();
+  r.onload = () => {
+    pref.custom = r.result;
+    pref.customName = file.name.replace(/\.[^.]+$/, '').slice(0, 24);
+    pref.endSound = 'custom';
+    savePref();
+    toast('Свой звук подключён: ' + pref.customName);
+    renderJudge();
+  };
+  r.readAsDataURL(file);
+}
+
+/* ================= плей-офф (олимпийская сетка) =================
+   Собирается из текущей таблицы (лучшие проходят дальше) или жребием
+   по составу. Счёт, подача, решения и история работают те же — матчи
+   плей-офф хранятся в общем state.scores под своими ключами.        */
+function poId(r, m){ return 'p' + r + '-' + m; }
+function poSize(){ return state.po ? state.po.rounds[0].length * 2 : 0; }
+function poMatch(r, m){ return state.po && state.po.rounds[r] ? state.po.rounds[r][m] : null; }
+function poPair(g){
+  const x = /^p(\d+)-(\d+)$/.exec(g);
+  if(!x) return null;
+  const mt = poMatch(+x[1], +x[2]);
+  return mt ? [mt.a, mt.b] : null;
+}
+function poWinner(r, m){
+  const mt = poMatch(r, m); if(!mt) return null;
+  const w = matchResult(poId(r, m));
+  return w === 'a' ? mt.a : w === 'b' ? mt.b : null;
+}
+function poRoundName(r){
+  const left = state.po.rounds.length - r;      // 1 = финал
+  return left === 1 ? 'Финал' : left === 2 ? 'Полуфинал' : left === 3 ? 'Четвертьфинал'
+    : left === 4 ? '1/8 финала' : `Раунд ${r + 1}`;
+}
+// расстановка «1–8, 4–5, 3–6, 2–7»: сильные встречаются как можно позже
+function seedPairs(size){
+  let list = [0];
+  for(let n = 2; n <= size; n *= 2){
+    const next = [];
+    list.forEach(s => { next.push(s); next.push(n - 1 - s); });
+    list = next;
+  }
+  const out = [];
+  for(let i = 0; i < list.length; i += 2) out.push([list[i], list[i + 1]]);
+  return out;
+}
+function buildPlayoff(size, byDraw){
+  if(state.players.length < size) return toast(`Для плей-офф нужно минимум ${size} игроков`);
+  let seeds;
+  if(byDraw){
+    seeds = state.players.map((_, i) => i);
+    for(let i = seeds.length - 1; i > 0; i--){ const j = Math.floor(Math.random() * (i + 1)); [seeds[i], seeds[j]] = [seeds[j], seeds[i]]; }
+  } else {
+    seeds = seedOrder();
+  }
+  const rounds = [seedPairs(size).map(([x, y]) => ({ a: seeds[x], b: seeds[y] }))];
+  for(let n = size / 4; n >= 1; n = n / 2)
+    rounds.push(Array.from({ length: n }, () => ({ a: null, b: null })));
+  state.po = { size, rounds, byDraw: !!byDraw };
+  advancePlayoff();
+  Object.keys(state.scores).forEach(k => { if(k.startsWith('p')) delete state.scores[k]; });
+  state.structTs = Date.now();
+  save(); renderPlayoff(); publishFull();
+  toast(`Плей-офф на ${size}: ${byDraw ? 'по жребию' : 'по таблице'}`);
+}
+function advancePlayoff(){
+  const po = state.po; if(!po) return false;
+  let changed = false;
+  for(let r = 1; r < po.rounds.length; r++){
+    po.rounds[r].forEach((m, i) => {
+      const a = poWinner(r - 1, 2 * i), b = poWinner(r - 1, 2 * i + 1);
+      if(m.a !== a || m.b !== b){
+        m.a = a; m.b = b;
+        changed = true;
+        delete state.scores[poId(r, i)];          // счёт зависит от участников
+      }
+    });
+  }
+  return changed;
+}
+function clearPlayoff(){
+  if(!state.po) return;
+  state.structTs = Date.now();
+  state.po = null;
+  Object.keys(state.scores).forEach(k => { if(k.startsWith('p')) delete state.scores[k]; });
+  save(); renderPlayoff(); renderTable(); publishFull();
+}
+function poChampion(){
+  if(!state.po) return null;
+  const last = state.po.rounds.length - 1;
+  return poWinner(last, 0);
+}
+function seedOrder(){
+  const rows = buildStats();
+  const out = [];
+  rows.forEach(r => { const i = state.players.indexOf(r.name); if(i >= 0 && !out.includes(i)) out.push(i); });
+  state.players.forEach((_, i) => { if(!out.includes(i)) out.push(i); });
+  return out;
+}
+function renderPlayoff(){
+  const box = $('panel-po');
+  if(!state.po){
+    box.innerHTML = `<section class="card">
+      <h2>Плей-офф</h2>
+      <p class="note" style="margin-top:0">Сетка навылет: проигравший выбывает. Можно собрать из текущей
+      таблицы (сильные расходятся по разным половинам) или развести случайным жребием.</p>
+      <div class="actions-row" style="margin-top:var(--sp3)">
+        <label class="po-size">участников
+          <select id="poSize">
+            <option value="4">4</option>
+            <option value="8" selected>8</option>
+            <option value="16">16 · 1/8 финала</option>
+          </select>
+        </label>
+        <button class="primary" id="poFromTable">Собрать из таблицы</button>
+        <button class="ghost" id="poDraw">Жребием</button>
+      </div>
+      <p class="note">Нужно минимум столько игроков, сколько в сетке.</p>
+    </section>`;
+    const fromTable = $('poFromTable'), draw = $('poDraw'), pick = $('poSize');
+    if(fromTable) fromTable.onclick = () => buildPlayoff(+pick.value, false);
+    if(draw) draw.onclick = () => buildPlayoff(+pick.value, true);
+    return;
+  }
+  const po = state.po, champ = poChampion();
+  const cols = po.rounds.map((round, r) => {
+    const cards = round.map((m, i) => {
+      const g = poId(r, i), w = matchResult(g);
+      const done = w != null;
+      const names = [m.a, m.b].map(idx => idx == null ? null : nameAt(idx, 0));
+      const side = (idx, team) => {
+        const nm = idx == null ? '—' : esc(names[team === 'a' ? 0 : 1]);
+        const won = w === team;
+        const canEdit = idx != null && canEditScores();
+        return `<div class="brow ${won ? 'win' : ''} ${idx == null ? 'empty' : ''}">
+          <span class="bnm">${nm}</span>
+          <input type="number" min="0" max="99" inputmode="numeric" data-game="${g}" data-team="${team}"
+            value="${(state.scores[g] || {})[team] ?? ''}" placeholder="—" ${canEdit ? '' : 'disabled'}>
+        </div>`;
+      };
+      return `<div class="bm ${done ? 'done' : ''}">
+        ${side(m.a, 'a')}${side(m.b, 'b')}
+      </div>`;
+    });
+    const pairs = [];
+    for(let i = 0; i < cards.length; i += 2) pairs.push(`<div class="bpair">${cards.slice(i, i + 2).join('')}</div>`);
+    return `<div class="bround"><div class="br-name">${poRoundName(r)}</div>${pairs.join('')}</div>`;
+  }).join('');
+  box.innerHTML = `<section class="card">
+    <div class="tbl-head">
+      <h2>Плей-офф · ${po.size} участников${po.byDraw ? ' · жребий' : ' · по таблице'}</h2>
+      <div class="actions-row" style="margin-top:0">
+        <button class="ghost mini" id="poPrint">Печать сетки</button>
+        <button class="ghost mini" id="poClear">Убрать плей-офф</button>
+      </div>
+    </div>
+    <div class="bracket">
+      ${cols}
+      <div class="bround"><div class="br-name">Победитель</div>
+        <div class="bpair"><div class="bm champ">
+          <div class="bnm">${champ == null ? '—' : esc(nameAt(champ, 0))}</div>
+        </div></div>
+      </div>
+    </div>
+  </section>`;
+  $('poClear').onclick = () => { if(confirm('Убрать плей-офф? Счёт его матчей будет удалён.')) clearPlayoff(); };
+  $('poPrint').onclick = () => printSheet('po');
+}
+
+function renderPrintGrid(){
+  const box = $('printGrid');
+  if(!state.schedule.length){ box.innerHTML = ''; return; }
+  box.innerHTML = state.schedule.map((round, ri) => {
+    const t = waveWindow(ri);
+    const lines = round.courts.map((m, ci) => {
+      if(!m) return '';
+      const s = state.scores[gid(ri, ci)] || {};
+      const res = (s.a != null && s.b != null) ? `<span class="pg-score">${s.a} : ${s.b}</span>` : '';
+      return `<div class="pg-line"><span class="pg-court">Корт ${ci+1}</span>` +
+             `<span class="pg-pair">${esc(nameAt(m[0], ri))} — ${esc(nameAt(m[1], ri))}</span>${res}</div>`;
+    }).join('');
+    const rest = round.resting.length
+      ? `<span class="pg-rest">Отдыхают: ${round.resting.map(i => esc(nameAt(i, ri))).join(', ')}</span>` : '';
+    return `<div class="pg-round"><div class="pg-head">` +
+      `<span class="pg-title"><b>${roundTitle(ri)}</b> · ${t.text}</span>${rest}</div>${lines}</div>`;
+  }).join('');
+}
+
+/* ================= печать ================= */
+function renderPrintHead(kind){
+  const today = new Date().toLocaleDateString('ru-RU', { day:'numeric', month:'long', year:'numeric' });
+  const parts = [
+    `${state.players.length} игроков`,
+    `${state.courts} ${state.courts === 1 ? 'корт' : 'корта'}`,
+    state.mode === 'everyone' ? 'каждый с каждым' : 'по времени',
+    `матч ${matchMinutes()} мин`
+  ];
+  const played = state.schedule.reduce((n, r, ri) => n + r.courts.filter((m, ci) => m && matchResult(gid(ri, ci))).length, 0);
+  const total = state.schedule.reduce((n, r) => n + r.courts.filter(Boolean).length, 0);
+  $('printHead').innerHTML = `
+    <h1>Сквош · ${kind === 'table' ? 'итоговая таблица' : kind === 'po' ? 'сетка плей-офф' : 'расписание'}</h1>
+    <div class="ph-meta">${esc(today)} · ${esc(parts.join(' · '))}${
+      kind === 'table' ? ` · сыграно ${played} из ${total}`
+        : kind === 'po' ? ` · ${state.po ? state.po.size : 0} участников` : ` · начало ${fmtHM(parseHM(state.startTime))}`}</div>
+    ${kind === 'table' ? '<div class="ph-sign">Судья: ____________________&nbsp;&nbsp;&nbsp;Подпись: ____________________</div>' : ''}`;
+}
+// собирает лист: шапка, содержимое, формат бумаги
+function prepareSheet(kind){
+  if(!state.schedule.length) return toast('Сначала постройте сетку');
+  renderPrintHead(kind);
+  if(kind === 'grid') renderPrintGrid();
+  $('pageRule').textContent = kind === 'po'
+    ? '@page{size:A4 landscape;margin:10mm}'
+    : '@page{size:A4 portrait;margin:14mm 12mm}';
+  document.body.classList.remove('print-grid', 'print-table', 'print-po');
+  document.body.classList.add('print-' + kind);
+}
+// весь CSS приложения: в листе нужны и вёрстка, и печатные правила
+function appCssText(){
+  let out = '';
+  for(const sh of document.styleSheets){
+    let rules; try{ rules = sh.cssRules; }catch(e){ continue; }
+    for(const r of rules) out += r.cssText + '\n';
+  }
+  return out;
+}
+// какие правила действуют при печати — нужны для предпросмотра
+function printRulesText(){
+  const block = [...document.styleSheets].map(s => { try { return [...s.cssRules]; } catch(e){ return []; } })
+    .flat().find(r => r.conditionText && /print/.test(r.conditionText));
+  return block ? [...block.cssRules].map(r => r.cssText).join('\n') : '';
+}
+function sheetHtml(kind){
+  renderPrintHead(kind);
+  if(kind === 'grid') renderPrintGrid();
+  let src = kind === 'table' ? $('panel-table') : kind === 'po' ? $('panel-po') : $('printGrid');
+  const clone = src.cloneNode(true);
+  clone.removeAttribute('hidden');                        // панель может быть скрыта на экране
+  clone.querySelectorAll('[hidden],.no-print').forEach(e => e.removeAttribute ? e.removeAttribute('hidden') : 0);
+  clone.querySelectorAll('.no-print').forEach(e => e.remove());
+  const margins = kind === 'po' ? '10mm' : '14mm 12mm';
+  const width = kind === 'po' ? '277mm' : '186mm';
+  // порядок важен: сперва вёрстка приложения, затем печатные правила, затем вид листа
+  return `<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
+    <style>${appCssText()}</style>
+    <style>${printRulesText()}</style>
+    <style>
+      @page{size:A4 ${kind === 'po' ? 'landscape' : 'portrait'};margin:${margins}}
+      html,body{background:#565b63!important;overflow:auto}
+      body{margin:0;padding:0;font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Ubuntu,sans-serif}
+      .sheet{width:${width};margin:14px auto;background:#fff;padding:${margins};box-sizing:border-box;
+        box-shadow:0 6px 24px rgba(0,0,0,.35);color:#000}
+      .sheet .print-head{display:block}
+      .sheet .print-head h1{font-size:20px}
+      .sheet .tbl-head{display:none!important}
+    </style></head>
+    <body class="print-${kind}"><div class="sheet"><div class="print-head">${$('printHead').innerHTML}</div>${clone.innerHTML}</div></body></html>`;
+}
+let pvKind = null;
+// лист всегда виден целиком: если окно уже A4 — уменьшаем масштаб
+function fitPreview(){
+  if(!pvKind) return;
+  const stage = $('pvStage'), frame = $('pvFrame'), holder = $('pvHolder');
+  if(!stage || !frame) return;
+  const mm = px => Math.round(px * 96 / 25.4);          // 96 dpi, как в CSS
+  // +16px, чтобы вертикальная прокрутка не сужала полосу набора
+  const w = (pvKind === 'po' ? mm(277) : mm(186)) + 16;
+  const availW = Math.max(240, stage.clientWidth - 32);
+  const availH = Math.max(240, stage.clientHeight - 32);
+  const k = Math.min(1, availW / w);
+  holder.style.width = Math.round(w * k) + 'px';
+  holder.style.height = availH + 'px';
+  frame.style.width = w + 'px';
+  frame.style.height = Math.round(availH / k) + 'px';
+  frame.style.transform = `scale(${k})`;
+  frame.style.transformOrigin = 'top left';
+  const base = pvKind === 'po' ? 'Лист A4, альбомная' : 'Лист A4, книжная';
+  $('pvNote').textContent = base + (k < 1 ? ` · масштаб ${Math.round(k * 100)}%` : '')
+    + ' · в диалоге печати можно сохранить в PDF';
+}
+window.addEventListener('resize', () => { if(pvKind && !$('pvOverlay').hidden) fitPreview(); });
+function printSheet(kind){
+  prepareSheet(kind);
+  pvKind = kind;
+  const names = { grid: 'Расписание', table: 'Итоговая таблица', po: 'Сетка плей-офф' };
+  $('pvOverlay').hidden = false;
+  const frame = $('pvFrame');
+  frame.onload = () => fitPreview();
+  frame.srcdoc = sheetHtml(kind);
+  $('pvTitle').textContent = names[kind];
+  fitPreview();
+}
+function closePreview(){
+  $('pvOverlay').hidden = true;
+  $('pvFrame').srcdoc = '';
+  document.body.classList.remove('print-grid', 'print-table', 'print-po');
+}
+window.addEventListener('afterprint', () => document.body.classList.remove('print-grid', 'print-table', 'print-po'));
+
+/* ================= разбор списка игроков из текста =================
+   Организатор вставляет сообщение как есть: с нумерацией, телефонами,
+   ссылками, эмодзи и служебными словами. Приложение осторожно вытаскивает
+   имена: если слово похоже на служебное — лучше пропустить, чем добавить.  */
+const PASTE_STOP = new Set((
+  'игра играем играют играл играет идёт идет идти пойду приду буду будут будет есть да нет ок окей ' +
+  'плюс минус может наверное точно кто что как где когда почему зачем сколько который которая ' +
+  'сегодня завтра вчера вечером утром днем днём ночью срочно важно надо нужно можно нельзя ' +
+  'сбор сборы тренировка тренировки тренировке сквош корт корты корта зал время место адрес ' +
+  'цена стоимость рублей руб рубля оплата оплатить взнос деньги запись список состав участники ' +
+  'итого всего ссылка правила форма фото видео файл чат группа счёт счет ракетка мяч раздевалка душ ' +
+  'уровень новичок ещё еще тоже также только если чтобы или но а и в во на с со к ко у за по от до ' +
+  'из о об при для без над под про через между это этот эта эти там тут здесь вы вас нам вам меня ' +
+  'тебя нас них он она они мы я ты мой моя наш ваш свой все всё никто ничего сейчас уже пока ' +
+  'всем привет здравствуйте добрый день вечер утро спасибо пожалуйста забронирован забронировано ' +
+  'забронировал записывайтесь записываемся пишите напишите отпишитесь приходите жду ждём ждем ' +
+  'будем идем идём свободно занято оплатил напомню напоминаю уточните смотрите гляньте ' +
+  'не ни знаю думаю хочу могу смогу приеду уеду успею опоздаю скажу напишу уточню гляну ' +
+  'посмотрю узнаю поищу забронирую оплачу скину пришлю ' +
+  'ok yes no hi hello and the at in on'
+).split(' ').filter(Boolean));
+
+// слово похоже на имя: 3–11 букв, дефис или апостроф, не служебное и не глагол
+const verbLike = w => /(ться|шь|йте|ите|ать|ять|ешь|ишь|лся|лась|лось|ован|ирован|ано|ено|ились|ались|аю|яю|ую)$/i.test(w);
+const nameLike = w =>
+  /^[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё'’\-]{2,10}$/.test(w) && !PASTE_STOP.has(w.toLowerCase()) && !verbLike(w);
+// служебным считаем и совсем короткие слова — имена короче трёх букв почти не встречаются
+const stopLike = w => PASTE_STOP.has(w.toLowerCase()) || verbLike(w) || w.length < 3;
+
+function tidyName(s){
+  return s.split(' ').map(w => {
+    if (w.length < 2) return w;
+    const lower = w === w.toLowerCase(), upper = w === w.toUpperCase();
+    return (lower || upper) ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w;
+  }).join(' ');
+}
+
+function extractPlayers(text){
+  let t = String(text);
+  t = t.replace(/https?:\/\/\S+/gi, ' ')                 // ссылки целиком
+       .replace(/www\.\S+/gi, ' ')
+       .replace(/@[A-Za-z0-9_.]+/g, ' ')                 // упоминания
+       .replace(/\d+\s*(руб\w*|₽|р\.)/gi, ' ')           // цены
+       .replace(/(\+?\d[\d\s\-()]{6,}\d)/g, ' ');        // телефоны
+
+  const names = [], skipped = [], seen = new Set();
+  for (const raw of t.split(/[\n,;•·|\t]+|\s+и\s+/gi)) {
+    let s = raw.trim();
+    if (!s) continue;
+    s = s.replace(/\([^)]*\)/g, ' ')
+         .replace(/^[\s\-–—•*·>«»"':]+/, '')
+         .replace(/^(будут|буду|играют|играем|состав|участники|запись|список|сбор)\s*[:\-–—]?\s*/i, '')
+         .replace(/\d/g, ' ')                            // номера, время, счёт
+         .replace(/[^A-Za-zА-Яа-яЁё\s'’\-]/g, ' ')       // прочие знаки и эмодзи
+         .replace(/\s+/g, ' ')
+         .trim();
+    if (!s) continue;
+
+    const words = s.split(' ').filter(Boolean);
+    const good = words.filter(nameLike);
+    const other = words.filter(w => !nameLike(w) && !stopLike(w));
+    let picked = [];
+    if (!other.length && good.length) {
+      // 1–2 слова без служебных — считаем это одним именем («Анна Петрова»)
+      if (good.length <= 2 && !words.some(stopLike)) picked = [good.join(' ')];
+      else picked = good;                               // иначе это перечисление
+    }
+    if (!picked.length) { skipped.push(raw.trim()); continue; }
+    picked.forEach(n => {
+      const name = tidyName(n).slice(0, 24);
+      const k = name.toLowerCase();
+      if (k.length < 2 || seen.has(k)) return;
+      seen.add(k);
+      names.push(name);
+    });
+  }
+  return { names, skipped };
+}
+
+function pasteNames(){
+  const el = $('pasteBox');
+  return el ? extractPlayers(el.value) : { names: [], skipped: [] };
+}
+function renderPasteReport(pick){
+  const el = $('pasteReport');
+  if (!el) return;
+  const text = $('pasteBox').value.trim();
+  if (!text) { el.innerHTML = 'Вставьте текст — приложение само выберет имена и покажет, что нашло.'; return; }
+  const { names, skipped } = extractPlayers(text);
+  if (!names.length) {
+    el.innerHTML = '<b>Имена не найдены.</b> Похоже, в тексте только служебные слова или ссылки.';
+    return;
+  }
+  const free = MAX_PLAYERS - state.players.length;
+  const take = pick ? names.slice(0, Math.max(0, free)) : names;
+  const list = take.map(n => '<b>' + esc(n) + '</b>').join(', ');
+  const over = pick && names.length > take.length
+    ? ` Влезает только ${free} из ${names.length} — лимит ${MAX_PLAYERS} игроков.` : '';
+  const skip = skipped.length
+    ? `<br>Пропущено: <code>${skipped.slice(0, 4).map(esc).join('</code>, <code>')}${skipped.length > 4 ? '…' : ''}</code>`
+    : '';
+  el.innerHTML = `Найдено ${names.length}: ${list}.${over}${skip}`;
+}
+function pasteInto(replace){
+  if (!canEditAll()) return toast('Ваша роль не позволяет менять состав');
+  const { names } = pasteNames();
+  if (!names.length) return toast('В тексте не нашлось имён');
+  if (replace && !confirm('Заменить состав на найденных?' + (state.schedule.length ? '\nСетка и счёт будут потеряны.' : ''))) return;
+  const roster = replace ? [] : state.players.slice();
+  if (replace) { state.players = []; resetSchedule(); }
+  let added = 0, dup = 0, full = 0;
+  names.forEach(n => {
+    if (state.players.length >= MAX_PLAYERS) { full++; return; }
+    if (state.players.some(p => p.toLowerCase() === n.toLowerCase())) { dup++; return; }
+    state.players.push(n); added++;
+  });
+  renderPlayers(); save();
+  if (state.schedule.length) publishFull(); else publishFull();
+  renderSetupValues();
+  const extra = [dup ? `повторы: ${dup}` : '', full ? `не влезло: ${full}` : ''].filter(Boolean).join(', ');
+  toast(`Добавлено: ${added}${extra ? ' · ' + extra : ''}`);
+  $('pasteBox').value = '';
+  if(added) $('pasteReport').innerHTML = `Добавлено в состав: <b>${added}</b>${extra ? ' · ' + extra : ''}`;
+  else renderPasteReport(false);
+}
+
+/* ================= замена игрока во время турнира =================
+   Сыгранные матчи остаются за тем, кто реально играл: у слота хранится
+   история имён. Текущее имя показывается в матчах, которые ещё не сыграны,
+   а прошедшие остаются за прежним игроком (он помечен «до замены»).      */
+function nameAt(i, ri){
+  const segs = state.past && state.past[i];
+  if(segs) for(const s of segs) if(ri >= s.from && ri < s.to) return s.name;
+  return state.players[i];
+}
+// с какой записи заменяем: первый матч игрока, который ещё не доигран
+function handoverSlot(i){
+  for(let ri = 0; ri < state.schedule.length; ri++){
+    const ci = state.schedule[ri].courts.findIndex(m => m && (m[0] === i || m[1] === i));
+    if(ci >= 0 && !isDone(gid(ri, ci))) return ri;
+  }
+  return state.schedule.length;
+}
+function substitutePlayer(i, newName){
+  const S = handoverSlot(i);
+  // история нужна, только если за этим игроком есть уже сыгранные матчи
+  const playedBefore = state.schedule.slice(0, S)
+    .some(r => r.courts.some(m => m && (m[0] === i || m[1] === i)));
+  if(S > 0 && playedBefore){
+    const segs = (state.past && state.past[i]) ? state.past[i].slice() : [];
+    const last = segs.length ? segs[segs.length - 1].to : 0;
+    if(S > last) segs.push({ from: last, to: S, name: state.players[i] });
+    state.past = state.past || {};
+    state.past[i] = segs;
+  }
+  const old = state.players[i];
+  state.players[i] = newName;
+  return { old, from: S, kept: playedBefore };
+}
+function replacePlayer(i){
+  if (!canEditAll()) return toast('Ваша роль не позволяет менять состав');
+  const cur = state.players[i];
+  const name = prompt(`Кто играет вместо «${cur}»?\n\nСыгранные матчи останутся за прежним игроком, ` +
+                      `а начиная со следующего несыгранного будет играть новый.`, '');
+  if (name === null) return;
+  const v = name.trim().replace(/\s+/g, ' ').slice(0, 24);
+  if (!v) return;
+  if (state.players.some((p, k) => k !== i && p.toLowerCase() === v.toLowerCase()))
+    return toast('Такой игрок уже есть в составе');
+  const { old, from, kept } = substitutePlayer(i, v);
+  state.structTs = Date.now();
+  save(); renderPlayers(); renderGrid(); renderTable(); renderJudge(); renderSummary();
+  publishFull();
+  toast(`Теперь «${v}» вместо «${old}».${kept ? ` Сыгранные матчи остались за «${old}».` : ''}`);
+}
+/* ================= защита сетки ================= */
+function staleOn(msg){
+  if(!state.schedule.length) return;                 // нечего защищать
+  const el = $('genNote');
+  el.textContent = msg || 'Настройки изменены — нажмите «Пересобрать сетку», чтобы применить.';
+  el.hidden = false;
+}
+function staleOff(){ const el = $('genNote'); el.textContent = ''; el.hidden = true; }
+function updateGenBtn(){
+  $('genBtn').textContent = state.schedule.length ? 'Пересобрать сетку' : 'Построить сетку';
+}
+// переносим счёт на те же пары в новой сетке
+function carryScores(oldSched, oldScores, newSched){
+  const byPair = {};
+  oldSched.forEach((r, ri) => r.courts.forEach(([a,b], ci) => {
+    const s = oldScores[gid(ri,ci)];
+    if(s) byPair[pairKey(a,b)] = s;
+  }));
+  const out = {};
+  newSched.forEach((r, ri) => r.courts.forEach(([a,b], ci) => {
+    const s = byPair[pairKey(a,b)];
+    if(s) out[gid(ri,ci)] = Object.assign({}, s, { ts: Date.now() });
+  }));
+  return out;
+}
+
+function generate(){
+  if(!canEditAll()) return toast('Ваша роль не позволяет пересобирать сетку');
+  if(state.players.length < 2) return toast('Нужно минимум 2 игрока');
+  const hadScores = Object.keys(state.scores).length;
+  if(state.schedule.length){
+    const msg = hadScores
+      ? `Сетка уже построена, внесено результатов: ${hadScores}.\n\nПостроить заново?\nСчёт сохранится у тех пар, которые останутся в новой сетке.`
+      : 'Сетка уже построена.\n\nПостроить заново?';
+    if(!confirm(msg)) return;
+  }
+  const oldSched = state.schedule, oldScores = state.scores;
+  state.courts = +$('courts').value;
+  state.mode = $('mode').value;
+  state.sessionMin = +$('sessionMin').value || 120;
+  state.matchMin = Math.max(5, Math.min(180, +$('matchMin').value || 30));
+  // «по времени»: сколько матчей подряд влезает в выбранные часы
+  state.rounds = state.mode === 'everyone'
+    ? state.rounds
+    : Math.max(1, Math.floor(state.sessionMin / state.matchMin));
+  state.schedule = buildSchedule();
+  const kept = oldSched.length ? carryScores(oldSched, oldScores, state.schedule) : {};
+  const resetTs = Date.now();
+  state.scores = kept; state.scoresTs = resetTs;
+  judge.round = 0;
+  staleOff(); updateGenBtn();
+  renderGrid(); renderTable(); renderJudge(); save();
+  // другим судьям: новая сетка, очистка счёта и сохранённые результаты
+  publishFull();
+  queueMsg({ t:'reset', ts: resetTs, from: sync.clientId, nm: sync.name });
+  Object.keys(kept).forEach(g => publishScore(g));
+  const n = state.schedule.reduce((s,r) => s + r.courts.length, 0);
+  toast(`Готово: ${n} матчей по ${state.matchMin} мин` +
+        (Object.keys(kept).length ? `, счёт сохранён у ${Object.keys(kept).length}` : ''));
+}
+function switchView(v){
+  judge.view = v;
+  ['grid','judge','table','po','share'].forEach(k => {
+    $('panel-' + k).hidden = k !== v;
+  });
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.view === v));
+  if(v === 'judge') renderJudge();
+  if(v === 'grid') renderGrid();
+  if(v === 'table') renderTable();
+  if(v === 'po') renderPlayoff();
+  if(v === 'share') renderShare();
+  save();
+}
+function toast(msg){
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 2000);
+}
+function scheduleText(){
+  if(!state.schedule.length) return '';
+  const head = `Сетка · матч ≈ ${matchMinutes()} мин · начало ${fmtHM(parseHM(state.startTime))} · окончание ${finishTime()}`;
+  const body = state.schedule.map((round, ri) => {
+    const t = waveWindow(ri);
+    const lines = round.courts.map(([a,b], ci) => {
+      const s = state.scores[gid(ri,ci)] || {};
+      const sv = s.sv ? `   [подача: ${nameAt(sv.server === 'a' ? a : b, ri)}, ${sv.box === 'left' ? 'левый' : 'правый'}]` : '';
+      const res = (s.a != null && s.b != null) ? `   → ${s.a} : ${s.b}` : '';
+      return `  Корт ${ci+1}: ${nameAt(a, ri)}  vs  ${nameAt(b, ri)}${res}${sv}`;
+    });
+    const rest = round.resting.length ? `\n  Отдыхают: ${round.resting.map(i => nameAt(i, ri)).join(', ')}` : '';
+    return `${roundTitle(ri)} (${t.text}):\n${lines.join('\n')}${rest}`;
+  }).join('\n\n');
+  return head + '\n\n' + body;
+}
+
+/* ================= события ================= */
+$('addBtn').onclick = addPlayer;
+$('name').onkeydown = e => { if(e.key === 'Enter') addPlayer(); };
+$('pasteBox').oninput = () => renderPasteReport(false);
+$('pasteAdd').onclick = () => pasteInto(false);
+$('pasteReplace').onclick = () => pasteInto(true);
+$('genBtn').onclick = generate;
+$('clearBtn').onclick = () => {
+  if(!canEditAll()) return toast('Ваша роль не позволяет менять состав');
+  if(!state.players.length) return;
+  if(!confirm('Убрать всех игроков?' + (state.schedule.length ? '\nСетка и счёт будут потеряны.' : ''))) return;
+  state.players = []; resetSchedule(); renderPlayers(); save(); publishFull();
+};
+$('demoBtn').onclick = () => {
+  if(!canEditAll()) return toast('Ваша роль не позволяет менять состав');
+  if(state.players.length && !confirm('Заменить состав на пример из 12 игроков?' +
+      (state.schedule.length ? '\nСетка и счёт будут потеряны.' : ''))) return;
+  state.players = ['Анна','Борис','Вера','Глеб','Дина','Егор','Жанна','Игорь','Катя','Лев','Марина','Никита'];
+  resetSchedule(); renderPlayers(); save(); publishFull(); toast('Добавлено 12 игроков');
+};
+$('resetScoresBtn').onclick = () => {
+  if(!canEditScores()) return toast('Роль «зритель» не может менять счёт');
+  if(!confirm('Очистить все внесённые результаты?')) return;
+  state.scores = {}; state.scoresTs = Date.now();
+  save(); renderGrid(); renderTable(); renderJudge();
+  queueMsg({ t:'reset', ts: state.scoresTs, from: sync.clientId, nm: sync.name });
+  toast('Счёт очищен');
+};
+$('courts').onchange = () => staleOn();
+$('mode').onchange = () => {
+  $('sessionMin').disabled = $('mode').value === 'everyone';
+  staleOn();
+};
+$('sessionMin').onchange = () => staleOn();
+$('matchMin').oninput = () => {
+  const v = Math.max(5, Math.min(180, +$('matchMin').value || 30));
+  state.matchMin = v; save(); renderGrid(); renderJudge();
+};
+$('matchMin').onblur = () => { $('matchMin').value = matchMinutes(); renderGrid(); };
+$('startTime').onchange = () => {
+  state.startTime = $('startTime').value || '18:00'; save(); renderGrid(); renderJudge();
+};
+
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => switchView(b.dataset.view));
+// счёт в плей-офф: при вводе обновляем подсветку, по завершении ввода — продвигаем победителя
+$('panel-po').addEventListener('input', e => {
+  const el = e.target;
+  if(!el.matches('input[data-game]')) return;
+  setScore(el.dataset.game, el.dataset.team, el.value);
+});
+$('panel-po').addEventListener('change', e => {
+  if(!e.target.matches('input[data-game]')) return;
+  const moved = advancePlayoff();
+  save(); renderPlayoff(); renderTable();
+  if(moved) toast('Победитель прошёл дальше');
+});
+$('competitive').onchange = () => { state.competitive = $('competitive').checked; save(); renderTable(); };
+
+// счёт в сетке (делегирование)
+$('panel-grid').addEventListener('input', e => {
+  const el = e.target;
+  if(el.matches('input[data-game]')) setScore(el.dataset.game, el.dataset.team, el.value);
+});
+$('panel-grid').addEventListener('change', e => { if(e.target.matches('input[data-game]')) renderJudge(); });
+
+// перетаскивание игр «как плитку»
+let dragSrc = null;
+function clearDropMarks(){
+  document.querySelectorAll('#panel-grid .drop').forEach(r => r.classList.remove('drop'));
+  document.querySelectorAll('#panel-grid .court.dragging').forEach(t => t.classList.remove('dragging'));
+}
+$('panel-grid').addEventListener('mousedown', e => {
+  // из поля счёта текст выделяют, а не тащат плитку
+  const tile = e.target.closest('.court');
+  if(tile && e.target.closest('input')) tile.draggable = false;
+});
+document.addEventListener('mouseup', () => {
+  document.querySelectorAll('#panel-grid .court').forEach(t => {
+    t.draggable = canEditScores();
+  });
+});
+$('panel-grid').addEventListener('dragstart', e => {
+  const tile = e.target.closest('.court');
+  if(!tile || !tile.draggable || !canEditScores()){ e.preventDefault(); return; }
+  dragSrc = { ri:+tile.dataset.ri, ci:+tile.dataset.ci };
+  tile.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  try{ e.dataTransfer.setData('text/plain', dragSrc.ri + ':' + dragSrc.ci); }catch(err){}
+});
+$('panel-grid').addEventListener('dragend', () => { clearDropMarks(); dragSrc = null; });
+$('panel-grid').addEventListener('dragover', e => {
+  if(!dragSrc) return;
+  const tile = e.target.closest('.court');
+  const slot = e.target.closest('.round');
+  if(!slot) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  // свой корт подсвечиваем точечно (обмен), запись целиком — как и раньше
+  const mark = (tile && tile.dataset.ri) ? tile : slot;
+  if(!mark.classList.contains('drop')){
+    clearDropMarks();
+    mark.classList.add('drop');
+  }
+});
+$('panel-grid').addEventListener('dragleave', e => {
+  const slot = e.target.closest('.round');
+  if(slot && !slot.contains(e.relatedTarget)) slot.classList.remove('drop');
+});
+$('panel-grid').addEventListener('drop', e => {
+  const tile = e.target.closest('.court');
+  const slot = e.target.closest('.round');
+  if(!dragSrc || !slot) return;
+  e.preventDefault();
+  const src = dragSrc, target = +slot.dataset.slot;
+  clearDropMarks(); dragSrc = null;
+  if(tile && tile.dataset.ri != null && tile.dataset.ri !== ''){
+    // уронили на конкретный корт — матч идёт именно туда (или меняется местами)
+    placeMatch(src.ri, src.ci, +tile.dataset.ri, +tile.dataset.ci);
+  } else if(target !== src.ri){
+    moveMatchTo(src.ri, src.ci, target);
+  }
+});
+// перенос матча нажатием: «⇄» — выбрать матч, затем корт
+$('panel-grid').addEventListener('click', e => {
+  const mv = e.target.closest('.mv');
+  if(mv){ startPick(mv.dataset.mv); return; }
+  if(e.target.closest('#pickCancel')){ cancelPick(); return; }
+  if(!pickMove) return;
+  if(e.target.closest('input,button,select,a')) return;
+  const tile = e.target.closest('.court');
+  if(!tile || tile.dataset.ri == null || tile.dataset.ri === '') return;
+  const from = pickMove;
+  pickMove = null;
+  const dstRi = +tile.dataset.ri, dstCi = +tile.dataset.ci;
+  if(from.ri === dstRi && from.ci === dstCi) renderGrid();
+  else placeMatch(from.ri, from.ci, dstRi, dstCi);
+});
+// счёт в консоли судьи
+$('panel-judge').addEventListener('input', e => {
+  const el = e.target;
+  if(el.matches('input[data-game]')) setScore(el.dataset.game, el.dataset.team, el.value);
+});
+$('panel-judge').addEventListener('change', e => { if(e.target.matches('input[data-game]')) renderJudge(); });
+
+$('connectBtn').onclick = () => connect($('roomInput').value, $('role').value, $('judgeName').value.trim(), $('serverInput').value.trim());
+$('disconnectBtn').onclick = () => disconnect(false);
+$('createRoomBtn').onclick = () => {
+  const code = 'SQ-' + Math.random().toString(36).slice(2,6).toUpperCase() + Math.floor(Math.random()*90+10);
+  $('role').value = 'owner';
+  connect(code, 'owner', $('judgeName').value.trim(), $('serverInput').value.trim());
+};
+$('copyLinkBtn').onclick = async () => {
+  try{ await navigator.clipboard.writeText($('shareLink').value); toast('Ссылка скопирована'); }
+  catch(e){ $('shareLink').select(); toast('Скопируйте ссылку вручную'); }
+};
+$('printBtn2').onclick = () => printSheet('grid');
+$('printTableBtn').onclick = () => printSheet('table');
+$('printTableBtn2').onclick = () => printSheet('table');
+$('soundFile').onchange = e => { loadSoundFile(e.target.files[0]); e.target.value = ''; };
+$('pvClose').onclick = closePreview;
+$('pvPrint').onclick = () => { if(pvKind) prepareSheet(pvKind); window.print(); };
+$('pvSave').onclick = () => {
+  if(!pvKind) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([$('pvFrame').srcdoc], { type: 'text/html' }));
+  a.download = 'сквош-' + ({ grid: 'расписание', table: 'таблица', po: 'плей-офф' }[pvKind]) + '.html';
+  a.click(); URL.revokeObjectURL(a.href);
+};
+document.addEventListener('keydown', e => {
+  if(e.key !== 'Escape') return;
+  if(!$('pvOverlay').hidden) closePreview();
+  else if(pickMove) cancelPick();
+});
+$('copyTextBtn').onclick = async () => {
+  const t = scheduleText();
+  if(!t) return toast('Сначала постройте сетку');
+  try{ await navigator.clipboard.writeText(t); toast('Скопировано'); }
+  catch(e){ prompt('Скопируйте текст:', t); }
+};
+$('exportBtn').onclick = () => {
+  const data = JSON.stringify({ players:state.players, courts:state.courts, rounds:state.rounds,
+    mode:state.mode, schedule:state.schedule, scores:state.scores }, null, 2);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([data], { type:'application/json' }));
+  a.download = 'squash-' + new Date().toISOString().slice(0,10) + '.json';
+  a.click(); URL.revokeObjectURL(a.href);
+};
+$('importBtn').onclick = () => $('importFile').click();
+$('importFile').onchange = e => {
+  const f = e.target.files[0]; if(!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try{
+      const d = JSON.parse(r.result);
+      if(!Array.isArray(d.players) || !Array.isArray(d.schedule)) throw new Error('bad file');
+      state.players = d.players.slice(0, MAX_PLAYERS);
+      state.courts = Math.min(d.courts || 2, MAX_COURTS);
+      state.rounds = d.rounds || state.rounds;
+      state.mode = d.mode || state.mode;
+      state.schedule = d.schedule; state.scores = d.scores || {};
+      state.structTs = Date.now(); state.scoresTs = Date.now();
+      save(); renderSetupValues(); renderAll(); publishFull();
+      toast('Импортировано');
+    }catch(err){ toast('Не удалось прочитать файл'); }
+  };
+  r.readAsText(f); e.target.value = '';
+};
+
+/* ================= старт ================= */
+loadPref();
+let hashParams = null;
+let requestedRoom = '';
+if(location.hash.length > 1){
+  hashParams = new URLSearchParams(location.hash.slice(1));
+  requestedRoom = (hashParams.get('room') || '').toUpperCase();
+}
+// Комнату ставим до load(): по ней выбирается ключ localStorage.
+if(requestedRoom) sync.room = requestedRoom;
+load();
+if(requestedRoom) sync.room = requestedRoom;           // load() мог затереть пустым
+if(hashParams){
+  const hp = hashParams;
+  if(hp.get('s')) sync.server = hp.get('s');           // адрес сервера из ссылки-приглашения
+  // SQASSIT: role=viewer|judge фиксирует роль из ссылки, чтобы «только
+  // смотреть» нельзя было переключить на организатора. names=Имя|Имя —
+  // состав занятия или матча; применяем только к пустой комнате.
+  if(hp.get('role')){ sync.role = hp.get('role'); sync.roleLocked = true; }
+  if(hp.get('names')){
+    const incoming = hp.get('names').split('|').map(s => s.trim()).filter(Boolean);
+    if(!state.players.length && incoming.length){
+      state.players = [...new Set(incoming)].slice(0, 16);
+    }
+  }
+}
+
+(function init(){
+  if(!state.startTime){                       // по умолчанию — ближайшие 5 минут
+    const d = new Date();
+    d.setMinutes(Math.ceil((d.getMinutes() + 1) / 5) * 5, 0, 0);
+    state.startTime = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  }
+  $('judgeName').value = sync.name || '';
+  renderSetupValues();
+  // SQASSIT: роль из ссылки не меняется — селект заблокирован.
+  if(sync.roleLocked){
+    const roleSel = $('role');
+    if(roleSel){ roleSel.value = sync.role; roleSel.disabled = true; }
+  }
+  updateGenBtn();
+  // иконки связи в подвале: показываем только заполненные ссылки
+  if(!isPlaceholder(TG_URL)){
+    const a = $('tgIcon');
+    a.href = TG_URL;
+    a.title = 'Telegram · @' + TG_URL.replace(/^https?:\/\/(t\.me|telegram\.me)\//, '').replace(/\/+$/, '');
+    a.hidden = false;
+  }
+  if(!isPlaceholder(REPO_URL)){
+    const a = $('ghIcon');
+    a.href = REPO_URL;
+    a.title = 'GitHub · ' + REPO_URL.replace(/^https?:\/\/(www\.)?github\.com\//, '').replace(/\/+$/, '');
+    a.hidden = false;
+  }
+  $('footLinks').hidden = $('tgIcon').hidden && $('ghIcon').hidden;
+  $('buildStamp').textContent = buildStamp();
+  switchView(judge.view || 'grid');
+  renderAll();
+  if(sync.room){
+    // автоподключение по ссылке с сохранённой ролью; роль меняется во вкладке «Поделиться»
+    connect(sync.room, sync.role || 'judge', sync.name);
+  }
+})();
+</script>
+</body>
+</html>

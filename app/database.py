@@ -158,6 +158,7 @@ CREATE TABLE IF NOT EXISTS matches (
     level         TEXT NOT NULL DEFAULT '',
     created_by    INTEGER NOT NULL,
     created_at    INTEGER NOT NULL,
+    room_code     TEXT,                       -- код комнаты турнира (squashtabs)
     deleted_at    INTEGER
 );
 
@@ -235,6 +236,7 @@ async def _migrate() -> None:
     trainings_cols = await columns_of("trainings")
     users_cols = await columns_of("users")
     coaches_cols = await columns_of("coaches")
+    matches_cols = await columns_of("matches")
     match_players_cols = await columns_of("match_players")
     event_notifications_cols = await columns_of("event_notifications")
     onboarding_was_present = "onboarding_seen" in users_cols
@@ -244,6 +246,7 @@ async def _migrate() -> None:
         ("trainings", "deleted_by"): "ALTER TABLE trainings ADD COLUMN deleted_by INTEGER",
         ("trainings", "level"): "ALTER TABLE trainings ADD COLUMN level TEXT NOT NULL DEFAULT ''",
         ("trainings", "room_code"): "ALTER TABLE trainings ADD COLUMN room_code TEXT",
+        ("matches", "room_code"): "ALTER TABLE matches ADD COLUMN room_code TEXT",
         ("users", "bio"): "ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''",
         ("users", "links"): "ALTER TABLE users ADD COLUMN links TEXT NOT NULL DEFAULT '[]'",
         ("users", "about"): "ALTER TABLE users ADD COLUMN about TEXT NOT NULL DEFAULT ''",
@@ -293,6 +296,7 @@ async def _migrate() -> None:
         "trainings": trainings_cols,
         "users": users_cols,
         "coaches": coaches_cols,
+        "matches": matches_cols,
         "match_players": match_players_cols,
         "event_notifications": event_notifications_cols,
     }
@@ -1592,6 +1596,22 @@ async def get_match(match_id: int) -> aiosqlite.Row | None:
          WHERE m.id = ?
         """,
         (match_id,),
+    )
+
+
+async def get_match_room(match_id: int) -> str | None:
+    """Код комнаты турнира для матча."""
+    row = await _fetchone(
+        "SELECT room_code FROM matches WHERE id = ?", (match_id,)
+    )
+    return row["room_code"] if row is not None else None
+
+
+async def set_match_room(match_id: int, code: str) -> None:
+    """Записывает код, только если его ещё нет: два тапа не создадут два кода."""
+    await _execute_rowcount(
+        "UPDATE matches SET room_code = ? WHERE id = ? AND room_code IS NULL",
+        (code, match_id),
     )
 
 

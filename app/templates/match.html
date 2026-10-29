@@ -138,6 +138,8 @@ function matchCard(m) {
   } else {
     actions = `<button class="btn btn--danger" data-match-leave="${m.id}">Выйти из матча</button>`;
   }
+  // Турнирная сетка нужна, когда в матче больше трёх игроков.
+  const showTournament = m.players_count > 3 && (m.is_joined || m.is_creator);
   const creator = m.creator && !m.participants.some(p => p.is_organizer)
     ? `<div class="t-coach" style="cursor:default">
         <button type="button" class="participant-open" data-profile-token="${esc(m.creator.profile_token || '')}">
@@ -194,8 +196,25 @@ function matchCard(m) {
           </div>
         </div>`).join('')}` : ''}
     <div class="t-actions">${actions}</div>
+    ${showTournament ? tournamentRow(m.id) : ''}
     ${rows}
   </div>`;
+}
+
+// ===== Турнир матча =====
+async function openMatchTournament(id) {
+  const btn = document.querySelector(`[data-tournament="${id}"]`);
+  if (btn) btn.disabled = true;
+  try {
+    const d = await api(`/api/matches/${id}/room`, 'POST');
+    const m = MATCHES[id];
+    openTournamentRoom(d.code, m ? m.participants.map(p => p.first_name) : []);
+  } catch (e) {
+    hapticNotify('error');
+    toast(e.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function renderMatches(matches) {
@@ -286,6 +305,8 @@ document.addEventListener('keydown', e => {
 document.getElementById('matches').addEventListener('click', async (ev) => {
   const profileToken = ev.target.closest('[data-profile-token]')?.getAttribute('data-profile-token');
   if (profileToken) { openPlayerProfile(profileToken); return; }
+  const tournamentId = ev.target.closest('[data-tournament]')?.getAttribute('data-tournament');
+  if (tournamentId) { openMatchTournament(tournamentId); return; }
   const join = ev.target.closest('[data-match-join]')?.getAttribute('data-match-join');
   const leave = ev.target.closest('[data-match-leave]')?.getAttribute('data-match-leave');
   const remove = ev.target.closest('[data-match-delete]')?.getAttribute('data-match-delete');

@@ -620,6 +620,63 @@
       background: var(--surface); border-top: 1px solid var(--border);
     }
 
+    /* ===== Турнир: полноэкранный iframe внутри приложения ===== */
+    /* Турнир — тёмный по своему дизайну (чёрный корт, жёлтый мяч), поэтому
+       панель над ним повторяет его палитру, а не светлую тему приложения. */
+    .tabs-overlay {
+      position: fixed; inset: 0; z-index: 70;
+      display: flex; flex-direction: column;
+      padding-top: var(--safe-top);
+      background: #0B0B0B;
+      color: #F0EFE9;
+    }
+    .tabs-overlay[hidden] { display: none; }
+    html.has-tabs, html.has-tabs body { overflow: hidden; }
+    .tabs-overlay__bar {
+      flex: none; display: flex; align-items: center; gap: 4px;
+      padding: 4px 10px 4px 4px;
+      border-bottom: 1px solid #222222;
+      background: #0B0B0B;
+    }
+    .tabs-overlay__close {
+      width: 44px; height: 44px; flex: none; border: 0;
+      border-radius: var(--radius-sm);
+      background: transparent; color: #F0EFE9;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+    }
+    .tabs-overlay__close svg { width: 22px; height: 22px; }
+    .tabs-overlay__close:active { background: #1A1A1A; }
+    .tabs-overlay__title { font-size: 15px; font-weight: 600; letter-spacing: -.01em; color: #F0EFE9; }
+    .tabs-overlay__code {
+      margin-inline-start: auto; padding-inline-end: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px; color: #9C9A91; letter-spacing: .02em;
+    }
+    .tabs-overlay iframe {
+      flex: 1 1 auto; width: 100%; border: 0;
+      background: #0B0B0B;
+    }
+    /* Меню «Поделиться»: тёмное, как и сам турнир. */
+    .tabs-menu {
+      position: absolute; top: calc(var(--safe-top) + 54px); right: 10px; z-index: 2;
+      width: min(270px, calc(100vw - 20px));
+      padding: 6px;
+      background: #161616; border: 1px solid #2A2A2A; border-radius: 12px;
+      box-shadow: 0 14px 36px rgba(0, 0, 0, .55);
+    }
+    .tabs-menu[hidden] { display: none; }
+    .tabs-menu__item {
+      display: flex; flex-direction: column; gap: 2px; width: 100%;
+      min-height: 48px; padding: 8px 12px; border: 0; border-radius: 8px;
+      background: transparent; color: #F0EFE9;
+      font: inherit; font-size: 14px; font-weight: 500; text-align: start;
+      cursor: pointer;
+    }
+    .tabs-menu__item:active { background: #222222; }
+    .tabs-menu__item:focus-visible { outline: 2px solid #FFE14D; outline-offset: 2px; }
+    .tabs-menu__hint { font-size: 12px; font-weight: 400; color: #9C9A91; }
+
     /* ===== Тост ===== */
     .toast {
       position: fixed; left: 50%; z-index: 60;
@@ -1045,6 +1102,44 @@
     </a>
   </nav>
 
+  <!-- Полноэкранный турнир: локальная сборка squashtabs, без внешних сайтов -->
+  <div class="tabs-overlay" id="tabs-overlay" hidden>
+    <div class="tabs-overlay__bar">
+      <button type="button" class="tabs-overlay__close" id="tabs-close" aria-label="Закрыть турнир">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M15 5l-7 7 7 7"/>
+        </svg>
+      </button>
+      <span class="tabs-overlay__title">Турнир</span>
+      <code class="tabs-overlay__code" id="tabs-code"></code>
+      <button type="button" class="tabs-overlay__close" id="tabs-share" aria-label="Поделиться турниром"
+              aria-haspopup="menu" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="18" cy="5" r="2.6"/><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="19" r="2.6"/>
+          <path d="M8.4 10.7l7.2-4.2M8.4 13.3l7.2 4.2"/>
+        </svg>
+      </button>
+    </div>
+    <div class="tabs-menu" id="tabs-share-menu" role="menu" hidden>
+      <button type="button" class="tabs-menu__item" role="menuitem" data-share-role="viewer">
+        <span>Для игроков</span>
+        <span class="tabs-menu__hint">только смотреть</span>
+      </button>
+      <button type="button" class="tabs-menu__item" role="menuitem" data-share-role="judge">
+        <span>Для судьи</span>
+        <span class="tabs-menu__hint">можно вносить счёт</span>
+      </button>
+      <button type="button" class="tabs-menu__item" role="menuitem" data-copy-code>
+        <span>Скопировать код</span>
+        <span class="tabs-menu__hint" id="tabs-menu-code"></span>
+      </button>
+    </div>
+    <iframe id="tabs-frame" title="Турнир: сетка и судейство" src="about:blank"
+            allow="clipboard-write"></iframe>
+  </div>
+
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <!-- Bottom sheet: добавление в календарь (общий для страниц) -->
@@ -1375,6 +1470,28 @@
     // Аватар: цветной круг с инициалом; картинка грузится поверх, при ошибке удаляется.
     // Для анонимного режима передаётся emoji животного. id нужен, чтобы
     // повторное обновление профиля не теряло контейнер.
+    // Турнир — переход не в другое приложение, а в полноэкранный слой
+    // с локальной сборкой squashtabs. Одна разметка для занятий и матчей.
+    function tournamentRow(id) {
+      return `
+      <button type="button" class="list-action tournament-row" data-tournament="${id}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M8 4h8v4.5a4 4 0 0 1-8 0V4Z"/>
+          <path d="M8 5H5.5v1.5A3.5 3.5 0 0 0 9 10M16 5h2.5v1.5A3.5 3.5 0 0 1 15 10"/>
+          <path d="M12 12.5V16M9.5 20h5M10.5 20v-2.5h3V20"/>
+        </svg>
+        <span class="list-action__text">
+          <span>Турнир</span>
+          <span class="list-action__hint">сетка и судейство</span>
+        </span>
+        <svg class="list-action__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 18l6-6-6-6"/>
+        </svg>
+      </button>`;
+    }
+
     function avatarHtml(name, url, small, emoji, id) {
       const idAttr = id ? ` id="${esc(id)}"` : '';
       if (emoji) {
@@ -1463,6 +1580,123 @@
       return d.getUTCFullYear() + pad2(d.getUTCMonth() + 1) + pad2(d.getUTCDate()) +
         'T' + pad2(d.getUTCHours()) + pad2(d.getUTCMinutes()) + pad2(d.getUTCSeconds()) + 'Z';
     }
+    // ===== Турнир (squashtabs) =====
+    // Код комнаты выдаёт сервер. В приложении открываем как организатора,
+    // ссылки для игроков и судей фиксируют роль через #role=…
+    const tabsOverlay = document.getElementById('tabs-overlay');
+    const tabsFrame = document.getElementById('tabs-frame');
+    const tabsCode = document.getElementById('tabs-code');
+    const tabsMenu = document.getElementById('tabs-share-menu');
+    const tabsMenuCode = document.getElementById('tabs-menu-code');
+    const tabsShareBtn = document.getElementById('tabs-share');
+    let tabsRoom = '';
+    let tabsTrigger = null;
+
+    function isTabsOpen() { return !tabsOverlay.hidden; }
+
+    function openTournamentRoom(code, names) {
+      tabsRoom = String(code || '');
+      tabsCode.textContent = tabsRoom;
+      tabsMenuCode.textContent = tabsRoom;
+      const roster = (names || []).map(n => String(n || '').trim()).filter(Boolean);
+      const hash = 'room=' + encodeURIComponent(tabsRoom) + '&role=owner' +
+        (roster.length ? '&names=' + encodeURIComponent(roster.join('|')) : '');
+      tabsTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      tabsFrame.src = '/tabs#' + hash;
+      tabsOverlay.hidden = false;
+      tabsMenu.hidden = true;
+      tabsShareBtn.setAttribute('aria-expanded', 'false');
+      document.documentElement.classList.add('has-tabs');
+      try { tg && tg.BackButton && tg.BackButton.show(); } catch (e) {}
+      haptic('light');
+      document.getElementById('tabs-close').focus();
+    }
+
+    function closeTabs() {
+      tabsOverlay.hidden = true;
+      tabsMenu.hidden = true;
+      tabsShareBtn.setAttribute('aria-expanded', 'false');
+      tabsFrame.src = 'about:blank';
+      tabsCode.textContent = '';
+      tabsMenuCode.textContent = '';
+      tabsRoom = '';
+      document.documentElement.classList.remove('has-tabs');
+      try { tg && tg.BackButton && tg.BackButton.hide(); } catch (e) {}
+      if (tabsTrigger) tabsTrigger.focus();
+      tabsTrigger = null;
+    }
+
+    async function shareTabsLink(role) {
+      const url = location.origin + '/tabs#room=' + encodeURIComponent(tabsRoom) +
+        '&role=' + encodeURIComponent(role);
+      const text = 'Турнир: сетка и счёт';
+      tabsMenu.hidden = true;
+      tabsShareBtn.setAttribute('aria-expanded', 'false');
+      if (navigator.share) {
+        try {
+          await navigator.share({ title: 'Турнир', text, url });
+          return;
+        } catch (e) {
+          if (e && e.name === 'AbortError') return;
+        }
+      }
+      try {
+        if (tg && tg.openTelegramLink) {
+          tg.openTelegramLink(
+            'https://t.me/share/url?url=' + encodeURIComponent(url) +
+            '&text=' + encodeURIComponent(text));
+          return;
+        }
+      } catch (e) {}
+      try {
+        await navigator.clipboard.writeText(url);
+        toast('Ссылка скопирована');
+      } catch (e) {
+        toast('Не удалось скопировать ссылку');
+      }
+    }
+
+    async function copyTabsCode() {
+      tabsMenu.hidden = true;
+      tabsShareBtn.setAttribute('aria-expanded', 'false');
+      try {
+        await navigator.clipboard.writeText(tabsRoom);
+        toast('Код скопирован');
+      } catch (e) {
+        toast('Код: ' + tabsRoom);
+      }
+    }
+
+    document.getElementById('tabs-close').addEventListener('click', closeTabs);
+    tabsShareBtn.addEventListener('click', () => {
+      const open = tabsMenu.hidden;
+      tabsMenu.hidden = !open;
+      tabsShareBtn.setAttribute('aria-expanded', String(open));
+    });
+    tabsMenu.addEventListener('click', (ev) => {
+      const role = ev.target.closest('[data-share-role]')?.getAttribute('data-share-role');
+      if (role) { shareTabsLink(role); return; }
+      if (ev.target.closest('[data-copy-code]')) copyTabsCode();
+    });
+    document.addEventListener('click', (ev) => {
+      if (tabsMenu.hidden) return;
+      if (ev.target.closest('#tabs-share-menu, #tabs-share')) return;
+      tabsMenu.hidden = true;
+      tabsShareBtn.setAttribute('aria-expanded', 'false');
+    });
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Escape') return;
+      if (!tabsMenu.hidden) {
+        tabsMenu.hidden = true;
+        tabsShareBtn.setAttribute('aria-expanded', 'false');
+        return;
+      }
+      if (isTabsOpen()) closeTabs();
+    });
+    try {
+      tg && tg.BackButton && tg.BackButton.onClick(() => { if (isTabsOpen()) closeTabs(); });
+    } catch (e) {}
+
     function openExternal(url) {
       try { if (tg && tg.openLink) { tg.openLink(url); return; } } catch (e) {}
       window.open(url, '_blank');

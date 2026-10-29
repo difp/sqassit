@@ -291,6 +291,8 @@ function trainingCard(t) {
     </button>`);
   }
   const action = buttons.length ? `<div class="t-actions">${buttons.join('')}</div>` : '';
+  // Турнир доступен тем, кто в записи: состав сетки — записавшиеся.
+  const showTournament = t.is_booked || t.is_waitlisted || t.is_pending;
 
   return `
   <div class="card">
@@ -307,6 +309,7 @@ function trainingCard(t) {
     ${participantsLine(t.participants, t.id)}
     ${coachHtml(t.coach, t.id)}
     ${action}
+    ${showTournament ? tournamentRow(t.id) : ''}
   </div>`;
 }
 
@@ -392,6 +395,8 @@ document.getElementById('notif-toggle').addEventListener('change', async (ev) =>
 document.getElementById('schedule').addEventListener('click', async (ev) => {
   const partId = ev.target.closest('[data-participants]')?.getAttribute('data-participants');
   if (partId) { openParticipants(parseInt(partId, 10)); return; }
+  const tournamentId = ev.target.closest('[data-tournament]')?.getAttribute('data-tournament');
+  if (tournamentId) { openTrainingTournament(tournamentId); return; }
   const profileToken = ev.target.closest('[data-profile-token]')?.getAttribute('data-profile-token');
   if (profileToken) { openPlayerProfile(profileToken); return; }
   const bookId = ev.target.closest('[data-book]')?.getAttribute('data-book');
@@ -428,6 +433,22 @@ document.getElementById('schedule').addEventListener('click', async (ev) => {
     toast(e.message);
   }
 });
+
+// ===== Турнир занятия =====
+async function openTrainingTournament(id) {
+  const btn = document.querySelector(`[data-tournament="${id}"]`);
+  if (btn) btn.disabled = true;
+  try {
+    const d = await api(`/api/trainings/${id}/room`, 'POST');
+    const t = ITEMS[id];
+    openTournamentRoom(d.code, t ? t.participants.map(p => p.first_name) : []);
+  } catch (e) {
+    hapticNotify('error');
+    toast(e.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
 
 // ===== Кто записан на занятие =====
 // Игрок видит полный список, а не только аватарки в карточке.

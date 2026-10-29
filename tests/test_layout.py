@@ -277,9 +277,32 @@ def test_coach_always_sees_username() -> None:
 
 def test_coach_opens_tournament_room() -> None:
     coach = (TEMPLATES / "coach.html").read_text()
+    base = BASE.read_text()
+    index = (TEMPLATES / "index.html").read_text()
+    match = (TEMPLATES / "match.html").read_text()
+    tabs = (TEMPLATES.parents[1] / "app" / "static" / "squashtabs" / "index.html").read_text()
 
-    # Турнир — переход в squashtabs; код комнаты выдаёт сервер, а не URL.
-    assert 'data-tournament="${t.id}"' in coach
-    assert "if (tournament) { openTournament(tournament); return; }" in coach
-    assert "difp.github.io/squashtabs/#room=" in coach
+    # Слой турнира общий: живёт в base.html и открывается без внешних сайтов.
+    assert 'id="tabs-overlay"' in base
+    assert 'id="tabs-frame"' in base
+    assert "function openTournamentRoom(code, names)" in base
+    assert "tabsFrame.src = '/tabs#'" in base
+    assert "difp.github.io" not in base
+    assert "difp.github.io" not in coach
+
+    # Строка «Турнир» — общий хелпер; карточки лишь решают, когда её показать.
+    assert "function tournamentRow(id)" in base
     assert "${t.can_manage ? tournamentRow(t) : ''}" in coach
+    assert "${showTournament ? tournamentRow(t.id) : ''}" in index
+    assert "${showTournament ? tournamentRow(m.id) : ''}" in match
+    assert "const showTournament = t.is_booked || t.is_waitlisted || t.is_pending;" in index
+    assert "m.players_count > 3 && (m.is_joined || m.is_creator)" in match
+
+    # Ссылки для игроков и судей фиксируют роль; в приложении открываем owner.
+    assert "&role=' + encodeURIComponent(role)" in base
+    assert "'&role=owner'" in base
+    assert "https://t.me/share/url?url=" in base
+
+    # Локальная сборка squashtabs принимает роль и состав из ссылки.
+    assert "sync.roleLocked = true" in tabs
+    assert "hp.get('names')" in tabs

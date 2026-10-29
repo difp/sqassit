@@ -473,7 +473,10 @@ function closeSheet() {
 document.getElementById('fab-add').addEventListener('click', openSheet);
 sheet.querySelector('[data-close]').addEventListener('click', closeSheet);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSheet(); });
-if (tg && tg.BackButton) tg.BackButton.onClick(closeSheet);
+if (tg && tg.BackButton) tg.BackButton.onClick(() => {
+  if (isTabsOpen()) closeTabs();
+  else closeSheet();
+});
 
 document.getElementById('create-mode').addEventListener('click', ev => {
   const btn = ev.target.closest('[data-create-mode]');
@@ -776,28 +779,6 @@ function reminderEditor(t) {
       <div class="hint reminder-total">Итого: <b data-ototal="${t.id}">${esc(fmtOffset(t.reminder_offset_min))}</b> до старта</div>
     </div>
   </details>`;
-}
-
-// Турнир — отдельной строкой: это переход в другое приложение, а не
-// действие над занятием, поэтому не плитка среди «Удалить».
-function tournamentRow(t) {
-  return `
-  <button type="button" class="list-action tournament-row" data-tournament="${t.id}">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path d="M8 4h8v4.5a4 4 0 0 1-8 0V4Z"/>
-      <path d="M8 5H5.5v1.5A3.5 3.5 0 0 0 9 10M16 5h2.5v1.5A3.5 3.5 0 0 1 15 10"/>
-      <path d="M12 12.5V16M9.5 20h5M10.5 20v-2.5h3V20"/>
-    </svg>
-    <span class="list-action__text">
-      <span>Турнир</span>
-      <span class="list-action__hint">сетка и судейство</span>
-    </span>
-    <svg class="list-action__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path d="M9 18l6-6-6-6"/>
-    </svg>
-  </button>`;
 }
 
 // Плитка быстрого действия: иконка и подпись. Подпись важна — по одной
@@ -1284,15 +1265,16 @@ bookList.addEventListener('click', (ev) => {
 });
 
 // ===== Турнир (squashtabs) =====
-// Код комнаты выдаёт сервер и хранит у занятия: из адреса приложения его
-// выводить нельзя — публичный топик ntfy знает любой, кому известен код.
+// Код комнаты выдаёт сервер и хранит у занятия. В сетку подставляем
+// записавшихся; тренер при желании добавляет себя в самом турнире.
 async function openTournament(id) {
   const btn = document.querySelector(`[data-tournament="${id}"]`);
   if (btn) btn.disabled = true;
   try {
-    const d = await api(`/api/coach/trainings/${id}/room`, 'POST');
-    haptic('light');
-    openExternal('https://difp.github.io/squashtabs/#room=' + encodeURIComponent(d.code));
+    const d = await api(`/api/trainings/${id}/room`, 'POST');
+    const t = TRAININGS.find(x => x.id == id);
+    const names = t ? t.participants.map(p => p.first_name) : [];
+    openTournamentRoom(d.code, names);
   } catch (e) {
     hapticNotify('error');
     toast(e.message);
