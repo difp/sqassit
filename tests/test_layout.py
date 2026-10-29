@@ -292,7 +292,14 @@ def test_coach_opens_tournament_room() -> None:
 
     # Строка «Турнир» — общий хелпер; карточки лишь решают, когда её показать.
     assert "function tournamentRow(id)" in base
-    assert "${t.can_manage ? tournamentRow(t) : ''}" in coach
+    # В хелпер передаётся id, а не объект занятия: иначе в data-tournament
+    # попадает «[object Object]» и запрос уходит на несуществующий путь.
+    assert "${t.can_manage ? tournamentRow(t.id) : ''}" in coach
+    assert "tournamentRow(t)" not in coach
+    # В карточке тренера нет массива участников — имена берём запросом.
+    assert "api(`/api/coach/trainings/${id}/participants`)" in coach
+    assert ".filter(p => p.status === 'booked')" in coach
+    assert "Array.isArray(names)" in base
     assert "${showTournament ? tournamentRow(t.id) : ''}" in index
     assert "${showTournament ? tournamentRow(m.id) : ''}" in match
     assert "const showTournament = t.is_booked || t.is_waitlisted || t.is_pending;" in index

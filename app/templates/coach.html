@@ -818,7 +818,7 @@ function activeRow(t) {
       <span>${wait ? 'Очередь: ' + wait : 'Очередь пуста'}</span>
     </div>
     <div class="quick-actions">${actions}</div>
-    ${t.can_manage ? tournamentRow(t) : ''}
+    ${t.can_manage ? tournamentRow(t.id) : ''}
     ${t.is_owner ? reminderEditor(t) : ''}
     <details class="disclosure" data-pid="${t.id}" open>
       <summary>Участники${pending ? ` · заявок ${pending}` : ''}</summary>
@@ -1271,9 +1271,15 @@ async function openTournament(id) {
   const btn = document.querySelector(`[data-tournament="${id}"]`);
   if (btn) btn.disabled = true;
   try {
-    const d = await api(`/api/trainings/${id}/room`, 'POST');
-    const t = TRAININGS.find(x => x.id == id);
-    const names = t ? t.participants.map(p => p.first_name) : [];
+    // В карточке тренера нет массива участников: имена берём отдельным
+    // запросом, иначе openTournamentRoom получает undefined.
+    const [d, roster] = await Promise.all([
+      api(`/api/trainings/${id}/room`, 'POST'),
+      api(`/api/coach/trainings/${id}/participants`),
+    ]);
+    const names = (roster.participants || [])
+      .filter(p => p.status === 'booked')
+      .map(p => p.first_name);
     openTournamentRoom(d.code, names);
   } catch (e) {
     hapticNotify('error');

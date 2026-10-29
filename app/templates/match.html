@@ -208,7 +208,8 @@ async function openMatchTournament(id) {
   try {
     const d = await api(`/api/matches/${id}/room`, 'POST');
     const m = MATCHES[id];
-    openTournamentRoom(d.code, m ? m.participants.map(p => p.first_name) : []);
+    const names = m && Array.isArray(m.participants) ? m.participants.map(p => p.first_name) : [];
+    openTournamentRoom(d.code, names);
   } catch (e) {
     hapticNotify('error');
     toast(e.message);

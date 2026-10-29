@@ -1598,7 +1598,8 @@
       tabsRoom = String(code || '');
       tabsCode.textContent = tabsRoom;
       tabsMenuCode.textContent = tabsRoom;
-      const roster = (names || []).map(n => String(n || '').trim()).filter(Boolean);
+      const roster = (Array.isArray(names) ? names : [])
+        .map(n => String(n || '').trim()).filter(Boolean);
       const hash = 'room=' + encodeURIComponent(tabsRoom) + '&role=owner' +
         (roster.length ? '&names=' + encodeURIComponent(roster.join('|')) : '');
       tabsTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
