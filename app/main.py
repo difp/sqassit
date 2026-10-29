@@ -766,7 +766,10 @@ _TABS_CSP = (
     "object-src 'none'; "
     "base-uri 'none'; "
     "form-action 'self'; "
-    "frame-ancestors 'self'"
+    # Встраивать может наш origin, а также Telegram Web: мини-приложение
+    # там само живёт в iframe, и проверяются все предки, не только родитель.
+    "frame-ancestors 'self' https://telegram.org https://web.telegram.org "
+    "https://*.telegram.org https://*.t.me"
 )
 
 

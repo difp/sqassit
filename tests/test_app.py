@@ -1111,8 +1111,10 @@ def test_tabs_page_is_served_from_own_origin(client):
     # только своему origin — иначе iframe в мини-приложении не откроется.
     csp = response.headers["content-security-policy"]
     assert "connect-src 'self' https://ntfy.sh" in csp
-    assert "frame-ancestors 'self'" in csp
-    assert "frame-ancestors https://telegram.org" not in csp
+    # В Telegram Web мини-приложение само в iframe, и CSP проверяет всю
+    # цепочку предков: без доменов Telegram вложенный /tabs блокируется.
+    assert "frame-ancestors 'self' https://telegram.org https://web.telegram.org" in csp
+    assert "https://*.t.me" in csp
 
 
 def test_player_privacy_about_and_animal_participant(client):
