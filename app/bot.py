@@ -58,7 +58,7 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-WEB_APP_VERSION = "36"
+WEB_APP_VERSION = "37"
 
 
 def _web_app_url() -> str:

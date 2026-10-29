@@ -1002,9 +1002,18 @@ def test_player_privacy_about_and_animal_participant(client):
 
     players = client.get("/api/coach/players", headers=COACH).json()["players"]
     player = next(p for p in players if p["telegram_id"] == 555)
-    assert player["username"] is None
+    # Согласие касается других игроков: тренер видит username всегда,
+    # иначе по нику не найти человека для модерации.
+    assert player["username"] == "ivan"
     assert player["username_visible"] is False
     assert player["about"] == ""
+
+    token = player["profile_token"]
+    public = client.get(f"/api/players/{token}", headers=PLAYER2).json()["profile"]
+    assert public["username"] is None
+    assert public["username_visible"] is False
+    coach_public = client.get(f"/api/players/{token}", headers=COACH).json()["profile"]
+    assert coach_public["username"] == "ivan"
 
     # Игрок заполняет «о себе» и выбирает анонимного животного.
     r = client.put(
@@ -1024,8 +1033,11 @@ def test_player_privacy_about_and_animal_participant(client):
     animal = me["animal"]
     assert animal["emoji"] and animal["name"]
 
-    # Тренер видит username только после согласия и видит «о себе».
+    # С согласием username виден и другим игрокам, «о себе» тоже.
     # Имя/фото в режиме «животное» скрыто и от тренера.
+    public = client.get(f"/api/players/{token}", headers=PLAYER2).json()["profile"]
+    assert public["username"] == "ivan"
+    assert public["username_visible"] is True
     players = client.get("/api/coach/players", headers=COACH).json()["players"]
     player = next(p for p in players if p["telegram_id"] == 555)
     assert player["username"] == "ivan"
@@ -1047,6 +1059,15 @@ def test_player_privacy_about_and_animal_participant(client):
     assert participant["avatar_url"] == ""
     assert "telegram_id" not in participant
     assert "username" not in participant
+
+    # Пометка «Вы»: свою строку игрок узнаёт, чужую — нет.
+    assert participant["is_me"] is False
+    mine = client.get("/api/trainings?days=31", headers=headers).json()["trainings"]
+    my_card = next(t for t in mine if t["id"] == tid)
+    me_participant = next(
+        p for p in my_card["participants"] if p["first_name"] == animal["name"]
+    )
+    assert me_participant["is_me"] is True
 
     coach_view = client.get("/api/trainings?days=31", headers=COACH).json()["trainings"]
     coach_card = next(t for t in coach_view if t["id"] == tid)
@@ -1154,13 +1175,9 @@ def test_coach_players_search(client):
         "/api/coach/players", headers=COACH, params={"q": "тренер"}
     ).json()["matched"] == 0
 
-    # Без согласия username в поиске не участвует.
-    assert client.get(
-        "/api/coach/players", headers=COACH, params={"q": "ivan"}
-    ).json()["matched"] == 0
-    assert client.put(
-        "/api/me/profile", headers=player, json={"show_username": True}
-    ).status_code == 200
+    # Тренер ищет по username независимо от согласия: настройка управляет
+    # только показом другим игрокам.
+    assert client.get("/api/me", headers=player).json()["user"]["show_username"] is False
     for query in ("ivan", "@ivan", "iVaN"):
         found = client.get("/api/coach/players", headers=COACH, params={"q": query}).json()
         assert [p["telegram_id"] for p in found["players"]] == [555]
@@ -1315,7 +1332,7 @@ def test_application_privacy_hides_animal_from_managers(client, monkeypatch):
         json={
             "about": "Хочу тренировать",
             "display_mode": "animal",
-            "show_username": True,
+            "show_username": False,
         },
     ).status_code == 200
 
@@ -1347,8 +1364,9 @@ def test_application_privacy_hides_animal_from_managers(client, monkeypatch):
     assert application["avatar_emoji"] == animal["emoji"]
     assert application["avatar_url"] == ""
     assert application["anonymous"] is True
+    # Настройка скрывает username от игроков, но не от тренера-менеджера.
     assert application["username"] == "applicant"
-    assert application["username_visible"] is True  # username виден только по согласию
+    assert application["username_visible"] is False
 
 
 def test_message_to_coach_uses_animal_name(client, monkeypatch):

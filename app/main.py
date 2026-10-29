@@ -333,6 +333,21 @@ def participant_identity(row: aiosqlite.Row) -> dict[str, Any]:
     }
 
 
+def username_for_viewer(row: Any, *, coach_view: bool = False) -> str | None:
+    """
+    @username в ответах API.
+
+    Согласие «Показывать @username» касается других игроков. Тренер видит
+    username всегда — в том числе в режиме «животное»: иначе человека
+    не найти для модерации, передачи занятия или ответа в чате.
+    """
+    if not row["username"]:
+        return None
+    if coach_view or row["show_username"]:
+        return row["username"]
+    return None
+
+
 def serialize_participant(row: aiosqlite.Row) -> dict[str, Any]:
     """Участник для «социальной сетки» — без username и telegram_id."""
     data = participant_identity(row)
@@ -847,7 +862,7 @@ async def api_player_profile(
         "profile": {
             **identity,
             "about": row["about"] or "",
-            "username": row["username"] if row["show_username"] else None,
+            "username": username_for_viewer(row, coach_view=bool(user["is_coach"])),
             "username_visible": bool(row["show_username"]),
         },
     }
@@ -1043,7 +1058,7 @@ async def api_trainings(user: Annotated[dict, Depends(current_user)], days: int 
         item["coach"] = coach_cache[creator]
         participants = participants_by_training.get(row["id"], [])
         item["participants"] = [
-            serialize_participant(p)
+            {**serialize_participant(p), "is_me": p["telegram_id"] == user["telegram_id"]}
             for p in participants
             if _row_status(p) == "booked"
         ]
@@ -1653,7 +1668,7 @@ async def api_coach_participants(training_id: int, coach: Annotated[dict, Depend
                 {
                     **participant_identity(r),
                     "telegram_id": r["telegram_id"],
-                    "username": r["username"] if r["show_username"] else None,
+                    "username": username_for_viewer(r, coach_view=True),
                     "username_visible": bool(r["show_username"]),
                     "about": r["about"] or "",
                     "status": r["status"],
@@ -1871,7 +1886,7 @@ async def api_players(
             {
                 **participant_identity(r),
                 "telegram_id": r["telegram_id"],
-                "username": r["username"] if r["show_username"] else None,
+                "username": username_for_viewer(r, coach_view=True),
                 "username_visible": bool(r["show_username"]),
                 "about": r["about"] or "",
                 "display_mode": r["display_mode"] or "name",
@@ -3381,7 +3396,7 @@ async def api_list_coaches(coach: Annotated[dict, Depends(require_coach)]):
             {
                 "telegram_id": r["telegram_id"],
                 "first_name": r["first_name"] or "Тренер",
-                "username": r["username"] if r["show_username"] else None,
+                "username": username_for_viewer(r, coach_view=True),
                 "username_visible": bool(r["show_username"]),
                 "avatar_url": _avatar_url(
                     r["telegram_id"], real=True, file_id=_row_file_id(r)
@@ -3512,7 +3527,7 @@ async def api_applications(manager: Annotated[dict, Depends(require_manager)]):
             {
                 "telegram_id": r["telegram_id"],
                 **participant_identity(r),
-                "username": r["username"] if r["show_username"] else None,
+                "username": username_for_viewer(r, coach_view=True),
                 "username_visible": bool(r["show_username"]),
                 "message": r["message"],
                 "created_at": r["created_at"],

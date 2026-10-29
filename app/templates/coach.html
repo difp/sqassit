@@ -1149,7 +1149,7 @@ function bookStatusLabel(status) {
 function bookRow(p) {
   const busy = BOOK.taken.get(p.telegram_id);
   const meta = [];
-  if (p.username_visible && p.username) meta.push('@' + esc(p.username));
+  if (p.username) meta.push('@' + esc(p.username));
   if (p.notes) meta.push(esc(p.notes));
   if (!meta.length && p.about) meta.push(esc(p.about));
   const sub = meta.join(' · ');
@@ -1357,7 +1357,7 @@ async function openTransfer(id) {
         ${avatarHtml(c.first_name, c.avatar_url, true)}
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;font-size:14px">${esc(c.first_name)}${c.is_owner ? ' <span class="badge badge--muted">администратор</span>' : ''}</div>
-          <div class="hint">${c.username ? '@' + esc(c.username) : (c.username_visible ? 'без username' : 'username скрыт')}</div>
+          <div class="hint">${c.username ? '@' + esc(c.username) : 'без username'}</div>
         </div>
         <button class="btn btn--primary btn--sm" data-xto="${c.telegram_id}">Передать</button>
       </div>`).join('') : '<div class="hint">Других тренеров нет.</div>';
@@ -1554,9 +1554,7 @@ document.getElementById('coach-chat-send').addEventListener('click', async () =>
 // ===== CRM =====
 function playerRow(p) {
   const notif = p.notifications_enabled ? 'вкл' : 'выкл';
-  const handle = p.username_visible
-    ? (p.username ? '@' + esc(p.username) : 'без username')
-    : 'username скрыт';
+  const handle = p.username ? '@' + esc(p.username) : 'без username';
   return `
   <div class="card">
     <div class="player-head">
@@ -1806,7 +1804,7 @@ async function loadApplications() {
         ${avatarHtml(a.first_name, a.avatar_url, true, a.avatar_emoji)}
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;font-size:14px">${esc(a.first_name)}</div>
-          <div class="hint">${a.username ? '@' + esc(a.username) : (a.username_visible ? 'без username' : 'username скрыт')}</div>
+          <div class="hint">${a.username ? '@' + esc(a.username) : 'без username'}</div>
           ${a.message ? `<div class="hint" style="margin-top:4px">${esc(a.message)}</div>` : ''}
         </div>
         <div style="display:flex;flex-direction:column;gap:6px">
@@ -1848,7 +1846,7 @@ function coachRow(c) {
     ${avatarHtml(c.first_name, c.avatar_url, true)}
     <div class="coach-item__text">
       <div class="coach-item__name">${esc(c.first_name)}${owner}${mgr}</div>
-      <div class="coach-item__meta">${c.username ? '@' + esc(c.username) : (c.username_visible ? 'без username' : 'username скрыт')}</div>
+      <div class="coach-item__meta">${c.username ? '@' + esc(c.username) : 'без username'}</div>
     </div>
     <div class="coach-item__actions">${mgrToggle}${remove}</div>
   </div>`;

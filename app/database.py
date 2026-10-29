@@ -824,9 +824,9 @@ async def list_players(query: str | None = None) -> list[aiosqlite.Row]:
         # @username ищется и с собакой, и без неё.
         handle = query.strip().lstrip("@")
         if handle:
-            clauses.append(
-                "(u.show_username = 1 AND search_norm(u.username) LIKE ? ESCAPE '\\')"
-            )
+            # Поиск в панели тренера: согласие «Показывать @username»
+            # управляет видимостью для игроков, тренер находит по нику всегда.
+            clauses.append("search_norm(u.username) LIKE ? ESCAPE '\\'")
             params.append(_like_pattern(handle))
         clauses.append("search_norm(u.notes) LIKE ? ESCAPE '\\'")
         params.append(_like_pattern(query))

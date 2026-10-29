@@ -102,7 +102,7 @@
         <label class="setting-row">
           <span class="setting-row__text">
             <span class="setting-row__title">Показывать @username</span>
-            <span class="setting-row__hint">По умолчанию скрыт. Включайте, только если хотите, чтобы тренер видел ваш username.</span>
+            <span class="setting-row__hint">По умолчанию скрыт от других игроков. Тренер видит ваш username всегда.</span>
           </span>
           <span class="switch">
             <input id="profile-username" type="checkbox" aria-label="Показывать @username">
@@ -193,12 +193,22 @@
         <div class="reminder-row__text">Приватность</div>
         <div class="hint" style="margin-top:4px">
           Выберите вымышленное животное — тренер и другие игроки не увидят ваши имя и фото.
-          @username по умолчанию скрыт: включайте, только если хотите его показывать.
+          @username по умолчанию скрыт от других игроков; тренер видит его всегда.
         </div>
       </div>
       <button class="btn btn--primary btn--block" id="onboarding-setup" type="button">Настроить приватность</button>
       <button class="btn btn--block" id="onboarding-done" type="button" style="margin-top:8px">Оставить имя и фото</button>
     </div>
+  </div>
+</div>
+<!-- Bottom sheet: кто записан на занятие -->
+<div class="sheet" id="participants-sheet">
+  <div class="sheet__backdrop" data-part-close></div>
+  <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="participants-title">
+    <div class="sheet__handle"></div>
+    <h2 class="sheet__title" id="participants-title">Участники</h2>
+    <p class="hint" id="participants-sub"></p>
+    <div id="participants-list"></div>
   </div>
 </div>
 {% endblock %}
@@ -207,16 +217,23 @@
 <script>
 const ITEMS = {};
 
-function participantsLine(list) {
-  if (!list.length) return '<span class="t-names">Пока никто не записан</span>';
-  const stack = '<div class="avatar-stack">' +
-    list.slice(0, 5).map(p => p.profile_token
-      ? `<button type="button" class="avatar-btn" data-profile-token="${esc(p.profile_token)}" aria-label="Профиль: ${esc(p.first_name)}">${avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)}</button>`
-      : avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)).join('') + '</div>';
-  const names = list.map(p => p.profile_token
-    ? `<button type="button" class="participant-name" data-profile-token="${esc(p.profile_token)}">${esc(p.first_name)}</button>`
-    : esc(p.first_name)).join(', ');
-  return stack + `<span class="t-names">${names}</span>`;
+function participantsLine(list, trainingId) {
+  if (!list.length) {
+    return '<div class="t-people"><span class="t-names">Пока никто не записан</span></div>';
+  }
+  const stack = '<span class="avatar-stack">' +
+    list.slice(0, 5).map(p =>
+      avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)).join('') + '</span>';
+  const names = list.map(p => esc(p.first_name)).join(', ');
+  // Вся строка — одна кнопка: имена внутри списка, а не отдельные ссылки.
+  return `<button type="button" class="t-people t-people--open" data-participants="${trainingId}"
+      aria-label="Участники: ${names}. Открыть список">
+    ${stack}<span class="t-names">${names}</span>
+    <svg class="t-people__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M9 18l6-6-6-6"/>
+    </svg>
+  </button>`;
 }
 
 function coachHtml(c, trainingId) {
@@ -287,7 +304,7 @@ function trainingCard(t) {
       ${t.level ? levelPill(t.level) : ''}
     </div>
     ${badges ? `<div class="t-badges">${badges}</div>` : ''}
-    <div class="t-people">${participantsLine(t.participants)}</div>
+    ${participantsLine(t.participants, t.id)}
     ${coachHtml(t.coach, t.id)}
     ${action}
   </div>`;
@@ -373,6 +390,8 @@ document.getElementById('notif-toggle').addEventListener('change', async (ev) =>
 });
 
 document.getElementById('schedule').addEventListener('click', async (ev) => {
+  const partId = ev.target.closest('[data-participants]')?.getAttribute('data-participants');
+  if (partId) { openParticipants(parseInt(partId, 10)); return; }
   const profileToken = ev.target.closest('[data-profile-token]')?.getAttribute('data-profile-token');
   if (profileToken) { openPlayerProfile(profileToken); return; }
   const bookId = ev.target.closest('[data-book]')?.getAttribute('data-book');
@@ -408,6 +427,51 @@ document.getElementById('schedule').addEventListener('click', async (ev) => {
     }
     toast(e.message);
   }
+});
+
+// ===== Кто записан на занятие =====
+// Игрок видит полный список, а не только аватарки в карточке.
+const participantsSheet = document.getElementById('participants-sheet');
+const participantsList = document.getElementById('participants-list');
+const participantsSub = document.getElementById('participants-sub');
+
+function openParticipants(id) {
+  const t = ITEMS[id];
+  if (!t) return;
+  const wait = t.waitlist_count || 0;
+  participantsSub.textContent =
+    `${t.participants.length} из ${t.capacity} мест` + (wait ? ` · в очереди: ${wait}` : '');
+  participantsList.innerHTML = t.participants.length
+    ? t.participants.map(p => `
+      <button type="button" class="part-row" data-profile-token="${esc(p.profile_token || '')}">
+        ${avatarHtml(p.first_name, p.avatar_url, false, p.avatar_emoji)}
+        <span class="part-row__text">
+          <span class="part-row__name">${esc(p.first_name)}</span>
+          ${p.anonymous ? '<span class="part-row__meta">Анонимный профиль</span>' : ''}
+        </span>
+        ${p.is_me ? '<span class="badge badge--level">Вы</span>' : ''}
+        <svg class="part-row__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 18l6-6-6-6"/>
+        </svg>
+      </button>`).join('')
+    : '<div class="empty empty--inline"><div>Пока никто не записан</div></div>';
+  participantsSheet.classList.add('is-open');
+  haptic('light');
+}
+function closeParticipants() {
+  participantsSheet.classList.remove('is-open');
+}
+document.querySelectorAll('[data-part-close]').forEach(el =>
+  el.addEventListener('click', closeParticipants));
+participantsList.addEventListener('click', ev => {
+  const row = ev.target.closest('[data-profile-token]');
+  if (!row || !row.dataset.profileToken) return;
+  closeParticipants();
+  openPlayerProfile(row.dataset.profileToken);
+});
+document.addEventListener('keydown', ev => {
+  if (ev.key === 'Escape' && participantsSheet.classList.contains('is-open')) closeParticipants();
 });
 
 // ===== Личное сообщение тренеру =====

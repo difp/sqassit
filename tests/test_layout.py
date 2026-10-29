@@ -242,3 +242,34 @@ def test_page_stays_at_top_while_telegram_expands() -> None:
     # Автоматическое «удержание якоря» Chrome конфликтует с ручным возвратом
     # прокрутки после перерисовки списка.
     assert "overflow-anchor: none;" in base
+
+
+def test_player_can_open_participants_list() -> None:
+    index = (TEMPLATES / "index.html").read_text()
+    base = BASE.read_text()
+
+    # Строка участников — кнопка, ведущая в полный список: аватарок в
+    # карточке мало, чтобы понять, кто записан.
+    assert 'class="t-people t-people--open"' in index
+    assert 'data-participants="${trainingId}"' in index
+    assert 'id="participants-sheet"' in index
+    assert 'role="dialog" aria-modal="true" aria-labelledby="participants-title"' in index
+    assert "function openParticipants(" in index
+    assert "function closeParticipants(" in index
+    # Пометка «Вы» приходит с сервера, а не угадывается по имени.
+    assert "${p.is_me ?" in index
+
+    assert ".t-people--open" in base
+    assert ".part-row {" in base
+    assert ".part-row__meta" in base
+
+
+def test_coach_always_sees_username() -> None:
+    coach = (TEMPLATES / "coach.html").read_text()
+    index = (TEMPLATES / "index.html").read_text()
+
+    # Согласие «Показывать @username» скрывает ник от других игроков,
+    # но в панели тренера он виден всегда.
+    assert "username скрыт" not in coach
+    assert "Тренер видит ваш username всегда" in index
+    assert "Тренер видит его всегда" in (TEMPLATES.parents[1] / "docs" / "PRIVACY.md").read_text()
