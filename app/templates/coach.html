@@ -179,7 +179,7 @@
         <div class="chips" id="rem-presets">
           <button type="button" class="chip" data-preset="60">1 ч</button>
           <button type="button" class="chip" data-preset="120">2 ч</button>
-          <button type="button" class="chip" data-preset="270">4.5 ч</button>
+          <button type="button" class="chip" data-preset="270">4,5 ч</button>
           <button type="button" class="chip" data-preset="720">12 ч</button>
           <button type="button" class="chip" data-preset="1440">24 ч</button>
         </div>
@@ -755,26 +755,35 @@ async function hydrateParticipants() {
 function reminderEditor(t) {
   const h = Math.floor(t.reminder_offset_min / 60);
   const m = t.reminder_offset_min % 60;
+  // Свёрнуто по умолчанию: в карточке важнее состав и действия, а состояние
+  // напоминания видно прямо в подписи.
+  const state = t.reminder_enabled ? 'за ' + fmtOffset(t.reminder_offset_min) : 'выключено';
   return `
-  <div class="reminder-box">
-    <div class="inline-row">
-      <span class="reminder-box__title">Напоминание</span>
-      <label class="switch"><input type="checkbox" data-remind="${t.id}" aria-label="Напоминание о тренировке" ${t.reminder_enabled ? 'checked' : ''}><span></span></label>
-    </div>
-    <div class="inline-row reminder-offset">
-      <span class="hint">За сколько до старта</span>
-      <div class="hm">
-        <span class="hm__part"><input class="input reminder-input" type="number" min="0" max="48" data-oh="${t.id}" value="${h}" aria-label="Часы до старта"> <span>ч</span></span>
-        <span class="hm__part"><input class="input reminder-input" type="number" min="0" max="59" data-om="${t.id}" value="${m}" aria-label="Минуты до старта"> <span>мин</span></span>
+  <details class="disclosure" data-reminder="${t.id}">
+    <summary>Напоминание<span class="reminder-sum" data-osum="${t.id}"> · ${esc(state)}</span></summary>
+    <div class="reminder-box">
+      <div class="inline-row">
+        <span class="reminder-box__title">Напоминать</span>
+        <label class="switch"><input type="checkbox" data-remind="${t.id}" aria-label="Напоминание о тренировке" ${t.reminder_enabled ? 'checked' : ''}><span></span></label>
       </div>
+      <div class="inline-row reminder-offset">
+        <span class="hint">За сколько до старта</span>
+        <div class="hm">
+          <span class="hm__part"><input class="input reminder-input" type="number" min="0" max="48" data-oh="${t.id}" value="${h}" aria-label="Часы до старта"> <span>ч</span></span>
+          <span class="hm__part"><input class="input reminder-input" type="number" min="0" max="59" data-om="${t.id}" value="${m}" aria-label="Минуты до старта"> <span>мин</span></span>
+        </div>
+      </div>
+      <div class="hint reminder-total">Итого: <b data-ototal="${t.id}">${esc(fmtOffset(t.reminder_offset_min))}</b> до старта</div>
     </div>
-    <div class="hint reminder-total">Итого: <b data-ototal="${t.id}">${esc(fmtOffset(t.reminder_offset_min))}</b> до старта</div>
-  </div>`;
+  </details>`;
 }
 
-function iconBtn(attr, label, path, color) {
-  return `<button class="icon-btn" ${attr} aria-label="${label}" ${color ? `style="color:${color}"` : ''}>
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${path}</svg>
+// Плитка быстрого действия: иконка и подпись. Подпись важна — по одной
+// иконке тренер не всегда понимает, что именно произойдёт.
+function quickBtn(attr, label, path, danger) {
+  return `<button type="button" class="quick${danger ? ' quick--danger' : ''}" ${attr}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>
+    <span>${label}</span>
   </button>`;
 }
 const ICON_CAL = '<rect x="3" y="4.5" width="18" height="16" rx="3.5"/><path d="M8 2.8v3.4M16 2.8v3.4M3.2 9.5h17.6"/>';
@@ -786,31 +795,26 @@ function activeRow(t) {
   const pct = t.capacity ? Math.min(100, Math.round((t.booked_count / t.capacity) * 100)) : 0;
   const wait = t.waitlist_count || 0;
   const pending = t.pending_count || 0;
+  const actions = [
+    quickBtn(`data-cal="${t.id}"`, 'Календарь', ICON_CAL),
+    t.is_owner ? quickBtn(`data-coauthors="${t.id}"`, 'Соавторы', ICON_USERS) : '',
+    t.is_owner ? quickBtn(`data-xfer="${t.id}"`, 'Передать', ICON_XFER) : '',
+    t.is_owner ? quickBtn(`data-del="${t.id}"`, 'Удалить', ICON_DEL, true) : '',
+  ].join('');
   return `
   <div class="card">
     <div class="t-top">
-      <div class="t-when">
-        <div class="t-time">${esc(t.time)}</div>
-        <div class="t-duration">${t.duration_min} мин</div>
-      </div>
-      <div class="t-info">
-        <div class="t-title">${esc(t.type)}${pending ? ` <span class="badge badge--warn">Заявки: ${pending}</span>` : ''}</div>
-      </div>
+      <div class="t-time">${esc(t.time)}</div>
+      <div class="t-occ"><b>${t.booked_count}</b> из ${t.capacity} мест</div>
     </div>
-    <div class="t-toolbar">
-      <div class="t-meta">${dateAndLevel(t.date, t.level)}</div>
-      <div class="t-toolbar__actions">
-        ${iconBtn(`data-cal="${t.id}"`, 'В календарь', ICON_CAL, 'var(--link)')}
-        ${t.is_owner ? iconBtn(`data-coauthors="${t.id}"`, 'Соавторы', ICON_USERS, 'var(--link)') : ''}
-        ${t.is_owner ? iconBtn(`data-del="${t.id}"`, 'Удалить', ICON_DEL) : ''}
-        ${t.is_owner ? iconBtn(`data-xfer="${t.id}"`, 'Передать', ICON_XFER, 'var(--link)') : ''}
-      </div>
-    </div>
+    <div class="t-title">${esc(t.type)}${pending ? ` <span class="badge badge--warn">Заявки: ${pending}</span>` : ''}</div>
+    <div class="t-meta">${dateAndLevel(t.date, t.level)}</div>
     <div class="bar"><div class="bar__fill" style="width:${pct}%"></div></div>
-    <div class="inline-row" style="margin-top:6px;font-size:12px;color:var(--hint)">
+    <div class="inline-row bar-legend">
       <span>Записано ${t.booked_count} из ${t.capacity}</span>
       <span>${wait ? 'Очередь: ' + wait : 'Очередь пуста'}</span>
     </div>
+    <div class="quick-actions">${actions}</div>
     ${t.is_owner ? reminderEditor(t) : ''}
     <details class="disclosure" data-pid="${t.id}" open>
       <summary>Участники${pending ? ` · заявок ${pending}` : ''}</summary>
@@ -823,24 +827,21 @@ function historyRow(t) {
   return `
   <div class="card">
     <div class="t-top">
-      <div class="t-when">
-        <div class="t-time" style="opacity:.7">${esc(t.time)}</div>
-        <div class="t-duration">${t.duration_min} мин</div>
-      </div>
-      <div class="t-info">
-        <div class="t-title">${esc(t.type)}</div>
-      </div>
+      <div class="t-time" style="opacity:.7">${esc(t.time)}</div>
+      <div class="t-occ">${t.duration_min} мин</div>
     </div>
-    <div class="t-toolbar">
-      <div class="t-meta">${dateAndLevel(t.date, t.level)}</div>
-      <div class="t-toolbar__actions">
-        ${iconBtn(`data-cal="${t.id}"`, 'В календарь', ICON_CAL, 'var(--link)')}
-        ${iconBtn(`data-del="${t.id}"`, 'В корзину', ICON_DEL)}
-      </div>
-    </div>
-    <div class="inline-row" style="margin-top:8px;font-size:13px;color:var(--hint)">
+    <div class="t-title">${esc(t.type)}</div>
+    <div class="t-meta">${dateAndLevel(t.date, t.level)}</div>
+    <div class="inline-row bar-legend" style="margin-top:12px">
       <span>Посещаемость: <b style="color:var(--text)">${t.booked_count}</b> из ${t.capacity}</span>
       <span class="badge badge--muted">Завершена</span>
+    </div>
+    <div class="t-actions">
+      <button class="btn" data-cal="${t.id}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_CAL}</svg>
+        В календарь
+      </button>
+      <button class="btn btn--danger" data-del="${t.id}">В корзину</button>
     </div>
   </div>`;
 }
@@ -849,19 +850,15 @@ function deletedRow(t) {
   return `
   <div class="card deleted-card">
     <div class="t-top">
-      <div class="t-when">
-        <div class="t-time" style="opacity:.6">${esc(t.time)}</div>
-        <div class="t-duration">${t.duration_min} мин</div>
-      </div>
-      <div class="t-info">
-        <div class="t-title">${esc(t.type)}</div>
-        <div class="t-meta">${esc(fmtDay(t.date))}</div>
-      </div>
+      <div class="t-time" style="opacity:.6">${esc(t.time)}</div>
+      <div class="t-occ">${t.duration_min} мин</div>
     </div>
-    <div class="hint" style="margin-top:8px">Было записано: ${t.booked_count}${t.waitlist_count ? ', в очереди: ' + t.waitlist_count : ''}</div>
-    <div class="t-actions" style="margin-top:12px">
-      <button class="btn btn--primary btn--sm" style="flex:1" data-restore="${t.id}">Восстановить</button>
-      <button class="btn btn--danger btn--sm" style="flex:1" data-purge="${t.id}">Удалить навсегда</button>
+    <div class="t-title">${esc(t.type)}</div>
+    <div class="t-meta"><span>${esc(fmtDay(t.date))}</span></div>
+    <div class="bar-legend" style="margin-top:10px">Было записано: ${t.booked_count}${t.waitlist_count ? ', в очереди: ' + t.waitlist_count : ''}</div>
+    <div class="t-actions">
+      <button class="btn btn--primary" data-restore="${t.id}">Восстановить</button>
+      <button class="btn btn--danger" data-purge="${t.id}">Удалить навсегда</button>
     </div>
   </div>`;
 }
@@ -874,16 +871,11 @@ function clubRow(t) {
   return `
   <div class="card">
     <div class="t-top">
-      <div class="t-when">
-        <div class="t-time">${esc(t.time)}</div>
-        <div class="t-duration">${t.duration_min} мин</div>
-      </div>
-      <div class="t-info">
-        <div class="t-title">${esc(t.type)}${pending ? ` <span class="badge badge--warn">Заявки: ${pending}</span>` : ''}</div>
-        <div class="t-meta">${dateAndLevel(t.date, t.level)}</div>
-      </div>
-      <div class="t-occ"><b>${t.booked_count}</b><span style="color:var(--hint)">/${t.capacity}</span><span class="lbl">записано</span></div>
+      <div class="t-time">${esc(t.time)}</div>
+      <div class="t-occ"><b>${t.booked_count}</b> из ${t.capacity} мест</div>
     </div>
+    <div class="t-title">${esc(t.type)}${pending ? ` <span class="badge badge--warn">Заявки: ${pending}</span>` : ''}</div>
+    <div class="t-meta">${dateAndLevel(t.date, t.level)}</div>
     <div class="t-coach" style="cursor:default">
       ${avatar}
       <div class="t-coach__text"><div class="t-coach__name">Тренер · ${coach}</div></div>
@@ -1073,7 +1065,7 @@ function closeBookSheet() {
 }
 
 function bookSubtitle(t) {
-  const when = `${fmtDay(t.date)}, ${t.time}`;
+  const when = `${fmtDate(t.date)} · ${t.time}`;
   const free = Math.max(0, t.capacity - t.booked_count);
   const left = free
     ? `Записано ${t.booked_count} из ${t.capacity}`
@@ -1274,9 +1266,11 @@ function readReminder(id) {
   return { enabled, min: Math.max(0, Math.min(2880, h * 60 + m)) };
 }
 function updateTotal(id) {
-  const { min } = readReminder(id);
+  const { enabled, min } = readReminder(id);
   const el = document.querySelector(`[data-ototal="${id}"]`);
   if (el) el.textContent = fmtOffset(min);
+  const sum = document.querySelector(`[data-osum="${id}"]`);
+  if (sum) sum.textContent = ' · ' + (enabled ? 'за ' + fmtOffset(min) : 'выключено');
 }
 document.getElementById('list').addEventListener('input', ev => {
   const id = ev.target.dataset.oh || ev.target.dataset.om;
@@ -1570,7 +1564,7 @@ function playerRow(p) {
         ${avatarHtml(p.first_name, p.avatar_url, false, p.avatar_emoji)}
         <div style="flex:1;min-width:0">
           <div style="font-weight:600">${esc(p.first_name || 'Игрок')}</div>
-          <div style="font-size:12px;color:var(--hint)">${handle} · уведомления: ${notif}</div>
+          <div class="player-meta"><span>${handle}</span><span>уведомления: ${notif}</span></div>
         </div>
       </button>
       <button type="button" class="btn btn--sm player-chat-btn" data-chat-user="${p.telegram_id}" data-chat-name="${esc(p.first_name || 'Игрок')}" aria-label="Написать игроку: ${esc(p.first_name || 'Игрок')}">Написать</button>

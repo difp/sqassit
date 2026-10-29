@@ -221,9 +221,8 @@ function participantsLine(list) {
 
 function coachHtml(c, trainingId) {
   if (!c) return '';
-  const bio = c.bio
-    ? `<div class="t-coach__bio">${esc(c.bio)}</div>`
-    : '<div class="t-coach__bio">Нажмите, чтобы написать тренеру</div>';
+  // Без «о себе» строка остаётся одной: подпись «Написать» и так рядом.
+  const bio = c.bio ? `<div class="t-coach__bio">${esc(c.bio)}</div>` : '';
   return `
   <div class="t-coach" data-coach-msg="${trainingId}" role="button" tabindex="0">
     ${avatarHtml(c.first_name, c.avatar_url, true)}
@@ -253,42 +252,39 @@ function trainingCard(t) {
     badges += `<span class="badge badge--warn">Отмена недоступна — до старта ${esc(fmtDuration(t.seconds_left))}</span>`;
   }
 
-  // Действия: основная кнопка + «Добавить в календарь» — обе на всю ширину,
-  // одна под другой, поэтому иконка календаря не «плавает» отдельно.
-  let buttons = '';
-  if (!t.is_past && !t.is_booked && !t.is_waitlisted && !t.is_pending) {
-    const label = free > 0 ? 'Записаться' : 'В лист ожидания';
-    buttons += `<button class="btn btn--primary btn--block" data-book="${t.id}">${label}</button>`;
-  } else if (!t.is_past && t.can_self_cancel && (t.is_booked || t.is_waitlisted || t.is_pending)) {
+  // На карточке одна главная кнопка: записаться или отменить запись.
+  // Календарь — второстепенное действие в том же ряду.
+  const canBook = !t.is_past && !t.is_booked && !t.is_waitlisted && !t.is_pending;
+  const canCancel = !t.is_past && t.can_self_cancel && (t.is_booked || t.is_waitlisted || t.is_pending);
+  const buttons = [];
+  if (canCancel) {
     const label = t.is_pending ? 'Отменить заявку' : 'Отменить запись';
-    buttons += `<button class="btn btn--danger btn--block" data-cancel="${t.id}">${label}</button>`;
+    buttons.push(`<button class="btn btn--danger" data-cancel="${t.id}">${label}</button>`);
+  } else if (canBook) {
+    const label = free > 0 ? 'Записаться' : 'В лист ожидания';
+    buttons.push(`<button class="btn btn--primary" data-book="${t.id}">${label}</button>`);
   }
   if (!t.is_past) {
-    buttons += `<button class="btn btn--block" data-cal="${t.id}">
+    buttons.push(`<button class="btn${buttons.length ? '' : ' btn--primary'}" data-cal="${t.id}">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
         <rect x="3" y="4.5" width="18" height="16" rx="3.5"/>
         <path d="M8 2.8v3.4M16 2.8v3.4M3.2 9.5h17.6M12 12.7v5M9.5 15.2h5"/>
       </svg>
-      Добавить в календарь
-    </button>`;
+      В календарь
+    </button>`);
   }
-  const action = buttons ? `<div class="t-actions-col">${buttons}</div>` : '';
+  const action = buttons.length ? `<div class="t-actions">${buttons.join('')}</div>` : '';
 
   return `
   <div class="card">
     <div class="t-top">
-      <div class="t-when">
-        <div class="t-time">${esc(t.time)}</div>
-        <div class="t-duration">${t.duration_min} мин</div>
-      </div>
-      <div class="t-info">
-        <div class="t-title">${esc(t.type)}</div>
-        ${t.level ? `<div class="t-meta">${levelPill(t.level)}</div>` : ''}
-      </div>
-      <div class="t-occ">
-        <b>${free}</b><span style="color:var(--hint)">/${t.capacity}</span>
-        <span class="lbl">свободно</span>
-      </div>
+      <div class="t-time">${esc(t.time)}</div>
+      <div class="t-occ"><b>${t.booked_count}</b> из ${t.capacity} мест</div>
+    </div>
+    <div class="t-title">${esc(t.type)}</div>
+    <div class="t-meta">
+      <span>${t.duration_min} мин</span>
+      ${t.level ? levelPill(t.level) : ''}
     </div>
     ${badges ? `<div class="t-badges">${badges}</div>` : ''}
     <div class="t-people">${participantsLine(t.participants)}</div>
@@ -317,11 +313,14 @@ function renderSchedule(trainings) {
   const groups = {};
   trainings.forEach(t => { ITEMS[t.id] = t; (groups[t.date] = groups[t.date] || []).push(t); });
 
-  schedule.innerHTML = Object.keys(groups).sort().map(date => `
+  schedule.innerHTML = Object.keys(groups).sort().map(date => {
+    const d = dayLabelParts(date);
+    return `
     <section class="day">
-      <div class="day-label"><span>${esc(fmtDay(date))}</span></div>
+      <div class="day-label"><span>${esc(d.rel)}</span><span>${esc(d.date)}</span></div>
       ${groups[date].map(trainingCard).join('')}
-    </section>`).join('');
+    </section>`;
+  }).join('');
   hideAppLoader();
 }
 

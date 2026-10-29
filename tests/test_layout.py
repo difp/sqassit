@@ -25,9 +25,10 @@ def test_base_layout_guardrails() -> None:
     # Формы и сетки не создают горизонтальный скролл.
     assert ".row2 > * { min-width: 0; }" in html
     assert "max-width: 100%" in html
-    assert "flex-wrap: wrap; gap: 6px 12px" in html
+    assert "display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px" in html
     assert "::-webkit-inner-spin-button" in html
-    assert ".t-toolbar .t-meta { flex: 1 1 180px" in html
+    # Две кнопки в карточке делят ширину поровну и не распирают её.
+    assert ".t-actions .btn { flex: 1 1 0; min-width: 0;" in html
 
 
 def test_disclosures_use_aligned_dots() -> None:
@@ -68,7 +69,7 @@ def test_coach_tab_has_pending_badge() -> None:
 
     assert 'id="tab-coach-pin"' in base
     assert ".tab__pin" in base
-    assert "width: 9px; height: 9px" in base
+    assert "width: 8px; height: 8px" in base
     assert "setCoachIndicator" in base
     assert "refreshCoachIndicator" in base
     assert "window.setCoachIndicator(" in coach
@@ -213,8 +214,8 @@ def test_safe_areas_and_text_scale_are_pinned() -> None:
     # Полноэкранный режим Telegram отдаёт свои вставки, env() их не знает.
     assert "--tg-safe-area-inset-top" in base
     assert "--tg-safe-area-inset-bottom" in base
-    assert "calc(var(--safe-top) + 12px)" in base
-    assert "calc(var(--tabbar-h) + 26px + var(--safe-bottom))" in base
+    assert "calc(var(--safe-top) + 10px)" in base
+    assert "calc(var(--tabbar-h) + 32px + var(--safe-bottom))" in base
 
     # Старый WebView без env()/max() не должен обнулять отступы шапки:
     # сначала простое значение, расширение — только под @supports.

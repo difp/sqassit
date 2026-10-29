@@ -119,7 +119,7 @@ function matchParticipantsLine(list) {
     const label = p.profile_token
       ? `<button type="button" class="participant-name" data-profile-token="${esc(p.profile_token)}">${esc(p.first_name)}</button>`
       : esc(p.first_name);
-    return label + (p.is_organizer ? ' <span class="t-organizer">организатор</span>' : '');
+    return label + (p.is_organizer ? ' <span class="t-organizer">(организатор)</span>' : '');
   }).join(', ');
   return stack + `<span class="t-names">${names}</span>`;
 }
@@ -130,17 +130,13 @@ function matchCard(m) {
   const pending = m.is_pending;
   let actions = '';
   if (pending) {
-    actions = `<button class="btn btn--danger btn--block" data-match-leave="${m.id}">Отменить заявку</button>`;
+    actions = `<button class="btn btn--danger" data-match-leave="${m.id}">Отменить заявку</button>`;
   } else if (!joined) {
     actions = free
-      ? `<button class="btn btn--primary btn--block" data-match-join="${m.id}">Присоединиться</button>`
-      : '<button class="btn btn--block" disabled>Мест нет</button>';
+      ? `<button class="btn btn--primary" data-match-join="${m.id}">Присоединиться</button>`
+      : '<button class="btn" disabled>Мест нет</button>';
   } else {
-    actions = `<button class="btn btn--danger btn--block" data-match-leave="${m.id}">Выйти из матча</button>`;
-  }
-  if (m.is_creator) {
-    actions += `<button class="btn btn--block" data-match-coauthors="${m.id}" style="margin-top:8px">Соавторы матча</button>`;
-    actions += `<button class="btn btn--block" data-match-delete="${m.id}" style="margin-top:8px">Удалить матч</button>`;
+    actions = `<button class="btn btn--danger" data-match-leave="${m.id}">Выйти из матча</button>`;
   }
   const creator = m.creator && !m.participants.some(p => p.is_organizer)
     ? `<div class="t-coach" style="cursor:default">
@@ -150,26 +146,44 @@ function matchCard(m) {
         </button>
       </div>`
     : '';
+  // Удаление матча — разрушающее действие: отдельной строкой внизу,
+  // подальше от главной кнопки, чтобы не нажать случайно.
+  const rows = m.is_creator ? `
+    <div style="margin-top:14px">
+      <button class="list-action" data-match-coauthors="${m.id}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>
+        </svg>
+        Соавторы матча
+        <svg class="list-action__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>
+      </button>
+      <button class="list-action list-action--danger" data-match-delete="${m.id}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 7h16M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7M6.5 7l.8 11.2A2 2 0 0 0 9.3 20h5.4a2 2 0 0 0 2-1.8L17.5 7"/>
+        </svg>
+        Удалить матч
+      </button>
+    </div>` : '';
   return `
   <div class="card">
     <div class="t-top">
-      <div class="t-when">
-        <div class="t-time">${esc(m.time)}</div>
-        <div class="t-duration">${m.duration_min} мин</div>
-      </div>
-      <div class="t-info">
-        <div class="t-title">${esc(m.title)}</div>
-        <div class="t-meta">${dateAndLevel(m.date, m.level)}</div>
-      </div>
-      <div class="t-occ"><b>${free}</b><span style="color:var(--hint)">/${m.max_players}</span><span class="lbl">свободно</span></div>
+      <div class="t-time">${esc(m.time)}</div>
+      <div class="t-occ"><b>${m.players_count}</b> из ${m.max_players} мест</div>
     </div>
-    ${m.location ? `<div class="t-meta" style="margin-top:8px">📍 ${esc(m.location)}</div>` : ''}
-    ${m.description ? `<div class="player-about">${esc(m.description)}</div>` : ''}
+    <div class="t-title">${esc(m.title)}</div>
+    <div class="t-meta">${dateAndLevel(m.date, m.level)}</div>
+    ${m.location ? `<div class="t-loc">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/>
+      </svg>
+      ${esc(m.location)}
+    </div>` : ''}
+    ${m.description ? `<div class="t-note">${esc(m.description)}</div>` : ''}
     ${pending ? '<div class="t-badges"><span class="badge badge--warn">Ожидает подтверждения</span></div>' : ''}
     ${creator}
-    <div class="t-people" style="margin-top:10px">${matchParticipantsLine(m.participants)}</div>
+    <div class="t-people" style="margin-top:12px">${matchParticipantsLine(m.participants)}</div>
     ${m.pending_requests && m.pending_requests.length ? `
-      <div class="section-title" style="margin:14px 0 4px">Заявки</div>
+      <div class="section-title" style="margin:16px 0 4px">Заявки</div>
       ${m.pending_requests.map(p => `
         <div class="p-row">
           ${avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)}
@@ -179,7 +193,8 @@ function matchCard(m) {
             <button class="btn btn--danger btn--sm" data-match-reject="${m.id}:${p.telegram_id}">Отклонить</button>
           </div>
         </div>`).join('')}` : ''}
-    <div class="t-actions-col" style="margin-top:12px">${actions}</div>
+    <div class="t-actions">${actions}</div>
+    ${rows}
   </div>`;
 }
 
