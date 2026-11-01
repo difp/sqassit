@@ -731,6 +731,7 @@ async def send_training_reminder(bot: Bot, training) -> tuple[int, int]:
     for row in recipients:
         try:
             await bot.send_message(row["telegram_id"], text)
+            await db.mark_reminder_delivered(training["id"], row["telegram_id"])
             delivered += 1
         except Exception:
             logger.warning("Не доставлено напоминание %s", row["telegram_id"], exc_info=True)
@@ -749,8 +750,8 @@ async def reminder_loop(bot: Bot, interval_seconds: int = 60) -> None:
             for training in due:
                 delivered, total = await send_training_reminder(bot, training)
                 # Если получателей нет — помечаем, чтобы не проверять вечно.
-                # Если не доставлено ни одного — повторим на следующем тике.
-                if total == 0 or delivered > 0:
+                # Недоставленные сообщения повторим на следующем тике.
+                if delivered == total:
                     await db.mark_reminder_sent(training["id"])
         except asyncio.CancelledError:
             logger.info("Планировщик напоминаний остановлен.")

@@ -366,7 +366,11 @@ def test_send_training_reminder_counts_only_delivered(monkeypatch):
                 raise RuntimeError("telegram down")
             self.sent.append(telegram_id)
 
+    async def fake_mark(training_id, user_id):
+        pass
+
     monkeypatch.setattr(db, "notification_targets", fake_targets)
+    monkeypatch.setattr(db, "mark_reminder_delivered", fake_mark)
     bot = FakeBot()
     training = {
         "id": 1,

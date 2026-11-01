@@ -197,3 +197,63 @@ def test_set_user_phone(tmp_path):
             await db.close()
 
     asyncio.run(scenario())
+
+
+def test_reminder_retries_only_failed_recipients(tmp_path):
+    from app.bot import send_training_reminder
+
+    class FakeBot:
+        def __init__(self):
+            self.sent = []
+            self.fail = True
+
+        async def send_message(self, user_id, text):
+            if user_id == 2 and self.fail:
+                raise RuntimeError("temporary")
+            self.sent.append(user_id)
+
+    async def scenario():
+        await db.connect(str(tmp_path / "reminders.db"))
+        try:
+            for user_id in (1, 2):
+                await db.upsert_user(user_id, None, "Player")
+            tid = await db.create_training(
+                title="Тест", training_type="Тест", start_at=int(time.time()) + 3600,
+                duration_min=60, capacity=2, level="", reminder_enabled=True,
+                reminder_offset_min=60, created_by=1,
+            )
+            for user_id in (1, 2):
+                await db.book_training(tid, user_id, 2)
+            bot = FakeBot()
+            training = await db.get_training(tid)
+            assert await send_training_reminder(bot, training) == (1, 2)
+            bot.fail = False
+            assert await send_training_reminder(bot, training) == (1, 1)
+            assert bot.sent == [1, 2]
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_failed_updates_roll_back_as_a_unit(tmp_path):
+    async def scenario():
+        await db.connect(str(tmp_path / "rollback.db"))
+        try:
+            await db.upsert_user(1, None, "Player")
+            conn = db._db()
+            await conn.execute("INSERT INTO feedback (user_id, kind, text, created_at) VALUES (1, 'bug', 'text', 1)")
+            await conn.execute("CREATE TRIGGER fail_delete BEFORE DELETE ON users BEGIN SELECT RAISE(ABORT, 'test'); END")
+            await conn.commit()
+            with pytest.raises(sqlite3.IntegrityError):
+                await db.delete_user_data(1)
+            assert len(await db.list_user_feedback(1)) == 1
+            await conn.execute("CREATE TRIGGER fail_reset BEFORE DELETE ON reminder_deliveries BEGIN SELECT RAISE(ABORT, 'test'); END")
+            await conn.execute("INSERT INTO reminder_deliveries VALUES (1, 1)")
+            await conn.commit()
+            with pytest.raises(sqlite3.IntegrityError):
+                await db.update_reminder_settings(1, enabled=True, offset_min=60)
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())

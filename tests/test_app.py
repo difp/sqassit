@@ -2269,7 +2269,7 @@ def test_lifespan_webhook_startup(tmp_path, monkeypatch):
     assert set_webhook_calls == [
         ("https://example.test/telegram/webhook", {
             "secret_token": "a" * 32,
-            "drop_pending_updates": True,
+            "drop_pending_updates": False,
         })
     ]
     assert session_closed == [True]
@@ -4102,3 +4102,54 @@ def test_in_app_chat_threads_and_notifications(client, monkeypatch):
     monkeypatch.setattr(mainmod.db, "notification_enabled", enabled)
     monkeypatch.setattr(mainmod.app.state, "bot", SimpleNamespace(send_message=failing))
     asyncio.run(mainmod._notify_new_chat_message(555, 123))
+
+
+def test_match_waitlist_promoted_when_player_leaves(client, monkeypatch):
+    from dataclasses import replace
+    monkeypatch.setattr(mainmod, "settings", replace(settings, require_event_approval=True))
+    third = {"X-Init-Data": _init({"id": 559, "first_name": "Третий"})}
+    mid = client.post("/api/matches", headers=PLAYER, json={**_future(5), "title": "Матч", "max_players": 2}).json()["id"]
+    for headers, uid in ((PLAYER2, 556), (third, 559)):
+        assert client.post(f"/api/matches/{mid}/join", headers=headers).json()["status"] == "pending"
+        assert client.post(f"/api/matches/{mid}/requests/{uid}/approve", headers=PLAYER).status_code == 200
+    item = client.get("/api/matches", headers=third).json()["matches"][0]
+    assert item["is_waitlisted"] is True
+    assert client.post(f"/api/matches/{mid}/leave", headers=PLAYER2).status_code == 200
+    item = client.get("/api/matches", headers=third).json()["matches"][0]
+    assert item["is_joined"] is True
+    assert item["players_count"] == 2
+
+
+def test_delete_profile_removes_match_membership(client):
+    mid = client.post("/api/matches", headers=PLAYER, json={**_future(5), "title": "Матч", "max_players": 2}).json()["id"]
+    assert client.post(f"/api/matches/{mid}/join", headers=PLAYER2).status_code == 200
+    assert client.delete("/api/me?confirm=true", headers=PLAYER2).status_code == 200
+    item = client.get("/api/matches", headers=PLAYER).json()["matches"][0]
+    assert item["players_count"] == 1
+    assert client.post(f"/api/matches/{mid}/join", headers=PLAYER2).json()["status"] == "booked"
+
+
+def test_delete_profile_requires_cancelling_upcoming_owned_match(client):
+    mid = client.post(
+        "/api/matches", headers=PLAYER,
+        json={**_future(5), "title": "Матч", "max_players": 2},
+    ).json()["id"]
+    assert client.delete("/api/me?confirm=true", headers=PLAYER).status_code == 409
+    assert client.delete(f"/api/matches/{mid}", headers=PLAYER).status_code == 200
+    assert client.delete("/api/me?confirm=true", headers=PLAYER).status_code == 200
+
+
+def test_delete_profile_promotes_match_waitlist(client, monkeypatch):
+    from dataclasses import replace
+    monkeypatch.setattr(mainmod, "settings", replace(settings, require_event_approval=True))
+    third = {"X-Init-Data": _init({"id": 559, "first_name": "Третий"})}
+    mid = client.post(
+        "/api/matches", headers=PLAYER,
+        json={**_future(5), "title": "Матч", "max_players": 2},
+    ).json()["id"]
+    for headers, uid in ((PLAYER2, 556), (third, 559)):
+        client.post(f"/api/matches/{mid}/join", headers=headers)
+        client.post(f"/api/matches/{mid}/requests/{uid}/approve", headers=PLAYER)
+    assert client.delete("/api/me?confirm=true", headers=PLAYER2).status_code == 200
+    match = client.get("/api/matches", headers=third).json()["matches"][0]
+    assert match["is_joined"] is True

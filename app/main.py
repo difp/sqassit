@@ -390,6 +390,7 @@ def serialize_match(
         "level": row["level"] or "",
         "is_joined": any(p["telegram_id"] == viewer_id for p in booked),
         "is_pending": any(p["telegram_id"] == viewer_id for p in pending),
+        "is_waitlisted": any(p["telegram_id"] == viewer_id and _row_status(p) == "waitlist" for p in participants),
         "is_creator": row["created_by"] == viewer_id,
         "is_coauthor": is_coauthor,
         "can_manage": row["created_by"] == viewer_id or is_coauthor,
@@ -708,7 +709,7 @@ async def lifespan(app: FastAPI):
     if settings.bot_mode == "webhook":
         url = f"{settings.webhook_base_url.rstrip('/')}/telegram/webhook"
         await tg_bot.set_webhook(
-            url, secret_token=settings.webhook_secret or None, drop_pending_updates=True
+            url, secret_token=settings.webhook_secret or None, drop_pending_updates=False
         )
         logger.info("Webhook установлен: %s", url)
     else:
@@ -1053,6 +1054,15 @@ async def api_delete_me(
     if not confirm:
         return error_json("Подтвердите удаление: ?confirm=true", 400)
 
+    if await db.has_upcoming_owned_match(user["telegram_id"], int(time.time())):
+        return error_json("Сначала отмените созданные вами предстоящие матчи.", 409)
+
+    for entry in await db.user_matches(user["telegram_id"]):
+        match = await db.get_match(entry["match_id"])
+        _, promoted = await db.leave_match(entry["match_id"], user["telegram_id"])
+        if match is not None and not match["deleted_at"] and promoted:
+            _spawn(_notify_match_event(match, promoted, "promoted"))
+
     # Сначала отменяем активные записи, чтобы освободить места и продвинуть очередь.
     for booking in await db.list_user_bookings(user["telegram_id"]):
         if booking["status"] not in {"booked", "waitlist"}:
@@ -1060,11 +1070,11 @@ async def api_delete_me(
         if booking["deleted_at"]:
             continue
         training = await db.get_training(booking["training_id"])
-        promoted = await db.cancel_booking(
+        promoted_training = await db.cancel_booking(
             booking["training_id"], user["telegram_id"]
         )
-        if training is not None and promoted:
-            _spawn(_notify_promoted(int(promoted), training))
+        if training is not None and promoted_training:
+            _spawn(_notify_promoted(int(promoted_training), training))
 
     await db.delete_user_data(user["telegram_id"])
     await _avatar_store().delete_user(user["telegram_id"])
@@ -1463,10 +1473,12 @@ async def api_leave_match(
             return error_json("Матч не найден", 404)
         if match["start_at"] <= int(time.time()):
             return error_json("Матч уже начался", 400)
-        removed = await db.leave_match(match_id, user["telegram_id"])
+        removed, promoted = await db.leave_match(match_id, user["telegram_id"])
         if not removed:
             return error_json("Вы не участвуете в этом матче", 400)
         _spawn(_notify_match_event(match, user["telegram_id"], "left"))
+        if promoted is not None:
+            _spawn(_notify_match_event(match, promoted, "promoted"))
         return {"ok": True}
     except Exception:
         logger.exception("Ошибка выхода из матча")
