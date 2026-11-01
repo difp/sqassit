@@ -58,7 +58,7 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-WEB_APP_VERSION = "42"
+WEB_APP_VERSION = "43"
 
 
 def _web_app_url() -> str:
@@ -81,6 +81,22 @@ RULES_TEXT = (
     "• Нашли ошибку или есть идея? Напишите через «Обратную связь».\n\n"
     "Правила могут обновляться."
 )
+
+
+async def send_temporary_notification(
+    bot: Bot, chat_id: int, text: str, *, kind: str = "notice",
+    entity_id: int | None = None, delete_at: int | None = None, **kwargs,
+):
+    """Отправляет уведомление и планирует удаление через сутки."""
+    sent = await bot.send_message(chat_id, text, **kwargs)
+    message_id = int(getattr(sent, "message_id", 0) or 0)
+    if message_id:
+        await db.save_event_notification(
+            kind, message_id if entity_id is None else entity_id,
+            chat_id, chat_id, message_id, text,
+            delete_at=delete_at or int(time.time()) + 86400,
+        )
+    return sent
 
 
 async def ensure_rules_message(
@@ -425,9 +441,13 @@ async def cb_attendees_show(callback: CallbackQuery) -> None:
             name = html.escape(_player_name(p))
             if not is_coach:
                 return name
-            username = f"@{p['username']}" if p["username"] else "без username"
+            username = p["username"] or ""
+            if re.fullmatch(r"[A-Za-z0-9_]{1,32}", username):
+                handle = f'<a href="https://t.me/{username}">@{username}</a>'
+            else:
+                handle = html.escape(f"@{username}" if username else "без username")
             phone = p["phone"] or "телефон не указан"
-            return f"{name} · {html.escape(username)} · {html.escape(phone)}"
+            return f"{name} · {handle} · {html.escape(phone)}"
 
         lines.append("Записаны: " + (", ".join(
             person(p) for p in booked[:40]
@@ -621,6 +641,10 @@ async def cb_apply(callback: CallbackQuery) -> None:
             await chat.answer("❌ Заявка отклонена")
             await callback.answer("Отклонено")
 
+        # Кнопки из старых уведомлений тоже могут завершить заявку.
+        with contextlib.suppress(Exception):
+            await db.expire_event_notifications("coach_application", applicant)
+
         # Уведомляем заявителя (best-effort).
         with contextlib.suppress(Exception):
             text = (
@@ -628,7 +652,7 @@ async def cb_apply(callback: CallbackQuery) -> None:
                 if action == "ok" else "Ваша заявка на тренера отклонена."
             )
             if chat.bot is not None:
-                await chat.bot.send_message(applicant, text)
+                await send_temporary_notification(chat.bot, applicant, text)
     except Exception:
         logger.exception("Ошибка обработки заявки")
 
@@ -730,7 +754,16 @@ async def send_training_reminder(bot: Bot, training) -> tuple[int, int]:
     delivered = 0
     for row in recipients:
         try:
-            await bot.send_message(row["telegram_id"], text)
+            await send_temporary_notification(
+                bot, row["telegram_id"], text,
+                kind="training_reminder", entity_id=training["id"],
+                delete_at=min(
+                    int(training["start_at"]) + int(training.get("duration_min", 60)) * 60 + 14400
+                    if isinstance(training, dict) else
+                    int(training["start_at"]) + int(training["duration_min"]) * 60 + 14400,
+                    int(time.time()) + 47 * 3600,
+                ),
+            )
             await db.mark_reminder_delivered(training["id"], row["telegram_id"])
             delivered += 1
         except Exception:

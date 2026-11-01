@@ -1371,6 +1371,19 @@
       ));
     }
 
+    function usernameLink(username) {
+      const value = String(username || '').replace(/^@/, '');
+      if (!/^[A-Za-z0-9_]{1,32}$/.test(value)) return esc(username || '');
+      return `<a href="https://t.me/${encodeURIComponent(value)}" data-telegram-username="${esc(value)}" target="_blank" rel="noopener noreferrer">@${esc(value)}</a>`;
+    }
+    document.addEventListener('click', e => {
+      const link = e.target.closest('[data-telegram-username]');
+      if (link && tg && typeof tg.openTelegramLink === 'function') {
+        e.preventDefault();
+        tg.openTelegramLink(link.href);
+      }
+    });
+
     // Короткий session-cache для мгновенного повторного открытия страниц.
     // Он живёт только в текущей сессии WebView и сбрасывается после действий.
     const CACHE_TTL_MS = 30000;
@@ -1518,7 +1531,7 @@
       try {
         const data = await api('/api/players/' + encodeURIComponent(token));
         const p = data.profile;
-        const username = p.username ? '<div class="hint">@' + esc(p.username) + '</div>' : '';
+        const username = p.username ? '<div class="hint">' + usernameLink(p.username) + '</div>' : '';
         publicProfileContent.innerHTML = `
           <div class="public-profile">
             ${avatarHtml(p.first_name, p.avatar_url, false, p.avatar_emoji)}

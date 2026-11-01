@@ -2684,6 +2684,9 @@ def test_event_notification_edit_and_send_branches(client, monkeypatch):
 
 
 def test_training_notification_texts_and_targets(monkeypatch):
+    async def expire_notice(*args):
+        pass
+    monkeypatch.setattr(mainmod.db, "expire_event_notifications", expire_notice)
     now = int(time.time()) + 3600
     training = {
         "id": 1,
@@ -2820,6 +2823,9 @@ def test_training_notification_texts_and_targets(monkeypatch):
 
 
 def test_training_notification_alert_only_on_edit(monkeypatch):
+    async def expire_notice(*args):
+        pass
+    monkeypatch.setattr(mainmod.db, "expire_event_notifications", expire_notice)
     training = {
         "id": 1,
         "training_type": "Группа",
@@ -3964,6 +3970,9 @@ def test_coauthor_error_branches(client):
 
 
 def test_coauthor_notification_loops(monkeypatch):
+    async def expire_notice(*args):
+        pass
+    monkeypatch.setattr(mainmod.db, "expire_event_notifications", expire_notice)
     training = {
         "id": 21,
         "training_type": "Тренировка",
@@ -4153,3 +4162,21 @@ def test_delete_profile_promotes_match_waitlist(client, monkeypatch):
     assert client.delete("/api/me?confirm=true", headers=PLAYER2).status_code == 200
     match = client.get("/api/matches", headers=third).json()["matches"][0]
     assert match["is_joined"] is True
+
+
+def test_chat_and_application_notification_failure_is_nonfatal(monkeypatch):
+    async def allowed(*args):
+        return True
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("temporary failure")
+
+    async def managers():
+        return []
+
+    monkeypatch.setattr(mainmod, "_notifications_allowed", allowed)
+    monkeypatch.setattr(mainmod, "_send_event_notification", fail)
+    monkeypatch.setattr(mainmod.db, "list_managers", managers)
+    asyncio.run(mainmod._notify_new_chat_message(555, 123))
+    asyncio.run(mainmod._deliver_to_coach(123, 555, "Игрок", "текст"))
+    asyncio.run(mainmod._notify_managers_about_application(555, "Игрок"))

@@ -1254,3 +1254,39 @@ def test_attendees_coach_sees_username_and_phone(monkeypatch):
     asyncio.run(botmod.cb_attendees_show(callback))
     assert "@ivan" in chat_answers[0]
     assert "+79991234567" in chat_answers[0]
+
+
+def test_temporary_notification_is_scheduled_for_deletion(monkeypatch):
+    recorded = []
+
+    async def save(*args, **kwargs):
+        recorded.append((args, kwargs))
+
+    class Bot:
+        async def send_message(self, chat_id, text, **kwargs):
+            return SimpleNamespace(message_id=42)
+
+    monkeypatch.setattr(db, "save_event_notification", save)
+    before = int(time.time())
+    asyncio.run(botmod.send_temporary_notification(Bot(), 555, "notice"))
+    assert recorded[0][0] == ("notice", 42, 555, 555, 42, "notice")
+    assert before + 86400 <= recorded[0][1]["delete_at"] <= int(time.time()) + 86400
+
+
+def test_attendee_usernames_are_safe_links(monkeypatch):
+    async def training(_id):
+        return _training()
+
+    async def participants(_id):
+        return [
+            {"status": "booked", "telegram_id": 555, "first_name": "Иван", "display_mode": "name", "username": "player_1", "phone": ""},
+            {"status": "waitlist", "telegram_id": 556, "first_name": "Мария", "display_mode": "name", "username": '<bad>', "phone": ""},
+        ]
+
+    monkeypatch.setattr(db, "get_training", training)
+    monkeypatch.setattr(db, "get_participants", participants)
+    callback, _, chat_answers, _ = _callback_with_message(settings.coach_telegram_id, "attendees:show:1")
+    asyncio.run(botmod.cb_attendees_show(callback))
+    assert 'href="https://t.me/player_1"' in chat_answers[0]
+    assert '&lt;bad&gt;' in chat_answers[0]
+    assert '<bad>' not in chat_answers[0]

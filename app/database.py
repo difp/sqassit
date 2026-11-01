@@ -316,6 +316,12 @@ async def _migrate() -> None:
         "ON event_notifications(delete_at)"
     )
 
+    # Старые сводки, ранее сохранённые без срока, тоже подлежат очистке.
+    await _conn.execute(
+        "UPDATE event_notifications SET delete_at = updated_at + 86400 "
+        "WHERE delete_at IS NULL AND kind IN ('training', 'match', 'match_feed')"
+    )
+
     # Памятку показываем только новым пользователям. При обновлении старой БД
     # существующие аккаунты не должны внезапно получить онбординг.
     if not onboarding_was_present:
@@ -1845,6 +1851,17 @@ async def save_event_notification(
     final_at: int | None = None,
 ) -> None:
     now = int(time.time())
+    if delete_at is None and kind != "rules":
+        delete_at = now + 86400
+        if kind in {"training", "match"}:
+            query = (
+                "SELECT start_at, duration_min, deleted_at FROM trainings WHERE id = ?"
+                if kind == "training" else
+                "SELECT start_at, duration_min, deleted_at FROM matches WHERE id = ?"
+            )
+            event = await _fetchone(query, (entity_id,))
+            if event is not None and not event["deleted_at"]:
+                delete_at = min(int(event["start_at"]) + int(event["duration_min"]) * 60 + 14400, now + 47 * 3600)
     await _execute(
         """
         INSERT INTO event_notifications
@@ -1855,9 +1872,15 @@ async def save_event_notification(
             message_id = excluded.message_id,
             text = excluded.text,
             updated_at = excluded.updated_at,
-            delete_at = excluded.delete_at,
+            delete_at = CASE
+                WHEN event_notifications.message_id = excluded.message_id
+                     AND event_notifications.delete_at IS NOT NULL
+                     AND excluded.delete_at IS NOT NULL
+                THEN MIN(event_notifications.delete_at, excluded.delete_at)
+                ELSE excluded.delete_at END,
             phase = excluded.phase,
-            sent_at = excluded.sent_at,
+            sent_at = CASE WHEN event_notifications.message_id = excluded.message_id
+                      THEN event_notifications.sent_at ELSE excluded.sent_at END,
             final_at = excluded.final_at
         """,
         (
@@ -1900,6 +1923,19 @@ async def clear_event_notification_message(row_id: int) -> None:
 
 async def delete_event_notification_by_id(row_id: int) -> None:
     await _execute("DELETE FROM event_notifications WHERE id = ?", (row_id,))
+
+
+async def expire_event_notifications(kind: str, entity_id: int, chat_id: int | None = None) -> None:
+    """Помечает уведомления устаревшими для фонового удаления."""
+    await _execute(
+        "UPDATE event_notifications SET delete_at = ? "
+        "WHERE kind = ? AND entity_id = ? AND (? IS NULL OR chat_id = ?)",
+        (int(time.time()), kind, entity_id, chat_id, chat_id),
+    )
+
+
+async def list_match_feed_notifications() -> list[aiosqlite.Row]:
+    return await _fetchall("SELECT * FROM event_notifications WHERE kind = 'match_feed'")
 
 
 async def list_event_notifications_for_training(

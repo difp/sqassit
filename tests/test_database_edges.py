@@ -257,3 +257,31 @@ def test_failed_updates_roll_back_as_a_unit(tmp_path):
             await db.close()
 
     asyncio.run(scenario())
+
+
+def test_notification_deadlines_and_expiration(tmp_path, monkeypatch):
+    async def scenario():
+        await db.connect(str(tmp_path / "notifications.db"))
+        try:
+            now = 1_900_000_000
+            monkeypatch.setattr(db.time, "time", lambda: now)
+            tid = await db.create_training(
+                title="Тест", training_type="Тест", start_at=now + 3600,
+                duration_min=60, capacity=2, level="", reminder_enabled=True,
+                reminder_offset_min=60, created_by=1,
+            )
+            await db.save_event_notification("training", tid, 1, 1, 10, "one")
+            record = await db.get_event_notification("training", tid, 1, 1)
+            assert record["delete_at"] == now + 6 * 3600
+            await db.save_event_notification("training", tid, 1, 1, 10, "updated")
+            assert (await db.get_event_notification("training", tid, 1, 1))["delete_at"] == now + 6 * 3600
+            await db.save_event_notification("chat", 2, 1, 1, 11, "message")
+            assert (await db.get_event_notification("chat", 2, 1, 1))["delete_at"] == now + 86400
+            await db.expire_event_notifications("chat", 2, 1)
+            assert (await db.get_event_notification("chat", 2, 1, 1))["delete_at"] == now
+            await db.save_event_notification("rules", 0, 1, 0, 12, "rules")
+            assert (await db.get_event_notification("rules", 0, 1, 0))["delete_at"] is None
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())

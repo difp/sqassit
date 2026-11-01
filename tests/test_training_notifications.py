@@ -788,3 +788,44 @@ def test_event_notification_migration_adds_columns(tmp_path):
             await db.close()
 
     asyncio.run(scenario())
+
+
+def test_transient_delete_keeps_notification_for_retry(bot, monkeypatch):
+    deleted = []
+
+    async def delete_row(row_id):
+        deleted.append(row_id)
+
+    monkeypatch.setattr(db, "delete_event_notification_by_id", delete_row)
+    bot.delete_error = "network timeout"
+    asyncio.run(mainmod._delete_notification_row({"id": 1, "chat_id": 555, "message_id": 7}))
+    assert deleted == []
+
+
+def test_match_feed_refreshes_and_removes_stale_messages(bot, monkeypatch):
+    records = [{"id": 1, "chat_id": 555, "user_id": 555, "text": "old", "message_id": 1}]
+    matches = [{"start_at": int(time.time()) + 60, "title": "Матч", "location": ""}]
+    changed = []
+    removed = []
+
+    async def get_records():
+        return records
+
+    async def get_matches(*args):
+        return matches
+
+    async def send(*args):
+        changed.append(args)
+
+    async def remove(row):
+        removed.append(row["id"])
+
+    monkeypatch.setattr(db, "list_match_feed_notifications", get_records)
+    monkeypatch.setattr(db, "list_upcoming_matches", get_matches)
+    monkeypatch.setattr(mainmod, "_send_event_notification", send)
+    monkeypatch.setattr(mainmod, "_delete_notification_row", remove)
+    asyncio.run(mainmod._refresh_existing_match_feeds(int(time.time())))
+    assert len(changed) == 1
+    matches.clear()
+    asyncio.run(mainmod._refresh_existing_match_feeds(int(time.time())))
+    assert removed == [1]
