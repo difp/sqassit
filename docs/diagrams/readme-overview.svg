@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 132" role="img" aria-labelledby="title desc">
+  <title id="title">SQASSIT: компоненты приложения</title>
+  <desc id="desc">Telegram связывает пользователя с приложением SQASSIT на FastAPI и aiogram. Приложение хранит расписание, записи и сообщения в SQLite.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1 L9 5 L1 9" fill="none" stroke="#8192a8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <rect width="900" height="132" rx="18" fill="#f4f7fb"/>
+  <g fill="none" stroke="#8192a8" stroke-width="2" marker-start="url(#arrow)" marker-end="url(#arrow)">
+    <path d="M274 66 H316"/>
+    <path d="M584 66 H626"/>
+  </g>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif" fill="#12151a" font-size="32" font-weight="700">
+    <g transform="translate(16 16)">
+      <rect width="250" height="100" rx="14" fill="#ffffff" stroke="#d8e3ef"/>
+      <circle cx="38" cy="50" r="17" fill="#e7f0fa"/>
+      <path d="M29 50l18-7-4 16-5-5-3 3-1-5-5-2z" fill="#0f6fc5"/>
+      <text x="67" y="61">Telegram</text>
+    </g>
+    <g transform="translate(325 16)">
+      <rect width="250" height="100" rx="14" fill="#ffffff" stroke="#d8e3ef"/>
+      <circle cx="38" cy="50" r="17" fill="#e7f0fa"/>
+      <circle cx="38" cy="50" r="8" fill="none" stroke="#0f6fc5" stroke-width="2"/>
+      <circle cx="36" cy="50" r="1.5" fill="#0f6fc5"/>
+      <circle cx="40" cy="50" r="1.5" fill="#0f6fc5"/>
+      <text x="67" y="61">SQASSIT</text>
+    </g>
+    <g transform="translate(634 16)">
+      <rect width="250" height="100" rx="14" fill="#ffffff" stroke="#d8e3ef"/>
+      <circle cx="38" cy="50" r="17" fill="#e7f0fa"/>
+      <ellipse cx="38" cy="44" rx="8" ry="4" fill="none" stroke="#0f6fc5" stroke-width="2"/>
+      <path d="M30 44v12c0 2.2 3.6 4 8 4s8-1.8 8-4V44M30 50c0 2.2 3.6 4 8 4s8-1.8 8-4" fill="none" stroke="#0f6fc5" stroke-width="2"/>
+      <text x="67" y="61">SQLite</text>
+    </g>
+  </g>
+</svg>

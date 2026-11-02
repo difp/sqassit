@@ -11,23 +11,27 @@ Python 3.11+ · FastAPI · aiogram 3 · SQLite
 ![Telegram](https://img.shields.io/badge/Telegram-Mini_App-26A5E4?logo=telegram&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-## Скриншоты
+## Примеры интерфейса
 
 <p align="center">
-  <a href="docs/screenshots/player-match.png"><img src="docs/screenshots/player-match.png" alt="Игрок: расписание и запись; Матч: заявки и состав" width="100%"></a>
+  <a href="docs/screenshots/player.png"><img src="docs/screenshots/player.png" alt="Тренировки: расписание и запись" width="140"></a>
+  <a href="docs/screenshots/match.png"><img src="docs/screenshots/match.png" alt="Матчи: поиск игроков и состав" width="140"></a>
+  <a href="docs/screenshots/coach.png"><img src="docs/screenshots/coach.png" alt="Панель тренера: занятия и участники" width="140"></a>
+  <a href="docs/screenshots/chat.png"><img src="docs/screenshots/chat.png" alt="Личный чат игрока и тренера" width="140"></a>
 </p>
-<p align="center">
-  <a href="docs/screenshots/coach-chat.png"><img src="docs/screenshots/coach-chat.png" alt="Тренер: занятия и игроки; Чат: отдельный диалог с игроком" width="100%"></a>
-</p>
+
+Нажмите на изображение, чтобы открыть его в полном размере.
 
 ## Как устроено
 
 <p align="center">
-  <a href="docs/ARCHITECTURE.md"><img src="docs/diagrams/architecture.svg" alt="Архитектура SQASSIT: Telegram, FastAPI, SQLite" width="100%"></a>
+  <a href="docs/ARCHITECTURE.md"><img src="docs/diagrams/readme-overview.svg" alt="Telegram ↔ SQASSIT ↔ SQLite: приложение, бот и хранение данных" width="760"></a>
 </p>
 
-- [Архитектура и потоки](docs/ARCHITECTURE.md) — компоненты, путь заявки и
-  приватность чата в трёх схемах.
+Telegram открывает приложение и доставляет уведомления; FastAPI и aiogram
+обрабатывают запросы, SQLite хранит данные.
+
+[Подробнее об архитектуре и потоках](docs/ARCHITECTURE.md) — компоненты, путь заявки и приватность чата.
 
 ## Что умеет
 
