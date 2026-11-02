@@ -313,3 +313,18 @@ def test_coach_opens_tournament_room() -> None:
     # Локальная сборка squashtabs принимает роль и состав из ссылки.
     assert "sync.roleLocked = true" in tabs
     assert "hp.get('names')" in tabs
+
+
+def test_training_reminder_stays_visible_and_edit_control_is_labeled() -> None:
+    coach = (TEMPLATES / "coach.html").read_text()
+    base = BASE.read_text()
+    reminder = coach.split("function reminderEditor(t)", 1)[1].split("// Плитка", 1)[0]
+    assert '<details' not in reminder
+    assert 'class="reminder-compact"' in reminder
+    assert 'aria-label="Часы до тренировки"' in reminder
+    assert 'aria-label="Минуты до тренировки"' in reminder
+    assert 'aria-label="Напоминание о тренировке"' in reminder
+    assert 'aria-label="Изменить тренировку"' in coach
+    assert 'role="dialog" aria-modal="true" aria-labelledby="edit-training-title"' in coach
+    assert '.reminder-compact {' in base
+    assert 'flex-wrap: wrap' in base.split('.reminder-compact {', 1)[1].split('}', 1)[0]

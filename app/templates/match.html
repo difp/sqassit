@@ -128,9 +128,10 @@ function matchCard(m) {
   const free = Math.max(0, m.max_players - m.players_count);
   const joined = m.is_joined;
   const pending = m.is_pending;
+  const waitlisted = m.is_waitlisted;
   let actions = '';
-  if (pending) {
-    actions = `<button class="btn btn--danger" data-match-leave="${m.id}">Отменить заявку</button>`;
+  if (pending || waitlisted) {
+    actions = `<button class="btn btn--danger" data-match-leave="${m.id}">${waitlisted ? "Выйти из очереди" : "Отменить заявку"}</button>`;
   } else if (!joined) {
     actions = free
       ? `<button class="btn btn--primary" data-match-join="${m.id}">Присоединиться</button>`
@@ -181,7 +182,7 @@ function matchCard(m) {
       ${esc(m.location)}
     </div>` : ''}
     ${m.description ? `<div class="t-note">${esc(m.description)}</div>` : ''}
-    ${pending ? '<div class="t-badges"><span class="badge badge--warn">Ожидает подтверждения</span></div>' : ''}
+    ${pending || waitlisted ? `<div class="t-badges"><span class="badge badge--warn">${waitlisted ? "В листе ожидания" : "Ожидает подтверждения"}</span></div>` : ""}
     ${creator}
     <div class="t-people" style="margin-top:12px">${matchParticipantsLine(m.participants)}</div>
     ${m.pending_requests && m.pending_requests.length ? `

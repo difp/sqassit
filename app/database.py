@@ -173,6 +173,12 @@ CREATE TABLE IF NOT EXISTS match_players (
     UNIQUE (match_id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS reminder_deliveries (
+    training_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    PRIMARY KEY (training_id, user_id)
+);
+
 CREATE TABLE IF NOT EXISTS event_notifications (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     kind        TEXT NOT NULL,             -- training | training_booked | ...
@@ -308,6 +314,12 @@ async def _migrate() -> None:
     await _conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_event_notifications_delete "
         "ON event_notifications(delete_at)"
+    )
+
+    # Старые сводки, ранее сохранённые без срока, тоже подлежат очистке.
+    await _conn.execute(
+        "UPDATE event_notifications SET delete_at = updated_at + 86400 "
+        "WHERE delete_at IS NULL AND kind IN ('training', 'match', 'match_feed')"
     )
 
     # Памятку показываем только новым пользователям. При обновлении старой БД
@@ -526,10 +538,19 @@ async def add_coach(telegram_id: int, added_by: int) -> bool:
 
 async def remove_coach(telegram_id: int) -> None:
     """Снимает роль тренера и синхронизирует users.is_coach."""
-    await _execute("DELETE FROM coaches WHERE telegram_id = ?", (telegram_id,))
-    await _execute(
-        "UPDATE users SET is_coach = 0 WHERE telegram_id = ?", (telegram_id,)
-    )
+    db = _db()
+    async with _lock:
+        try:
+            await db.execute("DELETE FROM coaches WHERE telegram_id = ?", (telegram_id,))
+            await db.execute(
+                "DELETE FROM event_coauthors WHERE event_type = 'training' AND user_id = ?",
+                (telegram_id,),
+            )
+            await db.execute("UPDATE users SET is_coach = 0 WHERE telegram_id = ?", (telegram_id,))
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
 
 
 async def is_coach_id(telegram_id: int) -> bool:
@@ -742,22 +763,32 @@ async def delete_user_data(telegram_id: int) -> None:
     Записи на тренировки должны быть предварительно отменены вызывающим кодом:
     так сохраняются корректные счётчики и продвигается лист ожидания.
     """
-    await _execute(
-        "DELETE FROM messages WHERE from_user = ? OR to_user = ?",
-        (telegram_id, telegram_id),
-    )
-    await _execute(
-        "DELETE FROM coach_applications WHERE telegram_id = ?", (telegram_id,)
-    )
-    await _execute("DELETE FROM feedback WHERE user_id = ?", (telegram_id,))
-    await _execute(
-        "DELETE FROM event_coauthors WHERE user_id = ? OR added_by = ?",
-        (telegram_id, telegram_id),
-    )
-    # Активные записи уже отменены вызывающим кодом; удаляем и историю, чтобы
-    # в БД не оставался telegram_id удалённого пользователя.
-    await _execute("DELETE FROM bookings WHERE user_id = ?", (telegram_id,))
-    await _execute("DELETE FROM users WHERE telegram_id = ?", (telegram_id,))
+    db = _db()
+    async with _lock:
+        try:
+            for sql, params in (
+                ("DELETE FROM messages WHERE from_user = ? OR to_user = ?", (telegram_id, telegram_id)),
+                ("DELETE FROM coach_applications WHERE telegram_id = ?", (telegram_id,)),
+                ("DELETE FROM feedback WHERE user_id = ?", (telegram_id,)),
+                ("DELETE FROM event_coauthors WHERE user_id = ?", (telegram_id,)),
+                ("UPDATE event_coauthors SET added_by = NULL WHERE added_by = ?", (telegram_id,)),
+                ("DELETE FROM bookings WHERE user_id = ?", (telegram_id,)),
+                ("DELETE FROM match_players WHERE user_id = ?", (telegram_id,)),
+                ("DELETE FROM reminder_deliveries WHERE user_id = ?", (telegram_id,)),
+                ("DELETE FROM event_notifications WHERE chat_id = ? OR user_id = ?", (telegram_id, telegram_id)),
+                ("UPDATE matches SET created_by = 0 WHERE created_by = ?", (telegram_id,)),
+                ("UPDATE match_players SET decided_by = NULL WHERE decided_by = ?", (telegram_id,)),
+                ("UPDATE coach_applications SET decided_by = NULL WHERE decided_by = ?", (telegram_id,)),
+                ("UPDATE coaches SET added_by = NULL WHERE added_by = ?", (telegram_id,)),
+                ("UPDATE trainings SET created_by = NULL WHERE created_by = ?", (telegram_id,)),
+                ("UPDATE trainings SET deleted_by = NULL WHERE deleted_by = ?", (telegram_id,)),
+                ("DELETE FROM users WHERE telegram_id = ?", (telegram_id,)),
+            ):
+                await db.execute(sql, params)
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
 
 
 async def list_event_coauthors(event_type: str, event_id: int) -> list[aiosqlite.Row]:
@@ -892,15 +923,57 @@ async def create_training(
     )
 
 
+async def update_training_details(training_id: int, training_type: str, start_at: int) -> bool:
+    """Меняет занятие, сохраняя записи; при переносе обновляет напоминания."""
+    db = _db()
+    async with _lock:
+        try:
+            async with db.execute(
+                "SELECT start_at, duration_min FROM trainings WHERE id = ? AND deleted_at IS NULL",
+                (training_id,),
+            ) as cur:
+                previous = await cur.fetchone()
+            if previous is None:
+                return False
+            changed_time = int(previous["start_at"]) != start_at
+            await db.execute(
+                "UPDATE trainings SET title = ?, training_type = ?, start_at = ?, "
+                "reminder_sent = CASE WHEN ? THEN 0 ELSE reminder_sent END WHERE id = ?",
+                (training_type, training_type, start_at, int(changed_time), training_id),
+            )
+            if changed_time:
+                await db.execute("DELETE FROM reminder_deliveries WHERE training_id = ?", (training_id,))
+                await db.execute(
+                    "UPDATE event_notifications SET delete_at = MIN(?, "
+                    "CASE WHEN sent_at > 0 THEN sent_at + 47 * 3600 ELSE ? END) "
+                    "WHERE kind = 'training' AND entity_id = ?",
+                    (start_at + int(previous["duration_min"]) * 60 + 14400,
+                     int(time.time()) + 86400, training_id),
+                )
+            await db.commit()
+            return True
+        except BaseException:
+            await db.rollback()
+            raise
+
+
 async def update_reminder_settings(
     training_id: int, *, enabled: bool, offset_min: int
 ) -> None:
     """Тумблер напоминания и смещение таймера."""
-    await _execute(
-        "UPDATE trainings SET reminder_enabled = ?, reminder_offset_min = ?, "
-        "reminder_sent = 0 WHERE id = ?",
-        (int(enabled), offset_min, training_id),
-    )
+    db = _db()
+    async with _lock:
+        try:
+            await db.execute(
+                "UPDATE trainings SET reminder_enabled = ?, reminder_offset_min = ?, "
+                "reminder_sent = 0 WHERE id = ?",
+                (int(enabled), offset_min, training_id),
+            )
+            await db.execute("DELETE FROM reminder_deliveries WHERE training_id = ?", (training_id,))
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
 
 
 async def get_training(training_id: int) -> aiosqlite.Row | None:
@@ -1077,6 +1150,7 @@ async def purge_training(training_id: int) -> None:
     """Полное удаление (только из корзины, необратимо) одной транзакцией."""
     db = _db()
     async with _lock:
+        await db.execute("DELETE FROM reminder_deliveries WHERE training_id = ?", (training_id,))
         await db.execute("DELETE FROM bookings WHERE training_id = ?", (training_id,))
         await db.execute("DELETE FROM trainings WHERE id = ?", (training_id,))
         await db.execute(
@@ -1460,8 +1534,16 @@ async def notification_targets(training_id: int) -> list[aiosqlite.Row]:
          WHERE b.training_id = ? AND b.status = 'booked'
            AND u.notifications_enabled = 1
            AND u.notify_trainings = 1
+           AND NOT EXISTS (SELECT 1 FROM reminder_deliveries d WHERE d.training_id = b.training_id AND d.user_id = b.user_id)
         """,
         (training_id,),
+    )
+
+
+async def mark_reminder_delivered(training_id: int, user_id: int) -> None:
+    await _execute(
+        "INSERT OR IGNORE INTO reminder_deliveries (training_id, user_id) VALUES (?, ?)",
+        (training_id, user_id),
     )
 
 
@@ -1735,12 +1817,44 @@ async def reject_match_player(match_id: int, user_id: int, decided_by: int) -> b
     return bool(changed)
 
 
-async def leave_match(match_id: int, user_id: int) -> bool:
-    removed = await _execute_rowcount(
-        "DELETE FROM match_players WHERE match_id = ? AND user_id = ?",
-        (match_id, user_id),
-    )
-    return bool(removed)
+async def leave_match(match_id: int, user_id: int) -> tuple[bool, int | None]:
+    """Удаляет участника и атомарно продвигает первого ожидающего."""
+    db = _db()
+    async with _lock:
+        async with db.execute(
+            "SELECT status FROM match_players WHERE match_id = ? AND user_id = ?",
+            (match_id, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return False, None
+        await db.execute("DELETE FROM match_players WHERE match_id = ? AND user_id = ?", (match_id, user_id))
+        promoted = None
+        if row["status"] == "booked":
+            async with db.execute(
+                "SELECT user_id FROM match_players WHERE match_id = ? AND status = 'waitlist' ORDER BY created_at, id LIMIT 1",
+                (match_id,),
+            ) as cur:
+                waiting = await cur.fetchone()
+            if waiting:
+                promoted = int(waiting["user_id"])
+                await db.execute(
+                    "UPDATE match_players SET status = 'booked' WHERE match_id = ? AND user_id = ?",
+                    (match_id, promoted),
+                )
+        await db.commit()
+        return True, promoted
+
+
+async def user_matches(user_id: int) -> list[aiosqlite.Row]:
+    return await _fetchall("SELECT match_id FROM match_players WHERE user_id = ?", (user_id,))
+
+
+async def has_upcoming_owned_match(user_id: int, now: int) -> bool:
+    return await _fetchone(
+        "SELECT id FROM matches WHERE created_by = ? AND deleted_at IS NULL AND start_at > ? LIMIT 1",
+        (user_id, now),
+    ) is not None
 
 
 async def delete_match(match_id: int) -> None:
@@ -1780,6 +1894,17 @@ async def save_event_notification(
     final_at: int | None = None,
 ) -> None:
     now = int(time.time())
+    if delete_at is None and kind != "rules":
+        delete_at = now + 86400
+        if kind in {"training", "match"}:
+            query = (
+                "SELECT start_at, duration_min, deleted_at FROM trainings WHERE id = ?"
+                if kind == "training" else
+                "SELECT start_at, duration_min, deleted_at FROM matches WHERE id = ?"
+            )
+            event = await _fetchone(query, (entity_id,))
+            if event is not None and not event["deleted_at"]:
+                delete_at = min(int(event["start_at"]) + int(event["duration_min"]) * 60 + 14400, now + 47 * 3600)
     await _execute(
         """
         INSERT INTO event_notifications
@@ -1790,9 +1915,15 @@ async def save_event_notification(
             message_id = excluded.message_id,
             text = excluded.text,
             updated_at = excluded.updated_at,
-            delete_at = excluded.delete_at,
+            delete_at = CASE
+                WHEN event_notifications.message_id = excluded.message_id
+                     AND event_notifications.delete_at IS NOT NULL
+                     AND excluded.delete_at IS NOT NULL
+                THEN MIN(event_notifications.delete_at, excluded.delete_at)
+                ELSE excluded.delete_at END,
             phase = excluded.phase,
-            sent_at = excluded.sent_at,
+            sent_at = CASE WHEN event_notifications.message_id = excluded.message_id
+                      THEN event_notifications.sent_at ELSE excluded.sent_at END,
             final_at = excluded.final_at
         """,
         (
@@ -1835,6 +1966,19 @@ async def clear_event_notification_message(row_id: int) -> None:
 
 async def delete_event_notification_by_id(row_id: int) -> None:
     await _execute("DELETE FROM event_notifications WHERE id = ?", (row_id,))
+
+
+async def expire_event_notifications(kind: str, entity_id: int, chat_id: int | None = None) -> None:
+    """Помечает уведомления устаревшими для фонового удаления."""
+    await _execute(
+        "UPDATE event_notifications SET delete_at = ? "
+        "WHERE kind = ? AND entity_id = ? AND (? IS NULL OR chat_id = ?)",
+        (int(time.time()), kind, entity_id, chat_id, chat_id),
+    )
+
+
+async def list_match_feed_notifications() -> list[aiosqlite.Row]:
+    return await _fetchall("SELECT * FROM event_notifications WHERE kind = 'match_feed'")
 
 
 async def list_event_notifications_for_training(

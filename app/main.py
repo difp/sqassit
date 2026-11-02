@@ -390,6 +390,7 @@ def serialize_match(
         "level": row["level"] or "",
         "is_joined": any(p["telegram_id"] == viewer_id for p in booked),
         "is_pending": any(p["telegram_id"] == viewer_id for p in pending),
+        "is_waitlisted": any(p["telegram_id"] == viewer_id and _row_status(p) == "waitlist" for p in participants),
         "is_creator": row["created_by"] == viewer_id,
         "is_coauthor": is_coauthor,
         "can_manage": row["created_by"] == viewer_id or is_coauthor,
@@ -534,6 +535,12 @@ class TrainingIn(BaseModel):
     reminder_enabled: bool = True
     reminder_offset_min: int = Field(default=DEFAULT_REMINDER_OFFSET_MINUTES, ge=0, le=2880)
     force: bool = False  # подтверждение при возможном дубле
+
+
+class TrainingEditIn(BaseModel):
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    time: str = Field(pattern=r"^\d{2}:\d{2}$")
+    training_type: str = Field(min_length=1, max_length=100)
 
 
 class TrainingBatchIn(BaseModel):
@@ -708,7 +715,7 @@ async def lifespan(app: FastAPI):
     if settings.bot_mode == "webhook":
         url = f"{settings.webhook_base_url.rstrip('/')}/telegram/webhook"
         await tg_bot.set_webhook(
-            url, secret_token=settings.webhook_secret or None, drop_pending_updates=True
+            url, secret_token=settings.webhook_secret or None, drop_pending_updates=False
         )
         logger.info("Webhook установлен: %s", url)
     else:
@@ -1053,6 +1060,15 @@ async def api_delete_me(
     if not confirm:
         return error_json("Подтвердите удаление: ?confirm=true", 400)
 
+    if await db.has_upcoming_owned_match(user["telegram_id"], int(time.time())):
+        return error_json("Сначала отмените созданные вами предстоящие матчи.", 409)
+
+    for entry in await db.user_matches(user["telegram_id"]):
+        match = await db.get_match(entry["match_id"])
+        _, promoted = await db.leave_match(entry["match_id"], user["telegram_id"])
+        if match is not None and not match["deleted_at"] and promoted:
+            _spawn(_notify_match_event(match, promoted, "promoted"))
+
     # Сначала отменяем активные записи, чтобы освободить места и продвинуть очередь.
     for booking in await db.list_user_bookings(user["telegram_id"]):
         if booking["status"] not in {"booked", "waitlist"}:
@@ -1060,11 +1076,11 @@ async def api_delete_me(
         if booking["deleted_at"]:
             continue
         training = await db.get_training(booking["training_id"])
-        promoted = await db.cancel_booking(
+        promoted_training = await db.cancel_booking(
             booking["training_id"], user["telegram_id"]
         )
-        if training is not None and promoted:
-            _spawn(_notify_promoted(int(promoted), training))
+        if training is not None and promoted_training:
+            _spawn(_notify_promoted(int(promoted_training), training))
 
     await db.delete_user_data(user["telegram_id"])
     await _avatar_store().delete_user(user["telegram_id"])
@@ -1463,10 +1479,12 @@ async def api_leave_match(
             return error_json("Матч не найден", 404)
         if match["start_at"] <= int(time.time()):
             return error_json("Матч уже начался", 400)
-        removed = await db.leave_match(match_id, user["telegram_id"])
+        removed, promoted = await db.leave_match(match_id, user["telegram_id"])
         if not removed:
             return error_json("Вы не участвуете в этом матче", 400)
         _spawn(_notify_match_event(match, user["telegram_id"], "left"))
+        if promoted is not None:
+            _spawn(_notify_match_event(match, promoted, "promoted"))
         return {"ok": True}
     except Exception:
         logger.exception("Ошибка выхода из матча")
@@ -1616,6 +1634,52 @@ async def api_create_training(payload: TrainingIn, coach: Annotated[dict, Depend
     except Exception:
         logger.exception("Ошибка создания тренировки")
         return error_json("Внутренняя ошибка сервера", 500)
+
+
+@app.patch("/api/coach/trainings/{training_id}")
+async def api_edit_training(
+    training_id: int, payload: TrainingEditIn, coach: Annotated[dict, Depends(require_coach)]
+):
+    training = await db.get_training(training_id)
+    if training is None or training["deleted_at"] or not await _can_manage_training(training, coach["telegram_id"]):
+        return error_json("Тренировка не найдена", 404)
+    now = int(time.time())
+    if training["start_at"] <= now:
+        return error_json("Начавшуюся тренировку изменить нельзя", 400)
+    training_type = payload.training_type.strip()
+    if not training_type:
+        return error_json("Укажите название тренировки", 422)
+    start_at = _parse_local_epoch(payload.date, payload.time)
+    if start_at <= now:
+        return error_json("Нельзя перенести тренировку в прошлое", 400)
+    duplicate = await db.find_duplicate_training(start_at, training_type, training["created_by"])
+    if duplicate is not None and duplicate["id"] != training_id:
+        return error_json("Такая тренировка уже есть в расписании.", 409)
+    if start_at == training["start_at"] and training_type == training["training_type"]:
+        return {"ok": True}
+    changed_time = start_at != training["start_at"]
+    if not await db.update_training_details(training_id, training_type, start_at):
+        return error_json("Тренировка не найдена", 404)
+    updated = await db.get_training(training_id)
+    if updated is not None:
+        _spawn(_notify_training_changed(updated, changed_time))
+    return {"ok": True}
+
+
+async def _notify_training_changed(training: aiosqlite.Row, changed_time: bool) -> None:
+    """Обновляет уведомления и сообщает участникам об изменении занятия."""
+    if changed_time:
+        await _delete_training_status_messages(training["id"])
+    participants = await db.get_participants(training["id"])
+    await _notify_training_event(training)
+    for player in participants:
+        user_id = int(player["telegram_id"])
+        status = str(player["status"])
+        if status not in {"booked", "waitlist", "pending"}:
+            continue
+        await _notify_training_event(training, user_id, status, actor_id=user_id)
+        if await _notifications_allowed(user_id, "trainings"):
+            await _send_user_message(user_id, "Изменена тренировка.\n\n🏸 " + _training_brief(training))
 
 
 @app.post("/api/coach/trainings/batch")
@@ -2091,6 +2155,9 @@ async def api_message_coach(payload: MessageIn, user: Annotated[dict, Depends(cu
 @app.get("/api/messages/thread")
 async def api_player_thread(user: Annotated[dict, Depends(current_user)]):
     rows = await db.list_user_thread(user["telegram_id"])
+    for row in rows:
+        if row["to_user"] == user["telegram_id"]:
+            await db.expire_event_notifications("chat", row["from_user"], user["telegram_id"])
     return {
         "ok": True,
         "messages": [
@@ -2132,6 +2199,7 @@ async def api_coach_messages(coach: Annotated[dict, Depends(require_coach)]):
 @app.get("/api/coach/messages/{user_id}")
 async def api_coach_thread(user_id: int, coach: Annotated[dict, Depends(require_coach)]):
     rows = await db.list_coach_thread(coach["telegram_id"], user_id)
+    await db.expire_event_notifications("chat", user_id, coach["telegram_id"])
     return {
         "ok": True,
         "messages": [
@@ -2166,8 +2234,8 @@ async def _notify_new_chat_message(telegram_id: int, author_id: int) -> None:
     if not await _notifications_allowed(telegram_id, "messages"):
         return
     try:
-        await app.state.bot.send_message(
-            telegram_id,
+        await _send_event_notification(
+            "chat", author_id, telegram_id, telegram_id,
             "✉️ Новое сообщение от тренера в приложении.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(
@@ -2201,8 +2269,8 @@ async def _notify_feedback(
         ]]
     )
     try:
-        await app.state.bot.send_message(
-            settings.coach_telegram_id,
+        await bot_module.send_temporary_notification(
+            app.state.bot, settings.coach_telegram_id,
             "\n".join(lines),
             reply_markup=keyboard,
         )
@@ -2215,8 +2283,8 @@ async def _deliver_to_coach(coach_id: int, sender_id: int, sender_name: str, tex
     if not await _notifications_allowed(coach_id, "messages"):
         return
     try:
-        await app.state.bot.send_message(
-            coach_id,
+        await _send_event_notification(
+            "chat", sender_id, coach_id, coach_id,
             "✉️ Новое сообщение в приложении.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(
@@ -2243,8 +2311,8 @@ async def _send_user_message(
 ) -> None:
     """Best-effort уведомление пользователя; недоступность Telegram не ломает API."""
     try:
-        await app.state.bot.send_message(
-            telegram_id, text, reply_markup=reply_markup
+        await bot_module.send_temporary_notification(
+            app.state.bot, telegram_id, text, reply_markup=reply_markup
         )
     except Exception:
         logger.info("Не удалось отправить уведомление %s", telegram_id, exc_info=True)
@@ -2567,6 +2635,7 @@ _STATUS_NOTIFICATION_KINDS = (
     "training_booked",
     "training_waitlist",
     "training_rejected",
+    "training_reminder",
 )
 
 
@@ -2578,7 +2647,9 @@ async def _delete_notification_row(row: aiosqlite.Row) -> None:
             await app.state.bot.delete_message(
                 int(row["chat_id"]), message_id
             )
-        except Exception:
+        except Exception as exc:
+            if _is_transient_delete_error(exc):
+                return
             logger.info(
                 "Не удалось удалить сообщение %s", row["chat_id"], exc_info=True
             )
@@ -2844,6 +2915,12 @@ async def _refresh_training_messages(
                 training, participants, status, coach_name
             )
             await _edit_notification_row(row, text)
+        elif kind == "training_waitlist" and status_by_user.get(user_id) == "waitlist":
+            await _edit_notification_row(row, _training_waitlist_text(training, coach_name))
+        elif kind == "training_rejected" and status_by_user.get(user_id) == "rejected":
+            await _edit_notification_row(row, _training_rejected_text(training, coach_name))
+        elif kind == "training_reminder" and status_by_user.get(user_id) == "booked":
+            await _edit_notification_row(row, bot_module.format_training_reminder(training))
         elif kind == "training_booked":
             if status_by_user.get(user_id) != "booked":
                 continue
@@ -2879,6 +2956,8 @@ async def _notify_training_event(
         else ""
     )
     if user_id is not None:
+        if status not in {"booked", "promoted"}:
+            await db.expire_event_notifications("training_reminder", training["id"], user_id)
         await _ensure_training_status_message(
             training, user_id, status, participants, coach_name, now
         )
@@ -3101,6 +3180,7 @@ async def _training_notifications_loop(interval_seconds: int = 60) -> None:
             await _process_due_deletions(now)
             await _process_due_final_enrollments(now)
             await _cleanup_stale_preliminary(now)
+            await _refresh_existing_match_feeds(now)
         except asyncio.CancelledError:
             logger.info("Планировщик уведомлений остановлен.")
             raise
@@ -3314,6 +3394,20 @@ def _match_feed_text(matches: list[aiosqlite.Row]) -> str:
             line += f" · {html.escape(match['location'])}"
         lines.append(line)
     return "\n".join(lines)
+
+
+async def _refresh_existing_match_feeds(now: int) -> None:
+    """Обновляет существующие ленты при наступлении времени матча."""
+    records = await db.list_match_feed_notifications()
+    if not records:
+        return
+    matches = await db.list_upcoming_matches(now, now + 30 * 86400)
+    text = _match_feed_text(matches)
+    for row in records:
+        if not matches or not await _notifications_allowed(int(row["chat_id"]), "matches"):
+            await _delete_notification_row(row)
+        elif row["text"] != text:
+            await _send_event_notification("match_feed", 0, int(row["chat_id"]), int(row["user_id"]), text)
 
 
 async def _notify_match_feed(exclude_user_id: int | None = None) -> None:
@@ -3556,8 +3650,8 @@ async def _notify_new_coach(tg_id: int) -> None:
                     web_app=WebAppInfo(url=bot_module._web_app_url()),
                 )
             ]])
-        await app.state.bot.send_message(
-            tg_id,
+        await bot_module.send_temporary_notification(
+            app.state.bot, tg_id,
             "Вам выдан доступ тренера 🏸\nОткройте приложение — появится вкладка «Тренер».",
             reply_markup=markup,
         )
@@ -3653,6 +3747,7 @@ async def api_approve_application(
         return error_json("Заявка уже рассмотрена", 409)
     await db.add_coach(telegram_id, manager["telegram_id"])
     await db.decide_application(telegram_id, "approved", manager["telegram_id"])
+    await db.expire_event_notifications("coach_application", telegram_id)
     _spawn(_notify_new_coach(telegram_id))
     return {"ok": True}
 
@@ -3667,6 +3762,7 @@ async def api_reject_application(
     if application["status"] != "pending":
         return error_json("Заявка уже рассмотрена", 409)
     await db.decide_application(telegram_id, "rejected", manager["telegram_id"])
+    await db.expire_event_notifications("coach_application", telegram_id)
     _spawn(_notify_application_decision(telegram_id, approved=False))
     return {"ok": True}
 
@@ -3679,7 +3775,7 @@ async def _notify_application_decision(telegram_id: int, *, approved: bool) -> N
         else "Ваша заявка на тренера отклонена."
     )
     try:
-        await app.state.bot.send_message(telegram_id, text)
+        await bot_module.send_temporary_notification(app.state.bot, telegram_id, text)
     except Exception:
         logger.info(
             "Не удалось уведомить заявителя %s", telegram_id, exc_info=True
@@ -3692,15 +3788,14 @@ async def _notify_managers_about_application(applicant_id: int, name: str) -> No
         recipients = {settings.coach_telegram_id}
         recipients.update(r["telegram_id"] for r in await db.list_managers())
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"apply:ok:{applicant_id}"),
-            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"apply:no:{applicant_id}"),
+            InlineKeyboardButton(text="Открыть заявки", web_app=WebAppInfo(url=bot_module._web_app_url())),
         ]])
         for rid in recipients:
             if not await _notifications_allowed(rid, "messages"):
                 continue
             try:
-                await app.state.bot.send_message(
-                    rid,
+                await _send_event_notification(
+                    "coach_application", applicant_id, rid, rid,
                     f"📝 <b>Заявка в тренеры</b>\n{html.escape(name)}",
                     reply_markup=keyboard,
                 )

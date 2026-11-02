@@ -495,6 +495,7 @@
     .participant-open:focus-visible,
     .player-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     .hint { font-size: 13px; color: var(--text-3); line-height: 1.4; }
+    [data-telegram-username] { color: var(--text); }
     .hm { display: flex; align-items: center; gap: 6px; color: var(--text-3); font-size: 13px; }
     .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
     .chip {
@@ -752,20 +753,29 @@
     .hint--tight { margin: 8px 0 0; line-height: 1.4; }
     .reminder-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
     .reminder-row__text { font-size: 14px; font-weight: 500; }
-    .reminder-box { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border); }
-    /* Напоминание — раскрывающийся блок: в свёрнутом виде это одна строка. */
-    .disclosure[data-reminder] { margin-top: 10px; }
-    .reminder-sum { color: var(--text-3); font-weight: 500; }
-    .reminder .reminder-box { margin-top: 10px; }
-    .reminder-box__title { font-size: 14px; font-weight: 600; }
-    .reminder-box .inline-row + .inline-row,
-    .reminder-box .reminder-total { margin-top: var(--space-2); }
-    .reminder-box .reminder-total { margin-bottom: 0; }
-    .reminder-box .reminder-offset { align-items: flex-start; flex-wrap: wrap; row-gap: 6px; }
-    .reminder-box .reminder-offset > .hint { flex: 1 1 100%; }
-    .reminder-box .hm { margin-left: 0; white-space: nowrap; }
-    .reminder-input { width: 64px; min-height: 42px; padding: 8px; text-align: center; font-variant-numeric: tabular-nums; }
-    .hm__part { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .reminder-compact {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px;
+      margin-block-start: var(--space-3);
+    }
+    .reminder-compact__label { font-size: 13px; font-weight: 600; }
+    .reminder-compact .hm { gap: 6px; }
+    .reminder-compact .switch { margin-inline-start: auto; }
+    .reminder-error { flex-basis: 100%; color: var(--danger); font-size: 13px; line-height: 1.4; }
+    .reminder-error:empty { display: none; }
+    .reminder-error .btn { margin-inline-start: 8px; }
+    .form-error { color: var(--danger); font-size: 14px; line-height: 1.4; }
+    .form-error:focus { outline: none; }
+    .reminder-input { width: 52px; min-height: 44px; padding: 6px; text-align: center; font-variant-numeric: tabular-nums; }
+    .hm__part { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+    .training-title-row { display: flex; align-items: center; gap: 8px; }
+    .training-title-row .t-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .training-edit-btn {
+      display: inline-flex; align-items: center; justify-content: center; flex: none;
+      width: 44px; min-height: 44px; border: 0; border-radius: var(--radius-sm);
+      background: var(--surface-2); color: var(--text); cursor: pointer;
+    }
+    .training-edit-btn svg { width: 18px; height: 18px; }
+    .training-edit-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     .setting-row .switch { margin-left: var(--space-2); }
 
     /* Раскрывающиеся списки: точка вместо «поехавших» нативных стрелок.
@@ -1371,6 +1381,19 @@
       ));
     }
 
+    function usernameLink(username) {
+      const value = String(username || '').replace(/^@/, '');
+      if (!/^[A-Za-z0-9_]{1,32}$/.test(value)) return esc(username || '');
+      return `<a href="https://t.me/${encodeURIComponent(value)}" data-telegram-username="${esc(value)}" target="_blank" rel="noopener noreferrer">@${esc(value)}</a>`;
+    }
+    document.addEventListener('click', e => {
+      const link = e.target.closest('[data-telegram-username]');
+      if (link && tg && typeof tg.openTelegramLink === 'function') {
+        e.preventDefault();
+        tg.openTelegramLink(link.href);
+      }
+    });
+
     // Короткий session-cache для мгновенного повторного открытия страниц.
     // Он живёт только в текущей сессии WebView и сбрасывается после действий.
     const CACHE_TTL_MS = 30000;
@@ -1518,7 +1541,7 @@
       try {
         const data = await api('/api/players/' + encodeURIComponent(token));
         const p = data.profile;
-        const username = p.username ? '<div class="hint">@' + esc(p.username) + '</div>' : '';
+        const username = p.username ? '<div class="hint">' + usernameLink(p.username) + '</div>' : '';
         publicProfileContent.innerHTML = `
           <div class="public-profile">
             ${avatarHtml(p.first_name, p.avatar_url, false, p.avatar_emoji)}

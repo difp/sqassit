@@ -58,7 +58,7 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-WEB_APP_VERSION = "42"
+WEB_APP_VERSION = "46"
 
 
 def _web_app_url() -> str:
@@ -81,6 +81,22 @@ RULES_TEXT = (
     "• Нашли ошибку или есть идея? Напишите через «Обратную связь».\n\n"
     "Правила могут обновляться."
 )
+
+
+async def send_temporary_notification(
+    bot: Bot, chat_id: int, text: str, *, kind: str = "notice",
+    entity_id: int | None = None, delete_at: int | None = None, **kwargs,
+):
+    """Отправляет уведомление и планирует удаление через сутки."""
+    sent = await bot.send_message(chat_id, text, **kwargs)
+    message_id = int(getattr(sent, "message_id", 0) or 0)
+    if message_id:
+        await db.save_event_notification(
+            kind, message_id if entity_id is None else entity_id,
+            chat_id, chat_id, message_id, text,
+            delete_at=delete_at or int(time.time()) + 86400,
+        )
+    return sent
 
 
 async def ensure_rules_message(
@@ -243,6 +259,8 @@ async def _slot_details(training_id: int, user_id: int) -> tuple[str, InlineKeyb
         status = "\n✅ Вы записаны"
     elif booking is not None and booking["status"] == "waitlist":
         status = "\n⏳ Вы в листе ожидания"
+    elif booking is not None and booking["status"] == "pending":
+        status = "\n📝 Заявка ожидает подтверждения"
     text = (
         f"🏸 <b>{html.escape(training['training_type'] or 'Тренировка')}</b>\n"
         f"📅 {start.strftime('%d.%m.%Y в %H:%M')}\n"
@@ -251,7 +269,7 @@ async def _slot_details(training_id: int, user_id: int) -> tuple[str, InlineKeyb
         f"{status}"
     )
     buttons = []
-    if booking is not None and booking["status"] in {"booked", "waitlist"}:
+    if booking is not None and booking["status"] in {"booked", "waitlist", "pending"}:
         buttons.append([InlineKeyboardButton(
             text="🗑 Отменить запись", callback_data=f"slots:cancel:{training_id}"
         )])
@@ -334,12 +352,25 @@ async def cb_slot_book(callback: CallbackQuery) -> None:
         if training["start_at"] <= int(time.time()):
             await callback.answer("Тренировка уже началась", show_alert=True)
             return
+        required_from = settings.phone_required_from
+        if required_from is not None and datetime.now(tz=settings.timezone) >= required_from:
+            user = await db.get_user(callback.from_user.id)
+            if user is None or not user["phone"]:
+                await callback.answer("Укажите телефон в настройках профиля.", show_alert=True)
+                return
         status = await db.book_training(
-            training_id, callback.from_user.id, training["capacity"]
+            training_id, callback.from_user.id, training["capacity"],
+            requires_approval=settings.require_event_approval,
         )
+        # Используем тот же механизм уведомлений, что и мини-приложение.
+        from .main import _notify_training_event, _spawn
+        _spawn(_notify_training_event(
+            training, callback.from_user.id, status, actor_id=callback.from_user.id
+        ))
         details = await _slot_details(training_id, callback.from_user.id)
         await callback.answer(
-            "Вы записаны" if status == "booked" else "Вы в листе ожидания"
+            "Заявка отправлена тренеру" if status == "pending"
+            else "Вы записаны" if status == "booked" else "Вы в листе ожидания"
         )
         message = _callback_message(callback)
         if message is not None and details is not None:
@@ -365,7 +396,17 @@ async def cb_slot_cancel(callback: CallbackQuery) -> None:
                 show_alert=True,
             )
             return
-        await db.cancel_booking(training_id, callback.from_user.id)
+        booking = await db.get_booking(training_id, callback.from_user.id)
+        if booking is None or booking["status"] not in {"pending", "booked", "waitlist"}:
+            await callback.answer("Вы не записаны на эту тренировку", show_alert=True)
+            return
+        promoted = await db.cancel_booking(training_id, callback.from_user.id)
+        from .main import _notify_promoted, _notify_training_event, _spawn
+        _spawn(_notify_training_event(
+            training, callback.from_user.id, "cancelled", actor_id=callback.from_user.id
+        ))
+        if promoted:
+            _spawn(_notify_promoted(int(promoted), training))
         details = await _slot_details(training_id, callback.from_user.id)
         await callback.answer("Запись отменена")
         message = _callback_message(callback)
@@ -425,9 +466,13 @@ async def cb_attendees_show(callback: CallbackQuery) -> None:
             name = html.escape(_player_name(p))
             if not is_coach:
                 return name
-            username = f"@{p['username']}" if p["username"] else "без username"
+            username = p["username"] or ""
+            if re.fullmatch(r"[A-Za-z0-9_]{1,32}", username):
+                handle = f'<a href="https://t.me/{username}">@{username}</a>'
+            else:
+                handle = html.escape(f"@{username}" if username else "без username")
             phone = p["phone"] or "телефон не указан"
-            return f"{name} · {html.escape(username)} · {html.escape(phone)}"
+            return f"{name} · {handle} · {html.escape(phone)}"
 
         lines.append("Записаны: " + (", ".join(
             person(p) for p in booked[:40]
@@ -621,6 +666,10 @@ async def cb_apply(callback: CallbackQuery) -> None:
             await chat.answer("❌ Заявка отклонена")
             await callback.answer("Отклонено")
 
+        # Кнопки из старых уведомлений тоже могут завершить заявку.
+        with contextlib.suppress(Exception):
+            await db.expire_event_notifications("coach_application", applicant)
+
         # Уведомляем заявителя (best-effort).
         with contextlib.suppress(Exception):
             text = (
@@ -628,7 +677,7 @@ async def cb_apply(callback: CallbackQuery) -> None:
                 if action == "ok" else "Ваша заявка на тренера отклонена."
             )
             if chat.bot is not None:
-                await chat.bot.send_message(applicant, text)
+                await send_temporary_notification(chat.bot, applicant, text)
     except Exception:
         logger.exception("Ошибка обработки заявки")
 
@@ -730,7 +779,17 @@ async def send_training_reminder(bot: Bot, training) -> tuple[int, int]:
     delivered = 0
     for row in recipients:
         try:
-            await bot.send_message(row["telegram_id"], text)
+            await send_temporary_notification(
+                bot, row["telegram_id"], text,
+                kind="training_reminder", entity_id=training["id"],
+                delete_at=min(
+                    int(training["start_at"]) + int(training.get("duration_min", 60)) * 60 + 14400
+                    if isinstance(training, dict) else
+                    int(training["start_at"]) + int(training["duration_min"]) * 60 + 14400,
+                    int(time.time()) + 47 * 3600,
+                ),
+            )
+            await db.mark_reminder_delivered(training["id"], row["telegram_id"])
             delivered += 1
         except Exception:
             logger.warning("Не доставлено напоминание %s", row["telegram_id"], exc_info=True)
@@ -749,8 +808,8 @@ async def reminder_loop(bot: Bot, interval_seconds: int = 60) -> None:
             for training in due:
                 delivered, total = await send_training_reminder(bot, training)
                 # Если получателей нет — помечаем, чтобы не проверять вечно.
-                # Если не доставлено ни одного — повторим на следующем тике.
-                if total == 0 or delivered > 0:
+                # Недоставленные сообщения повторим на следующем тике.
+                if delivered == total:
                     await db.mark_reminder_sent(training["id"])
         except asyncio.CancelledError:
             logger.info("Планировщик напоминаний остановлен.")
