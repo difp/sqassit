@@ -196,6 +196,7 @@
     <div class="sheet__handle"></div>
     <h2 class="sheet__title" id="edit-training-title">Изменить тренировку</h2>
     <form id="edit-training-form">
+      <p class="form-error" id="edit-training-error" role="alert" tabindex="-1" hidden></p>
       <label class="field"><span class="label">Название</span>
         <input class="input" name="training_type" type="text" maxlength="100" required></label>
       <div class="row2">
@@ -784,10 +785,14 @@ function reminderEditor(t) {
   <div class="reminder-compact" data-reminder="${t.id}">
     <span class="reminder-compact__label">Напомнить за</span>
     <div class="hm">
-      <span class="hm__part"><input class="input reminder-input" type="number" min="0" max="48" data-oh="${t.id}" value="${h}" aria-label="Часы до тренировки"> <span>ч</span></span>
-      <span class="hm__part"><input class="input reminder-input" type="number" min="0" max="59" data-om="${t.id}" value="${m}" aria-label="Минуты до тренировки"> <span>мин</span></span>
+      <span class="hm__part"><input class="input reminder-input" type="number" min="0" max="48" data-oh="${t.id}" value="${h}" aria-label="Часы до тренировки" aria-describedby="reminder-error-${t.id}"> <span>ч</span></span>
+      <span class="hm__part"><input class="input reminder-input" type="number" min="0" max="59" data-om="${t.id}" value="${m}" aria-label="Минуты до тренировки" aria-describedby="reminder-error-${t.id}"> <span>мин</span></span>
     </div>
     <label class="switch"><input type="checkbox" data-remind="${t.id}" aria-label="Напоминание о тренировке" ${t.reminder_enabled ? 'checked' : ''}><span></span></label>
+    <div class="reminder-error" role="status" aria-live="polite">
+      <span id="reminder-error-${t.id}" data-reminder-error="${t.id}"></span>
+      <button type="button" class="btn btn--sm" data-reminder-retry="${t.id}" hidden>Повторить</button>
+    </div>
   </div>`;
 }
 
@@ -1311,11 +1316,24 @@ const editTrainingSheet = document.getElementById('edit-training-sheet');
 const editTrainingForm = document.getElementById('edit-training-form');
 let editTrainingId = null;
 let editTrainingTrigger = null;
+let editTrainingInerted = [];
+const editTrainingError = document.getElementById('edit-training-error');
 function openEditTraining(id, trigger) {
   const training = TRAININGS.find(t => t.id == id);
   if (!training || !training.can_manage) return;
   editTrainingId = id;
   editTrainingTrigger = trigger;
+  editTrainingError.hidden = true;
+  editTrainingError.textContent = '';
+  editTrainingInerted = [];
+  for (let node = editTrainingSheet; node && node !== document.body; node = node.parentElement) {
+    for (const sibling of node.parentElement.children) {
+      if (sibling !== node && sibling.id !== 'toast' && !sibling.inert) {
+        sibling.inert = true;
+        editTrainingInerted.push(sibling);
+      }
+    }
+  }
   editTrainingForm.elements.training_type.value = training.type;
   editTrainingForm.elements.date.value = training.date;
   editTrainingForm.elements.time.value = training.time;
@@ -1324,11 +1342,23 @@ function openEditTraining(id, trigger) {
 }
 function closeEditTraining() {
   editTrainingSheet.classList.remove('is-open');
+  editTrainingInerted.forEach(el => { el.inert = false; });
+  editTrainingInerted = [];
   if (editTrainingTrigger && editTrainingTrigger.isConnected) editTrainingTrigger.focus();
 }
 editTrainingSheet.querySelectorAll('[data-edit-training-close]').forEach(el => el.addEventListener('click', closeEditTraining));
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && editTrainingSheet.classList.contains('is-open')) closeEditTraining();
+  if (!editTrainingSheet.classList.contains('is-open')) return;
+  if (e.key === 'Escape') { closeEditTraining(); return; }
+  if (e.key !== 'Tab') return;
+  const controls = [...editTrainingSheet.querySelectorAll('input:not([disabled]), button:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]')];
+  if (!controls.length) return;
+  const first = controls[0], last = controls[controls.length - 1];
+  if (e.shiftKey && (document.activeElement === first || !editTrainingSheet.contains(document.activeElement))) {
+    e.preventDefault(); last.focus();
+  } else if (!e.shiftKey && (document.activeElement === last || !editTrainingSheet.contains(document.activeElement))) {
+    e.preventDefault(); first.focus();
+  }
 });
 editTrainingForm.addEventListener('submit', async e => {
   e.preventDefault();
@@ -1336,6 +1366,8 @@ editTrainingForm.addEventListener('submit', async e => {
   const training_type = editTrainingForm.elements.training_type.value.trim();
   if (!training_type) { toast('Укажите название тренировки'); return; }
   button.disabled = true;
+  editTrainingError.hidden = true;
+  editTrainingError.textContent = '';
   try {
     await api(`/api/coach/trainings/${editTrainingId}`, 'PATCH', {
       training_type, date: editTrainingForm.elements.date.value, time: editTrainingForm.elements.time.value,
@@ -1344,39 +1376,85 @@ editTrainingForm.addEventListener('submit', async e => {
     hapticNotify('success');
     toast('Тренировка изменена');
     await refreshKeepingPlace();
-  } catch (err) { hapticNotify('error'); toast(err.message); }
-  finally { button.disabled = false; }
+  } catch (err) {
+    hapticNotify('error');
+    editTrainingError.textContent = (err.message || 'Не удалось сохранить.') + ' Проверьте данные и попробуйте ещё раз.';
+    editTrainingError.hidden = false;
+    editTrainingError.focus();
+  } finally { button.disabled = false; }
 });
 
 // ===== Напоминание =====
+const REMINDER_SAVES = new Map();
+function setReminderError(id, message, retry = false, invalid = false) {
+  const error = document.querySelector(`[data-reminder-error="${id}"]`);
+  const button = document.querySelector(`[data-reminder-retry="${id}"]`);
+  if (error) error.textContent = message;
+  if (button) button.hidden = !retry;
+  for (const key of ['oh', 'om']) {
+    const input = document.querySelector(`[data-${key}="${id}"]`);
+    if (input) {
+      if (invalid) input.setAttribute('aria-invalid', 'true');
+      else input.removeAttribute('aria-invalid');
+    }
+  }
+}
 function readReminder(id) {
   const enabled = document.querySelector(`[data-remind="${id}"]`).checked;
-  const h = parseInt(document.querySelector(`[data-oh="${id}"]`).value || '0', 10);
-  const m = parseInt(document.querySelector(`[data-om="${id}"]`).value || '0', 10);
-  return { enabled, min: Math.max(0, Math.min(2880, h * 60 + m)) };
+  const hours = document.querySelector(`[data-oh="${id}"]`).value.trim();
+  const minutes = document.querySelector(`[data-om="${id}"]`).value.trim();
+  if (!/^\d+$/.test(hours) || !/^\d+$/.test(minutes) ||
+      Number(hours) > 48 || Number(minutes) > 59 || Number(hours) * 60 + Number(minutes) > 2880) {
+    throw new Error('Укажите время от 0 минут до 48 часов. При 48 часах минуты должны быть равны 0.');
+  }
+  return { enabled, min: Number(hours) * 60 + Number(minutes) };
 }
-function updateTotal(id) {
-  const { enabled, min } = readReminder(id);
-  const el = document.querySelector(`[data-ototal="${id}"]`);
-  if (el) el.textContent = fmtOffset(min);
-  const sum = document.querySelector(`[data-osum="${id}"]`);
-  if (sum) sum.textContent = ' · ' + (enabled ? 'за ' + fmtOffset(min) : 'выключено');
+async function saveReminder(id) {
+  let state = REMINDER_SAVES.get(id);
+  if (!state) { state = { tail: Promise.resolve(), revision: 0 }; REMINDER_SAVES.set(id, state); }
+  const revision = ++state.revision;
+  let values;
+  try {
+    values = readReminder(id);
+  } catch (err) {
+    // Выключить напоминание можно даже после ошибочного ввода времени.
+    if (!document.querySelector(`[data-remind="${id}"]`).checked) {
+      const saved = TRAININGS.find(t => String(t.id) === String(id));
+      const min = saved ? saved.reminder_offset_min : 0;
+      document.querySelector(`[data-oh="${id}"]`).value = String(Math.floor(min / 60));
+      document.querySelector(`[data-om="${id}"]`).value = String(min % 60);
+      values = { enabled: false, min };
+    } else {
+      setReminderError(id, err.message, false, true);
+      return;
+    }
+  }
+  const request = state.tail.catch(() => {}).then(() =>
+    api(`/api/coach/trainings/${id}/reminder`, 'PATCH', { enabled: values.enabled, offset_min: values.min })
+  );
+  state.tail = request;
+  try {
+    await request;
+    const saved = TRAININGS.find(t => String(t.id) === String(id));
+    if (saved) { saved.reminder_enabled = values.enabled; saved.reminder_offset_min = values.min; }
+    cacheClear();
+    if (state.revision !== revision) return;
+    setReminderError(id, '');
+    haptic('light');
+    toast(values.enabled ? 'Напоминание включено: за ' + fmtOffset(values.min) : 'Напоминание выключено');
+  } catch (err) {
+    if (state.revision !== revision) return;
+    hapticNotify('error');
+    setReminderError(id, 'Не удалось сохранить. Проверьте соединение и повторите.', true);
+  }
 }
-document.getElementById('list').addEventListener('input', ev => {
-  const id = ev.target.dataset.oh || ev.target.dataset.om;
-  if (id) updateTotal(id);
-});
 document.getElementById('list').addEventListener('change', async ev => {
   const id = ev.target.dataset.remind || ev.target.dataset.oh || ev.target.dataset.om;
-  if (!id) return;
-  try {
-    const { enabled, min } = readReminder(id);
-    await api(`/api/coach/trainings/${id}/reminder`, 'PATCH', { enabled, offset_min: min });
-    haptic('light');
-    updateTotal(id);
-    cacheClear();
-    toast('Напоминание: ' + fmtOffset(min));
-  } catch (e) { hapticNotify('error'); toast(e.message); loadView(); }
+  if (id) await saveReminder(id);
+});
+document.getElementById('list').addEventListener('click', async ev => {
+  const retry = ev.target.closest('[data-reminder-retry]');
+  if (retry) await saveReminder(retry.getAttribute('data-reminder-retry'));
 });
 
 // ===== Соавторы =====
