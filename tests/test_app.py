@@ -4180,3 +4180,111 @@ def test_chat_and_application_notification_failure_is_nonfatal(monkeypatch):
     asyncio.run(mainmod._notify_new_chat_message(555, 123))
     asyncio.run(mainmod._deliver_to_coach(123, 555, "Игрок", "текст"))
     asyncio.run(mainmod._notify_managers_about_application(555, "Игрок"))
+
+
+def test_training_approval_only_owner_or_added_coauthor(client, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(mainmod, "settings", replace(settings, require_event_approval=True))
+    client.get("/api/me", headers=COACH)
+    client.get("/api/me", headers=COACH2)
+    client.post("/api/coach/coaches", headers=COACH, json={"telegram_id": 777})
+    third = {"X-Init-Data": _init({"id": 778, "first_name": "Третий тренер"})}
+    client.get("/api/me", headers=third)
+    client.post("/api/coach/coaches", headers=COACH, json={"telegram_id": 778})
+    tid = _create_training(client, day=10, time_str="18:00")
+    assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER).json()["status"] == "pending"
+    assert client.post(f"/api/coach/trainings/{tid}/participants/555/approve", headers=third).status_code == 404
+    assert client.post(f"/api/coach/trainings/{tid}/participants/555/approve", headers=PLAYER2).status_code == 403
+    assert client.post(f"/api/coach/trainings/{tid}/coauthors", headers=COACH, json={"telegram_id": 777}).status_code == 200
+    assert client.post(f"/api/coach/trainings/{tid}/participants/555/approve", headers=COACH2).json()["status"] == "booked"
+    assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER2).json()["status"] == "pending"
+    assert client.post(f"/api/coach/trainings/{tid}/participants/556/approve", headers=COACH).json()["status"] == "booked"
+
+
+def test_edit_training_preserves_bookings_and_limits_access(client):
+    client.get("/api/me", headers=COACH)
+    client.get("/api/me", headers=COACH2)
+    client.post("/api/coach/coaches", headers=COACH, json={"telegram_id": 777})
+    tid = _create_training(client, day=12, time_str="18:00")
+    assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER).json()["status"] == "booked"
+    new = {**_future(13, "19:30"), "training_type": "Новое название"}
+    url = f"/api/coach/trainings/{tid}"
+    assert client.patch(url, headers=COACH2, json=new).status_code == 404
+    assert client.patch(url, headers=PLAYER2, json=new).status_code == 403
+    assert client.post(f"/api/coach/trainings/{tid}/coauthors", headers=COACH, json={"telegram_id": 777}).status_code == 200
+    assert client.patch(url, headers=COACH2, json=new).status_code == 200
+    listing = client.get("/api/trainings?days=31", headers=PLAYER).json()["trainings"]
+    item = next(t for t in listing if t["id"] == tid)
+    assert (item["date"], item["time"], item["type"]) == (new["date"], new["time"], new["training_type"])
+    assert item["is_booked"] is True
+    assert client.patch(url, headers=COACH, json={**new, "date": "2020-01-01"}).status_code == 400
+    assert client.patch(url, headers=COACH, json={**new, "training_type": "   "}).status_code == 422
+
+
+def test_edit_training_rejects_duplicate_and_reschedules_reminders(client):
+    import sqlite3
+
+    tid = _create_training(client, day=20, time_str="18:00")
+    other = _create_training(client, day=21, time_str="19:00")
+    duplicate = {**_future(21, "19:00"), "training_type": "Тест-21-19:00"}
+    url = f"/api/coach/trainings/{tid}"
+    assert client.patch(url, headers=COACH, json=duplicate).status_code == 409
+    assert other != tid
+    conn = sqlite3.connect(settings.db_path)
+    try:
+        conn.execute("UPDATE trainings SET reminder_sent = 1 WHERE id = ?", (tid,))
+        conn.execute("INSERT INTO reminder_deliveries VALUES (?, ?)", (tid, 555))
+        conn.commit()
+        renamed = {**_future(20, "18:00"), "training_type": "Переименована"}
+        assert client.patch(url, headers=COACH, json=renamed).status_code == 200
+        assert conn.execute("SELECT reminder_sent FROM trainings WHERE id = ?", (tid,)).fetchone()[0] == 1
+        assert conn.execute("SELECT count(*) FROM reminder_deliveries WHERE training_id = ?", (tid,)).fetchone()[0] == 1
+        moved = {**_future(22, "19:30"), "training_type": "Переименована"}
+        assert client.patch(url, headers=COACH, json=moved).status_code == 200
+        assert conn.execute("SELECT reminder_sent FROM trainings WHERE id = ?", (tid,)).fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM reminder_deliveries WHERE training_id = ?", (tid,)).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_removed_coach_does_not_regain_old_coauthor_access(client, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(mainmod, "settings", replace(settings, require_event_approval=True))
+    client.get("/api/me", headers=COACH2)
+    client.post("/api/coach/coaches", headers=COACH, json={"telegram_id": 777})
+    tid = _create_training(client, day=16, time_str="18:00")
+    client.post(f"/api/coach/trainings/{tid}/coauthors", headers=COACH, json={"telegram_id": 777})
+    assert client.delete("/api/coach/coaches/777", headers=COACH).status_code == 200
+    assert client.post("/api/coach/coaches", headers=COACH, json={"telegram_id": 777}).status_code == 200
+    assert client.post(f"/api/trainings/{tid}/book", headers=PLAYER).json()["status"] == "pending"
+    assert client.post(f"/api/coach/trainings/{tid}/participants/555/approve", headers=COACH2).status_code == 404
+
+
+def test_edit_training_handles_no_change_started_and_deleted_race(client, monkeypatch):
+    tid = _create_training(client, day=17, time_str="18:00")
+    url = f"/api/coach/trainings/{tid}"
+    same = {**_future(17, "18:00"), "training_type": "Тест-17-18:00"}
+    assert client.patch(url, headers=COACH, json=same).status_code == 200
+
+    async def started(_id):
+        return {"id": tid, "deleted_at": None, "created_by": 123, "start_at": 0}
+
+    monkeypatch.setattr(mainmod.db, "get_training", started)
+    assert client.patch(url, headers=COACH, json=same).status_code == 400
+
+    async def future(_id):
+        return {"id": tid, "deleted_at": None, "created_by": 123,
+                "start_at": int(time.time()) + 86400, "training_type": "До"}
+
+    async def no_duplicate(*args):
+        return None
+
+    async def deleted_during_edit(*args):
+        return False
+
+    monkeypatch.setattr(mainmod.db, "get_training", future)
+    monkeypatch.setattr(mainmod.db, "find_duplicate_training", no_duplicate)
+    monkeypatch.setattr(mainmod.db, "update_training_details", deleted_during_edit)
+    assert client.patch(url, headers=COACH, json=same).status_code == 404

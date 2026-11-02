@@ -189,6 +189,28 @@
   </div>
 </div>
 
+<!-- Bottom sheet: изменение тренировки -->
+<div class="sheet" id="edit-training-sheet">
+  <div class="sheet__backdrop" data-edit-training-close></div>
+  <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="edit-training-title">
+    <div class="sheet__handle"></div>
+    <h2 class="sheet__title" id="edit-training-title">Изменить тренировку</h2>
+    <form id="edit-training-form">
+      <label class="field"><span class="label">Название</span>
+        <input class="input" name="training_type" type="text" maxlength="100" required></label>
+      <div class="row2">
+        <label class="field"><span class="label">Дата</span>
+          <input class="input" name="date" type="date" required></label>
+        <label class="field"><span class="label">Время</span>
+          <input class="input" name="time" type="time" required></label>
+      </div>
+      <p class="hint">Участники получат уведомление об изменении.</p>
+      <button type="submit" class="btn btn--primary btn--block">Сохранить</button>
+      <button type="button" class="btn btn--block" data-edit-training-close style="margin-top:8px">Отмена</button>
+    </form>
+  </div>
+</div>
+
 <!-- Bottom sheet: профиль -->
 <div class="sheet" id="profile-sheet">
   <div class="sheet__backdrop" data-pclose></div>
@@ -758,27 +780,15 @@ async function hydrateParticipants() {
 function reminderEditor(t) {
   const h = Math.floor(t.reminder_offset_min / 60);
   const m = t.reminder_offset_min % 60;
-  // Свёрнуто по умолчанию: в карточке важнее состав и действия, а состояние
-  // напоминания видно прямо в подписи.
-  const state = t.reminder_enabled ? 'за ' + fmtOffset(t.reminder_offset_min) : 'выключено';
   return `
-  <details class="disclosure" data-reminder="${t.id}">
-    <summary>Напоминание<span class="reminder-sum" data-osum="${t.id}"> · ${esc(state)}</span></summary>
-    <div class="reminder-box">
-      <div class="inline-row">
-        <span class="reminder-box__title">Напоминать</span>
-        <label class="switch"><input type="checkbox" data-remind="${t.id}" aria-label="Напоминание о тренировке" ${t.reminder_enabled ? 'checked' : ''}><span></span></label>
-      </div>
-      <div class="inline-row reminder-offset">
-        <span class="hint">За сколько до старта</span>
-        <div class="hm">
-          <span class="hm__part"><input class="input reminder-input" type="number" min="0" max="48" data-oh="${t.id}" value="${h}" aria-label="Часы до старта"> <span>ч</span></span>
-          <span class="hm__part"><input class="input reminder-input" type="number" min="0" max="59" data-om="${t.id}" value="${m}" aria-label="Минуты до старта"> <span>мин</span></span>
-        </div>
-      </div>
-      <div class="hint reminder-total">Итого: <b data-ototal="${t.id}">${esc(fmtOffset(t.reminder_offset_min))}</b> до старта</div>
+  <div class="reminder-compact" data-reminder="${t.id}">
+    <span class="reminder-compact__label">Напомнить за</span>
+    <div class="hm">
+      <span class="hm__part"><input class="input reminder-input" type="number" min="0" max="48" data-oh="${t.id}" value="${h}" aria-label="Часы до тренировки"> <span>ч</span></span>
+      <span class="hm__part"><input class="input reminder-input" type="number" min="0" max="59" data-om="${t.id}" value="${m}" aria-label="Минуты до тренировки"> <span>мин</span></span>
     </div>
-  </details>`;
+    <label class="switch"><input type="checkbox" data-remind="${t.id}" aria-label="Напоминание о тренировке" ${t.reminder_enabled ? 'checked' : ''}><span></span></label>
+  </div>`;
 }
 
 // Плитка быстрого действия: иконка и подпись. Подпись важна — по одной
@@ -810,7 +820,10 @@ function activeRow(t) {
       <div class="t-time">${esc(t.time)}</div>
       <div class="t-occ"><b>${t.booked_count}</b> из ${t.capacity} мест</div>
     </div>
-    <div class="t-title">${esc(t.type)}${pending ? ` <span class="badge badge--warn">Заявки: ${pending}</span>` : ''}</div>
+    <div class="training-title-row">
+      <div class="t-title">${esc(t.type)}${pending ? ` <span class="badge badge--warn">Заявки: ${pending}</span>` : ''}</div>
+      ${t.can_manage ? `<button type="button" class="training-edit-btn" data-edit-training="${t.id}" aria-label="Изменить тренировку" title="Изменить тренировку"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg></button>` : ''}
+    </div>
     <div class="t-meta">${dateAndLevel(t.date, t.level)}</div>
     <div class="bar"><div class="bar__fill" style="width:${pct}%"></div></div>
     <div class="inline-row bar-legend">
@@ -961,6 +974,8 @@ document.getElementById('list').addEventListener('toggle', ev => {
 document.getElementById('list').addEventListener('click', async (ev) => {
   const profileToken = ev.target.closest('[data-profile-token]')?.getAttribute('data-profile-token');
   if (profileToken) { openPlayerProfile(profileToken); return; }
+  const edit = ev.target.closest('[data-edit-training]')?.getAttribute('data-edit-training');
+  if (edit) { openEditTraining(edit, ev.target.closest('[data-edit-training]')); return; }
   const del = ev.target.closest('[data-del]')?.getAttribute('data-del');
   const restore = ev.target.closest('[data-restore]')?.getAttribute('data-restore');
   const purge = ev.target.closest('[data-purge]')?.getAttribute('data-purge');
@@ -1290,6 +1305,48 @@ async function openTournament(id) {
     if (btn) btn.disabled = false;
   }
 }
+
+// ===== Изменение тренировки =====
+const editTrainingSheet = document.getElementById('edit-training-sheet');
+const editTrainingForm = document.getElementById('edit-training-form');
+let editTrainingId = null;
+let editTrainingTrigger = null;
+function openEditTraining(id, trigger) {
+  const training = TRAININGS.find(t => t.id == id);
+  if (!training || !training.can_manage) return;
+  editTrainingId = id;
+  editTrainingTrigger = trigger;
+  editTrainingForm.elements.training_type.value = training.type;
+  editTrainingForm.elements.date.value = training.date;
+  editTrainingForm.elements.time.value = training.time;
+  editTrainingSheet.classList.add('is-open');
+  editTrainingForm.elements.training_type.focus();
+}
+function closeEditTraining() {
+  editTrainingSheet.classList.remove('is-open');
+  if (editTrainingTrigger && editTrainingTrigger.isConnected) editTrainingTrigger.focus();
+}
+editTrainingSheet.querySelectorAll('[data-edit-training-close]').forEach(el => el.addEventListener('click', closeEditTraining));
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && editTrainingSheet.classList.contains('is-open')) closeEditTraining();
+});
+editTrainingForm.addEventListener('submit', async e => {
+  e.preventDefault();
+  const button = editTrainingForm.querySelector('[type="submit"]');
+  const training_type = editTrainingForm.elements.training_type.value.trim();
+  if (!training_type) { toast('Укажите название тренировки'); return; }
+  button.disabled = true;
+  try {
+    await api(`/api/coach/trainings/${editTrainingId}`, 'PATCH', {
+      training_type, date: editTrainingForm.elements.date.value, time: editTrainingForm.elements.time.value,
+    });
+    closeEditTraining();
+    hapticNotify('success');
+    toast('Тренировка изменена');
+    await refreshKeepingPlace();
+  } catch (err) { hapticNotify('error'); toast(err.message); }
+  finally { button.disabled = false; }
+});
 
 // ===== Напоминание =====
 function readReminder(id) {

@@ -58,7 +58,7 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-WEB_APP_VERSION = "44"
+WEB_APP_VERSION = "45"
 
 
 def _web_app_url() -> str:
@@ -259,6 +259,8 @@ async def _slot_details(training_id: int, user_id: int) -> tuple[str, InlineKeyb
         status = "\n✅ Вы записаны"
     elif booking is not None and booking["status"] == "waitlist":
         status = "\n⏳ Вы в листе ожидания"
+    elif booking is not None and booking["status"] == "pending":
+        status = "\n📝 Заявка ожидает подтверждения"
     text = (
         f"🏸 <b>{html.escape(training['training_type'] or 'Тренировка')}</b>\n"
         f"📅 {start.strftime('%d.%m.%Y в %H:%M')}\n"
@@ -267,7 +269,7 @@ async def _slot_details(training_id: int, user_id: int) -> tuple[str, InlineKeyb
         f"{status}"
     )
     buttons = []
-    if booking is not None and booking["status"] in {"booked", "waitlist"}:
+    if booking is not None and booking["status"] in {"booked", "waitlist", "pending"}:
         buttons.append([InlineKeyboardButton(
             text="🗑 Отменить запись", callback_data=f"slots:cancel:{training_id}"
         )])
@@ -350,12 +352,25 @@ async def cb_slot_book(callback: CallbackQuery) -> None:
         if training["start_at"] <= int(time.time()):
             await callback.answer("Тренировка уже началась", show_alert=True)
             return
+        required_from = settings.phone_required_from
+        if required_from is not None and datetime.now(tz=settings.timezone) >= required_from:
+            user = await db.get_user(callback.from_user.id)
+            if user is None or not user["phone"]:
+                await callback.answer("Укажите телефон в настройках профиля.", show_alert=True)
+                return
         status = await db.book_training(
-            training_id, callback.from_user.id, training["capacity"]
+            training_id, callback.from_user.id, training["capacity"],
+            requires_approval=settings.require_event_approval,
         )
+        # Используем тот же механизм уведомлений, что и мини-приложение.
+        from .main import _notify_training_event, _spawn
+        _spawn(_notify_training_event(
+            training, callback.from_user.id, status, actor_id=callback.from_user.id
+        ))
         details = await _slot_details(training_id, callback.from_user.id)
         await callback.answer(
-            "Вы записаны" if status == "booked" else "Вы в листе ожидания"
+            "Заявка отправлена тренеру" if status == "pending"
+            else "Вы записаны" if status == "booked" else "Вы в листе ожидания"
         )
         message = _callback_message(callback)
         if message is not None and details is not None:
@@ -381,7 +396,17 @@ async def cb_slot_cancel(callback: CallbackQuery) -> None:
                 show_alert=True,
             )
             return
-        await db.cancel_booking(training_id, callback.from_user.id)
+        booking = await db.get_booking(training_id, callback.from_user.id)
+        if booking is None or booking["status"] not in {"pending", "booked", "waitlist"}:
+            await callback.answer("Вы не записаны на эту тренировку", show_alert=True)
+            return
+        promoted = await db.cancel_booking(training_id, callback.from_user.id)
+        from .main import _notify_promoted, _notify_training_event, _spawn
+        _spawn(_notify_training_event(
+            training, callback.from_user.id, "cancelled", actor_id=callback.from_user.id
+        ))
+        if promoted:
+            _spawn(_notify_promoted(int(promoted), training))
         details = await _slot_details(training_id, callback.from_user.id)
         await callback.answer("Запись отменена")
         message = _callback_message(callback)

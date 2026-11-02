@@ -393,6 +393,8 @@ def test_refresh_training_messages(bot, monkeypatch):
     full = [
         _person(555, "booked"),
         _person(556, "cancelled"),
+        _person(557, "waitlist"),
+        _person(558, "rejected"),
     ]
 
     async def get_full(_id):
@@ -409,6 +411,9 @@ def test_refresh_training_messages(bot, monkeypatch):
             {"kind": "training_booked", "user_id": 556,
              "phase": "final", "message_id": 4},
             {"kind": "match", "user_id": 555, "message_id": 5},
+            {"kind": "training_reminder", "user_id": 555, "message_id": 6},
+            {"kind": "training_waitlist", "user_id": 557, "message_id": 7},
+            {"kind": "training_rejected", "user_id": 558, "message_id": 8},
         ]
 
     async def edit(row, text):
@@ -423,7 +428,10 @@ def test_refresh_training_messages(bot, monkeypatch):
             training, [_person(555, "booked")], "ilka"
         )
     )
-    assert [item[0] for item in updated] == ["training", "training_booked"]
+    assert [item[0] for item in updated] == [
+        "training", "training_booked", "training_reminder", "training_waitlist", "training_rejected"
+    ]
+    assert "Напоминание о тренировке" in updated[2][1]
 
 
 def test_delete_notification_row(bot, monkeypatch):
@@ -829,3 +837,34 @@ def test_match_feed_refreshes_and_removes_stale_messages(bot, monkeypatch):
     matches.clear()
     asyncio.run(mainmod._refresh_existing_match_feeds(int(time.time())))
     assert removed == [1]
+
+
+def test_training_change_notifies_only_active_participants(bot, monkeypatch):
+    training = _training()
+    calls = []
+
+    async def delete(training_id):
+        calls.append(("delete", training_id))
+
+    async def participants(training_id):
+        return [_person(555, "booked"), _person(556, "pending"), _person(557, "cancelled")]
+
+    async def event(*args, **kwargs):
+        calls.append(("event", args[1] if len(args) > 1 else None))
+
+    async def allowed(uid, category):
+        return uid == 555
+
+    async def alert(uid, text):
+        calls.append(("alert", uid))
+
+    monkeypatch.setattr(mainmod, "_delete_training_status_messages", delete)
+    monkeypatch.setattr(db, "get_participants", participants)
+    monkeypatch.setattr(mainmod, "_notify_training_event", event)
+    monkeypatch.setattr(mainmod, "_notifications_allowed", allowed)
+    monkeypatch.setattr(mainmod, "_send_user_message", alert)
+    asyncio.run(mainmod._notify_training_changed(training, True))
+    assert ("delete", 1) in calls
+    assert ("event", 555) in calls and ("event", 556) in calls
+    assert ("event", 557) not in calls
+    assert ("alert", 555) in calls and ("alert", 556) not in calls

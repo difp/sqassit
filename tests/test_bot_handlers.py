@@ -860,7 +860,11 @@ def test_cb_slot_cancel_edges(monkeypatch):
     async def details(_id, _uid):
         return "text", InlineKeyboardMarkup(inline_keyboard=[])
 
+    async def booking(*args):
+        return {"status": "booked"}
+
     monkeypatch.setattr(db, "get_training", training)
+    monkeypatch.setattr(db, "get_booking", booking)
     monkeypatch.setattr(db, "cancel_booking", cancel)
     monkeypatch.setattr(botmod, "_slot_details", details)
     callback, answers, _, edits = _callback_with_message(555, "slots:cancel:1")
@@ -1290,3 +1294,133 @@ def test_attendee_usernames_are_safe_links(monkeypatch):
     assert 'href="https://t.me/player_1"' in chat_answers[0]
     assert '&lt;bad&gt;' in chat_answers[0]
     assert '<bad>' not in chat_answers[0]
+
+
+def test_slot_booking_respects_approval_and_notifies_coach(monkeypatch):
+    import app.main as mainmod
+
+    async def training(_id):
+        return _training()
+
+    calls = []
+
+    async def book(*args, **kwargs):
+        calls.append(kwargs.get("requires_approval"))
+        return "pending"
+
+    async def details(*args):
+        return "text", InlineKeyboardMarkup(inline_keyboard=[])
+
+    async def notify(*args, **kwargs):
+        calls.append("notify")
+
+    monkeypatch.setattr(botmod, "settings", replace(settings, require_event_approval=True))
+    monkeypatch.setattr(db, "get_training", training)
+    monkeypatch.setattr(db, "book_training", book)
+    monkeypatch.setattr(botmod, "_slot_details", details)
+    monkeypatch.setattr(mainmod, "_notify_training_event", notify)
+
+    async def scenario():
+        callback, answers, _, _ = _callback_with_message(555, "slots:book:1")
+        await botmod.cb_slot_book(callback)
+        await asyncio.sleep(0)
+        assert "заявк" in answers[0][0].lower()
+
+    asyncio.run(scenario())
+    assert calls == [True, "notify"]
+
+
+def test_slot_booking_requires_phone_when_policy_is_active(monkeypatch):
+    from datetime import datetime, timedelta
+
+    async def training(_id):
+        return _training()
+
+    async def user(_id):
+        return {"phone": ""}
+
+    async def must_not_book(*args, **kwargs):
+        raise AssertionError("Must not book without a phone")
+
+    monkeypatch.setattr(botmod, "settings", replace(
+        settings, phone_required_from=datetime.now(settings.timezone) - timedelta(days=1)
+    ))
+    monkeypatch.setattr(db, "get_training", training)
+    monkeypatch.setattr(db, "get_user", user)
+    monkeypatch.setattr(db, "book_training", must_not_book)
+    callback, answers, _, _ = _callback_with_message(555, "slots:book:1")
+    asyncio.run(botmod.cb_slot_book(callback))
+    assert "телефон" in answers[0][0].lower()
+
+
+def test_slot_cancel_notifies_coach_and_promoted_player(monkeypatch):
+    import app.main as mainmod
+
+    async def training(_id):
+        return _training(start_at=int(time.time()) + 6 * 3600)
+
+    async def booking(*args):
+        return {"status": "booked"}
+
+    async def cancel(*args):
+        return "556"
+
+    async def details(*args):
+        return "text", InlineKeyboardMarkup(inline_keyboard=[])
+
+    calls = []
+
+    async def event(*args, **kwargs):
+        calls.append(("event", args[1], args[2]))
+
+    async def promoted(uid, training):
+        calls.append(("promoted", uid))
+
+    monkeypatch.setattr(db, "get_training", training)
+    monkeypatch.setattr(db, "get_booking", booking)
+    monkeypatch.setattr(db, "cancel_booking", cancel)
+    monkeypatch.setattr(botmod, "_slot_details", details)
+    monkeypatch.setattr(mainmod, "_notify_training_event", event)
+    monkeypatch.setattr(mainmod, "_notify_promoted", promoted)
+
+    async def scenario():
+        callback, answers, _, _ = _callback_with_message(555, "slots:cancel:1")
+        await botmod.cb_slot_cancel(callback)
+        await asyncio.sleep(0)
+        assert answers[0][0] == "Запись отменена"
+
+    asyncio.run(scenario())
+    assert ("event", 555, "cancelled") in calls
+    assert ("promoted", 556) in calls
+
+
+def test_slot_details_shows_pending_and_offers_cancel(monkeypatch):
+    async def training(_id):
+        return _training()
+
+    async def participants(_id):
+        return []
+
+    async def booking(*args):
+        return {"status": "pending"}
+
+    monkeypatch.setattr(db, "get_training", training)
+    monkeypatch.setattr(db, "get_participants", participants)
+    monkeypatch.setattr(db, "get_booking", booking)
+    text, keyboard = asyncio.run(botmod._slot_details(1, 555))
+    assert "ожидает подтверждения" in text
+    assert any(button.callback_data == "slots:cancel:1" for row in keyboard.inline_keyboard for button in row)
+
+
+def test_slot_cancel_requires_existing_booking(monkeypatch):
+    async def training(_id):
+        return _training(start_at=int(time.time()) + 6 * 3600)
+
+    async def no_booking(*args):
+        return None
+
+    monkeypatch.setattr(db, "get_training", training)
+    monkeypatch.setattr(db, "get_booking", no_booking)
+    callback, answers, _, _ = _callback_with_message(555, "slots:cancel:1")
+    asyncio.run(botmod.cb_slot_cancel(callback))
+    assert "не записаны" in answers[0][0]

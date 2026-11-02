@@ -538,10 +538,19 @@ async def add_coach(telegram_id: int, added_by: int) -> bool:
 
 async def remove_coach(telegram_id: int) -> None:
     """Снимает роль тренера и синхронизирует users.is_coach."""
-    await _execute("DELETE FROM coaches WHERE telegram_id = ?", (telegram_id,))
-    await _execute(
-        "UPDATE users SET is_coach = 0 WHERE telegram_id = ?", (telegram_id,)
-    )
+    db = _db()
+    async with _lock:
+        try:
+            await db.execute("DELETE FROM coaches WHERE telegram_id = ?", (telegram_id,))
+            await db.execute(
+                "DELETE FROM event_coauthors WHERE event_type = 'training' AND user_id = ?",
+                (telegram_id,),
+            )
+            await db.execute("UPDATE users SET is_coach = 0 WHERE telegram_id = ?", (telegram_id,))
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
 
 
 async def is_coach_id(telegram_id: int) -> bool:
@@ -912,6 +921,40 @@ async def create_training(
             reminder_offset_min, int(reminder_enabled), created_by, int(time.time()),
         ),
     )
+
+
+async def update_training_details(training_id: int, training_type: str, start_at: int) -> bool:
+    """Меняет занятие, сохраняя записи; при переносе обновляет напоминания."""
+    db = _db()
+    async with _lock:
+        try:
+            async with db.execute(
+                "SELECT start_at, duration_min FROM trainings WHERE id = ? AND deleted_at IS NULL",
+                (training_id,),
+            ) as cur:
+                previous = await cur.fetchone()
+            if previous is None:
+                return False
+            changed_time = int(previous["start_at"]) != start_at
+            await db.execute(
+                "UPDATE trainings SET title = ?, training_type = ?, start_at = ?, "
+                "reminder_sent = CASE WHEN ? THEN 0 ELSE reminder_sent END WHERE id = ?",
+                (training_type, training_type, start_at, int(changed_time), training_id),
+            )
+            if changed_time:
+                await db.execute("DELETE FROM reminder_deliveries WHERE training_id = ?", (training_id,))
+                await db.execute(
+                    "UPDATE event_notifications SET delete_at = MIN(?, "
+                    "CASE WHEN sent_at > 0 THEN sent_at + 47 * 3600 ELSE ? END) "
+                    "WHERE kind = 'training' AND entity_id = ?",
+                    (start_at + int(previous["duration_min"]) * 60 + 14400,
+                     int(time.time()) + 86400, training_id),
+                )
+            await db.commit()
+            return True
+        except BaseException:
+            await db.rollback()
+            raise
 
 
 async def update_reminder_settings(

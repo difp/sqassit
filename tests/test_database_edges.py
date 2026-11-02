@@ -285,3 +285,31 @@ def test_notification_deadlines_and_expiration(tmp_path, monkeypatch):
             await db.close()
 
     asyncio.run(scenario())
+
+
+def test_training_and_coach_updates_roll_back_on_failure(tmp_path):
+    async def scenario():
+        await db.connect(str(tmp_path / "training-updates.db"))
+        try:
+            await db.upsert_user(7, None, "Тренер", is_coach=True)
+            await db.ensure_coach(7)
+            conn = db._db()
+            await conn.execute("CREATE TRIGGER fail_coach_update BEFORE UPDATE OF is_coach ON users BEGIN SELECT RAISE(ABORT, 'test'); END")
+            await conn.commit()
+            with pytest.raises(sqlite3.IntegrityError):
+                await db.remove_coach(7)
+            assert await db.is_coach_id(7)
+            assert await db.update_training_details(999, "Несуществующая", 1) is False
+            tid = await db.create_training(
+                title="До", training_type="До", start_at=1000, capacity=2,
+                duration_min=60, reminder_offset_min=60, reminder_enabled=True, created_by=7,
+            )
+            await conn.execute("CREATE TRIGGER fail_training_update BEFORE UPDATE ON trainings BEGIN SELECT RAISE(ABORT, 'test'); END")
+            await conn.commit()
+            with pytest.raises(sqlite3.IntegrityError):
+                await db.update_training_details(tid, "После", 2000)
+            assert (await db.get_training(tid))["training_type"] == "До"
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())

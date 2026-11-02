@@ -537,6 +537,12 @@ class TrainingIn(BaseModel):
     force: bool = False  # подтверждение при возможном дубле
 
 
+class TrainingEditIn(BaseModel):
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    time: str = Field(pattern=r"^\d{2}:\d{2}$")
+    training_type: str = Field(min_length=1, max_length=100)
+
+
 class TrainingBatchIn(BaseModel):
     period_start: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     period_end: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
@@ -1628,6 +1634,52 @@ async def api_create_training(payload: TrainingIn, coach: Annotated[dict, Depend
     except Exception:
         logger.exception("Ошибка создания тренировки")
         return error_json("Внутренняя ошибка сервера", 500)
+
+
+@app.patch("/api/coach/trainings/{training_id}")
+async def api_edit_training(
+    training_id: int, payload: TrainingEditIn, coach: Annotated[dict, Depends(require_coach)]
+):
+    training = await db.get_training(training_id)
+    if training is None or training["deleted_at"] or not await _can_manage_training(training, coach["telegram_id"]):
+        return error_json("Тренировка не найдена", 404)
+    now = int(time.time())
+    if training["start_at"] <= now:
+        return error_json("Начавшуюся тренировку изменить нельзя", 400)
+    training_type = payload.training_type.strip()
+    if not training_type:
+        return error_json("Укажите название тренировки", 422)
+    start_at = _parse_local_epoch(payload.date, payload.time)
+    if start_at <= now:
+        return error_json("Нельзя перенести тренировку в прошлое", 400)
+    duplicate = await db.find_duplicate_training(start_at, training_type, training["created_by"])
+    if duplicate is not None and duplicate["id"] != training_id:
+        return error_json("Такая тренировка уже есть в расписании.", 409)
+    if start_at == training["start_at"] and training_type == training["training_type"]:
+        return {"ok": True}
+    changed_time = start_at != training["start_at"]
+    if not await db.update_training_details(training_id, training_type, start_at):
+        return error_json("Тренировка не найдена", 404)
+    updated = await db.get_training(training_id)
+    if updated is not None:
+        _spawn(_notify_training_changed(updated, changed_time))
+    return {"ok": True}
+
+
+async def _notify_training_changed(training: aiosqlite.Row, changed_time: bool) -> None:
+    """Обновляет уведомления и сообщает участникам об изменении занятия."""
+    if changed_time:
+        await _delete_training_status_messages(training["id"])
+    participants = await db.get_participants(training["id"])
+    await _notify_training_event(training)
+    for player in participants:
+        user_id = int(player["telegram_id"])
+        status = str(player["status"])
+        if status not in {"booked", "waitlist", "pending"}:
+            continue
+        await _notify_training_event(training, user_id, status, actor_id=user_id)
+        if await _notifications_allowed(user_id, "trainings"):
+            await _send_user_message(user_id, "Изменена тренировка.\n\n🏸 " + _training_brief(training))
 
 
 @app.post("/api/coach/trainings/batch")
@@ -2863,6 +2915,12 @@ async def _refresh_training_messages(
                 training, participants, status, coach_name
             )
             await _edit_notification_row(row, text)
+        elif kind == "training_waitlist" and status_by_user.get(user_id) == "waitlist":
+            await _edit_notification_row(row, _training_waitlist_text(training, coach_name))
+        elif kind == "training_rejected" and status_by_user.get(user_id) == "rejected":
+            await _edit_notification_row(row, _training_rejected_text(training, coach_name))
+        elif kind == "training_reminder" and status_by_user.get(user_id) == "booked":
+            await _edit_notification_row(row, bot_module.format_training_reminder(training))
         elif kind == "training_booked":
             if status_by_user.get(user_id) != "booked":
                 continue
