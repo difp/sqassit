@@ -830,6 +830,7 @@ function activeRow(t) {
       ${t.can_manage ? `<button type="button" class="training-edit-btn" data-edit-training="${t.id}" aria-label="Изменить тренировку" title="Изменить тренировку"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg></button>` : ''}
     </div>
     <div class="t-meta">${dateAndLevel(t.date, t.level)}</div>
+    ${pending ? `<p class="badge badge--warn" role="status">Ожидают подтверждения: ${pending}. Заявки — в списке участников ниже.</p>` : ''}
     <div class="bar"><div class="bar__fill" style="width:${pct}%"></div></div>
     <div class="inline-row bar-legend">
       <span>Записано ${t.booked_count} из ${t.capacity}</span>
@@ -918,7 +919,7 @@ async function refreshParticipants(id) {
     const data = await api(`/api/coach/trainings/${id}/participants`);
     const own = VIEW === 'active';
     const rows = data.participants.length
-      ? data.participants.map(p => participantRow(id, p, own)).join('')
+      ? [...data.participants].sort((a, b) => Number(b.status === 'pending') - Number(a.status === 'pending')).map(p => participantRow(id, p, own)).join('')
       : '<div class="hint" style="padding:10px 0">Пока никто не записан</div>';
     // Тренер может записать игрока сам: тот передал просьбу устно.
     box.innerHTML = rows + bookButton(id);

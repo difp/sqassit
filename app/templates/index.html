@@ -344,19 +344,23 @@ function renderSchedule(trainings) {
   hideAppLoader();
 }
 
-async function loadSchedule() {
+let scheduleRequest = 0;
+async function loadSchedule({ background = false } = {}) {
+  const request = ++scheduleRequest;
   const cached = cacheRead('schedule');
-  if (cached) {
+  if (cached && !background) {
     // Показываем прошлый снимок сразу, свежие данные догружаем следом.
     renderSchedule(cached);
   }
   try {
     const data = await api('/api/trainings?days=7');
+    if (request !== scheduleRequest) return;
     cacheWrite('schedule', data.trainings);
     renderSchedule(data.trainings);
   } catch (e) {
+    if (request !== scheduleRequest) return;
     if (!cached) document.getElementById('loading').hidden = true;
-    toast(e.message, { label: 'Повторить', onClick: loadSchedule });
+    if (!background) toast(e.message, { label: 'Повторить', onClick: () => loadSchedule() });
   }
 }
 
@@ -731,6 +735,11 @@ function paintTrainingQuote() {
 }
 paintTrainingQuote();
 setInterval(paintTrainingQuote, 60000);
+
+setInterval(() => { if (!document.hidden) loadSchedule({ background: true }); }, 60000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) loadSchedule({ background: true });
+});
 
 window.PAGE_REFRESH = async () => {
   await APP.refresh();

@@ -3646,7 +3646,7 @@ async def _notify_new_coach(tg_id: int) -> None:
         if settings.webhook_base_url:
             markup = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(
-                    text="🏸 Открыть тренировки",
+                    text="Открыть тренировки",
                     web_app=WebAppInfo(url=bot_module._web_app_url()),
                 )
             ]])
