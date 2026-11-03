@@ -3755,7 +3755,7 @@ def test_approval_not_found_and_error_branches(client, monkeypatch):
     ).status_code == 500
 
     # Пустые клавиатуры и текст ожидания.
-    assert mainmod._pending_booking_keyboard([]).inline_keyboard == []
+    assert mainmod._pending_booking_keyboard([], 1).inline_keyboard == []
     assert mainmod._match_request_keyboard(0).inline_keyboard == []
     match = {
         "id": 1,

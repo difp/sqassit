@@ -1004,7 +1004,7 @@ async def api_feedback(
     text = payload.text.strip()
     if len(text) < 3:
         return error_json("Опишите проблему или предложение чуть подробнее.", 422)
-    page = payload.page if payload.page in {"Тренировки", "Матч", "Тренер"} else "Приложение"
+    page = payload.page if payload.page in {"Расписание", "Тренировки", "Матч", "Тренер"} else "Приложение"
     try:
         await db.add_feedback(user["telegram_id"], payload.kind, text, page)
         _spawn(_notify_feedback(user, payload.kind, text, page))
@@ -2618,14 +2618,16 @@ def _training_rejected_text(
     )
 
 
-def _pending_booking_keyboard(pending: list[aiosqlite.Row]) -> InlineKeyboardMarkup:
+def _pending_booking_keyboard(
+    pending: list[aiosqlite.Row], training_id: int
+) -> InlineKeyboardMarkup:
     if not pending:
         return InlineKeyboardMarkup(inline_keyboard=[])
     return InlineKeyboardMarkup(
         inline_keyboard=[[
             InlineKeyboardButton(
                 text=f"Открыть заявки · {len(pending)}",
-                web_app=WebAppInfo(url=bot_module._web_app_url()),
+                web_app=WebAppInfo(url=bot_module._coach_training_url(training_id)),
             )
         ]]
     )
@@ -2944,7 +2946,7 @@ async def _notify_training_event(
     coach_name = await _training_coach_name(training)
     now = int(time.time())
     summary = _training_participants_text(training, participants, coach_name)
-    keyboard = _pending_booking_keyboard(pending) if pending else None
+    keyboard = _pending_booking_keyboard(pending, int(training["id"])) if pending else None
     if user_id is not None and not status:
         status = next(
             (p["status"] for p in participants if p["telegram_id"] == user_id),
@@ -3646,7 +3648,7 @@ async def _notify_new_coach(tg_id: int) -> None:
         if settings.webhook_base_url:
             markup = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(
-                    text="Открыть тренировки",
+                    text="Открыть расписание",
                     web_app=WebAppInfo(url=bot_module._web_app_url()),
                 )
             ]])

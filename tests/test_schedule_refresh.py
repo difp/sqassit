@@ -36,3 +36,36 @@ const document = {getElementById: () => ({hidden: false})};
 """
     result = subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="Node.js is required")
+def test_notification_opens_requested_training_after_participants_load():
+    template = (Path(__file__).parents[1] / "app/templates/coach.html").read_text()
+    source = template[template.index("async function openRequestedTraining()"):template.index("// ===== Инициализация по роли")]
+    script = r"""
+const assert = require('assert');
+let scrolls = 0, errors = [], selected = '', timer;
+const row = {scrollIntoView(options) { scrolls++; assert.strictEqual(options.block, 'center'); }};
+const button = {closest(selector) { assert.strictEqual(selector, '.p-row'); return row; }};
+const details = {open: false, querySelector(selector) { return button; }};
+const document = {querySelector(selector) { selected = selector; return details; }};
+const location = {search: '?training=42'};
+const window = {setTimeout(fn) { timer = fn; }};
+const HYDRATION = Promise.resolve();
+function toast(text) { errors.push(text); }
+""" + source + r"""
+(async () => {
+  await openRequestedTraining();
+  assert.strictEqual(scrolls, 0);
+  timer();
+  assert.strictEqual(selected, '#list details[data-pid="42"]');
+  assert.strictEqual(details.open, true);
+  assert.strictEqual(scrolls, 1);
+  location.search = '?training=42%22%5D';
+  timer = null;
+  await openRequestedTraining();
+  assert.strictEqual(timer, null);
+})().catch(e => { console.error(e); process.exitCode = 1; });
+"""
+    result = subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr

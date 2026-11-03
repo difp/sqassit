@@ -14,6 +14,7 @@ import re
 import time
 from datetime import datetime
 from typing import cast
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
@@ -58,7 +59,7 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-WEB_APP_VERSION = "47"
+WEB_APP_VERSION = "48"
 
 
 def _web_app_url() -> str:
@@ -70,6 +71,16 @@ def _web_app_url() -> str:
     # заметных обновлений интерфейса. Меняйте при крупных релизах.
     separator = "&" if "?" in base else "?"
     return f"{base}{separator}v={WEB_APP_VERSION}"
+
+
+def _coach_training_url(training_id: int) -> str:
+    """Открывает в мини-приложении конкретную тренировку тренера."""
+    parts = urlsplit(_web_app_url())
+    query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)
+             if key != "training"]
+    query.append(("training", str(training_id)))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/") + "/coach",
+                       urlencode(query), parts.fragment))
 
 
 RULES_TEXT = (
@@ -160,7 +171,7 @@ def _main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(
-                text="Открыть тренировки",
+                text="Открыть расписание",
                 web_app=WebAppInfo(url=_web_app_url()),
             )],
         ]

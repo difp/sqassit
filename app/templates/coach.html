@@ -2118,6 +2118,23 @@ window.PAGE_REFRESH = async () => {
   await Promise.all(jobs);
 };
 
+// Ссылка из уведомления открывает заявку конкретного занятия после загрузки.
+async function openRequestedTraining() {
+  const value = new URLSearchParams(location.search).get('training');
+  if (!value || !/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) return;
+  await HYDRATION;
+  window.setTimeout(() => {
+    const details = document.querySelector(`#list details[data-pid="${value}"]`);
+    if (!details) {
+      toast('Тренировка недоступна или уже завершилась.');
+      return;
+    }
+    details.open = true;
+    const pending = details.querySelector('[data-papprove]');
+    (pending ? pending.closest('.p-row') : details).scrollIntoView({block: 'center'});
+  }, 400);
+}
+
 // ===== Инициализация по роли =====
 (async () => {
   await APP.ready;
@@ -2134,6 +2151,7 @@ window.PAGE_REFRESH = async () => {
       // догружаем в фоне, не задерживая открытие вкладки.
       await loadView();
       hideAppLoader();
+      await openRequestedTraining();
       const background = [loadPlayersCount(), loadProfile(), loadMessages()];
       if (IS_MANAGER) {
         document.getElementById('coaches-section').hidden = false;

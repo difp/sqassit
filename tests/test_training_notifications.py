@@ -868,3 +868,22 @@ def test_training_change_notifies_only_active_participants(bot, monkeypatch):
     assert ("event", 555) in calls and ("event", 556) in calls
     assert ("event", 557) not in calls
     assert ("alert", 555) in calls and ("alert", 556) not in calls
+
+
+def test_pending_training_button_opens_coach_and_specific_training(monkeypatch):
+    from dataclasses import replace
+    from urllib.parse import parse_qs, urlsplit
+
+    monkeypatch.setattr(
+        mainmod.bot_module, "settings",
+        replace(mainmod.bot_module.settings, webhook_base_url="https://example.test/app?source=bot"),
+    )
+    keyboard = mainmod._pending_booking_keyboard([_person(status="pending")], 42)
+    button = keyboard.inline_keyboard[0][0]
+    url = urlsplit(button.web_app.url)
+    assert button.text == "Открыть заявки · 1"
+    assert url.path == "/app/coach"
+    assert parse_qs(url.query) == {
+        "source": ["bot"], "v": [mainmod.bot_module.WEB_APP_VERSION], "training": ["42"]
+    }
+    assert urlsplit(mainmod.bot_module._web_app_url()).path == "/app"
