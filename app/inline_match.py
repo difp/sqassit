@@ -178,6 +178,16 @@ async def request_join(callback: CallbackQuery, bot) -> None:
     if match is None or match['deleted_at'] or match['start_at'] <= int(time.time()):
         await callback.answer('Матч недоступен', show_alert=True)
         return
+    players = await db.get_match_players(match_id)
+    status_messages = {
+        'booked': 'Вы уже записаны на матч.',
+        'pending': 'Ваша заявка уже ожидает подтверждения.',
+        'waitlist': 'Вы уже в листе ожидания.',
+    }
+    for player in players:
+        if player['telegram_id'] == callback.from_user.id and player['status'] in status_messages:
+            await callback.answer(status_messages[player['status']], show_alert=True)
+            return
     if match['players_count'] >= match['max_players']:
         await callback.answer('Мест нет', show_alert=True)
         return

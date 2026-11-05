@@ -14,6 +14,29 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def test_repeat_join_shows_existing_registration_without_new_confirmation(monkeypatch):
+    from app import bot as botmod
+    answers, sent = [], []
+    async def answer(text, **kwargs): answers.append(text)
+    async def get_match(*args):
+        return {'id': 1, 'title': 'Матч', 'start_at': int(time.time()) + 3600, 'deleted_at': None, 'players_count': 1, 'max_players': 3}
+    player = {'telegram_id': 42, 'status': 'booked'}
+    async def players(*args): return [player]
+    async def send(*args, **kwargs): sent.append(True)
+    monkeypatch.setattr(mod.db, 'get_match', get_match)
+    monkeypatch.setattr(mod.db, 'get_match_players', players)
+    monkeypatch.setattr(botmod, 'send_temporary_notification', send)
+    callback = SimpleNamespace(data='match_join:1', from_user=SimpleNamespace(id=42), inline_message_id=None, answer=answer)
+    run(mod.request_join(callback, object()))
+    assert answers == ['Вы уже записаны на матч.']
+    assert not sent
+    for status, expected in [('pending', 'Ваша заявка уже ожидает подтверждения.'), ('waitlist', 'Вы уже в листе ожидания.')]:
+        player['status'] = status
+        run(mod.request_join(callback, object()))
+        assert answers[-1] == expected
+    assert not sent
+
+
 def test_card_limits_names_and_reports_finished():
     match = {'title': 'Матч', 'start_at': int(time.time()) + 1000, 'location': '', 'max_players': 50, 'deleted_at': None}
     players = [{'status': 'booked', 'display_mode': 'name', 'first_name': f'Игрок {i}', 'telegram_id': i} for i in range(51)]
@@ -90,8 +113,10 @@ def test_join_failures_and_cancel(monkeypatch):
     run(mod.request_join(callback, bot))
     match = {'id': 1, 'title': 'Матч', 'start_at': int(time.time()) + 3600, 'deleted_at': None, 'players_count': 0, 'max_players': 2}
     async def get_match(*args): return match
+    async def players(*args): return []
     async def forbidden(*args, **kwargs): raise TelegramForbiddenError(method=SendMessage(chat_id=1, text='x'), message='blocked')
     monkeypatch.setattr(mod.db, 'get_match', get_match)
+    monkeypatch.setattr(mod.db, 'get_match_players', players)
     run(mod.request_join(callback, SimpleNamespace(send_message=forbidden)))
     assert 'Старт' in answers[-1][0]
     async def network_error(*args, **kwargs): raise RuntimeError('network')

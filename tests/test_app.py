@@ -4788,6 +4788,9 @@ def test_inline_match_publishing_and_registration(client, monkeypatch):
     assert edits[-1]['reply_markup'].inline_keyboard[0][0].text == 'Мест нет'
     callback.data = f'match_join:{match_id}'
     client.portal.call(inline_match.request_join, callback, fake_bot)
+    assert answers[-1][0][0] == 'Вы уже записаны на матч.'
+    callback.from_user = SimpleNamespace(id=888)
+    client.portal.call(inline_match.request_join, callback, fake_bot)
     assert answers[-1][0][0] == 'Мест нет'
     assert len(sent) == 1
 
