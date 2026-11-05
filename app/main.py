@@ -653,6 +653,7 @@ class MatchIn(BaseModel):
     max_players: int = Field(default=4, ge=2, le=2147483647)
     level: str = Field(default="", max_length=60)
     inline_direct: bool = False
+    inline_draft: bool = False
 
 
 async def _notifications_allowed(telegram_id: int, category: str) -> bool:
@@ -1499,14 +1500,15 @@ async def api_create_match(
             level=level,
             created_by=user["telegram_id"],
             inline_direct=payload.inline_direct,
+            inline_draft=payload.inline_draft,
         )
         await db.join_match(
         match_id, user["telegram_id"], payload.max_players, approved=True
     )
         created_match = await db.get_match(match_id)
-        if created_match is not None:
+        if created_match is not None and not payload.inline_draft:
             _spawn(_notify_match_event(created_match, user["telegram_id"], "joined"))
-        _spawn(_notify_match_feed(user["telegram_id"]))
+            _spawn(_notify_match_feed(user["telegram_id"]))
         return {"ok": True, "id": match_id}
     except HTTPException:
         raise
@@ -1550,7 +1552,7 @@ async def api_join_match(
     _match_join_limiter.check(str(user["telegram_id"]))
     try:
         match = await db.get_match(match_id)
-        if match is None or match["deleted_at"]:
+        if match is None or match["deleted_at"] or not _row_value(match, "published", 1):
             return error_json("Матч не найден", 404)
         if match["start_at"] <= int(time.time()):
             return error_json("Матч уже начался", 400)
@@ -1562,6 +1564,10 @@ async def api_join_match(
             match["max_players"],
             requires_approval=settings.require_event_approval and not _row_value(match, "inline_direct", 0),
         )
+        if status == "unavailable":
+            return error_json("Матч не найден", 404)
+        if status == "started":
+            return error_json("Матч уже начался", 400)
         if status == "full":
             return error_json("Мест нет", 409)
         if status == "pending":

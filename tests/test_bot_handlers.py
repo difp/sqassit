@@ -1068,3 +1068,19 @@ def test_legacy_button_handles_uneditable_message():
     callback.message.edit_text = fail_edit
     asyncio.run(botmod.cb_legacy_schedule(callback))
     assert "приложении" in answers[0][0]
+
+
+def test_start_match_deep_link_opens_creation(monkeypatch):
+    from app import inline_match
+    async def no_op(*args, **kwargs): pass
+    async def user(*args): return {'phone': '123'}
+    calls = []
+    async def show_form(message): calls.append(message)
+    monkeypatch.setattr(db, 'is_coach_id', no_op)
+    monkeypatch.setattr(db, 'upsert_user', no_op)
+    monkeypatch.setattr(db, 'get_user', user)
+    monkeypatch.setattr(inline_match, 'command', show_form)
+    message, _, _ = _message(1001, text='/start match')
+    message.bot = None
+    asyncio.run(botmod.cmd_start(message))
+    assert calls == [message]

@@ -60,7 +60,7 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-WEB_APP_VERSION = "53"
+WEB_APP_VERSION = "54"
 
 
 def _web_app_url() -> str:
@@ -330,6 +330,9 @@ async def cmd_start(message: Message) -> None:
                 "Поделитесь контактом кнопкой ниже или введите номер в профиле.",
                 reply_markup=_phone_keyboard(),
             )
+        if (message.text or '').split(maxsplit=1)[1:] == ['match']:
+            from .inline_match import command
+            await command(message)
     except Exception:
         # Один сбойный апдейт не должен ронять бота.
         logger.exception("Ошибка в обработчике /start")

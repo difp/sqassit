@@ -74,6 +74,11 @@ async def refresh(bot, match_id: int) -> None:
         refs = await db.list_match_inline_messages(match_id)
         if not refs:
             return
+        if 'published' in match.keys() and not match['published']:  # noqa: SIM118
+            await publish_draft(match)
+            match = await db.get_match(match_id)
+            if match is None:
+                return
         players = await db.get_match_players(match_id)
         text = card(match, players)
         label = (
@@ -93,7 +98,16 @@ async def refresh(bot, match_id: int) -> None:
 
 
 async def command(message: Message) -> None:
-    if not message.bot or not message.from_user or message.chat.type != 'private':
+    if not message.bot or not message.from_user:
+        return
+    if message.chat.type != 'private':
+        me = await message.bot.me()
+        await message.answer(
+            'Создайте матч в личном чате с ботом, затем выберите этот чат для публикации.',
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text='Создать матч', url=f'https://t.me/{me.username}?start=match')
+            ]]),
+        )
         return
     url = settings.webhook_base_url.rstrip('/') + '/match/create'
     await message.answer('Создайте матч, затем выберите чат для публикации.', reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
@@ -102,7 +116,10 @@ async def command(message: Message) -> None:
 
 
 async def query_handler(query: InlineQuery) -> None:
-    matches = await db.list_upcoming_matches(int(time.time()), int(time.time()) + 366 * 86400)
+    now = int(time.time())
+    matches = await db.list_upcoming_matches(now, now + 366 * 86400)
+    drafts = await db.list_owned_match_drafts(query.from_user.id, now, now + 366 * 86400)
+    matches = [*drafts, *matches]
     results: list[InlineQueryResultUnion] = []
     for match in matches:
         if match['created_by'] != query.from_user.id:
@@ -119,6 +136,18 @@ async def query_handler(query: InlineQuery) -> None:
     await query.answer(results, cache_time=0, is_personal=True)
 
 
+async def publish_draft(match) -> None:
+    """Публикует черновик не более одного раза и запускает обычные уведомления."""
+    if 'published' not in match.keys() or match['published']:  # noqa: SIM118
+        return
+    if await db.publish_match_draft(match['id']):
+        from . import main
+        published = await db.get_match(match['id'])
+        if published is not None:
+            main._spawn(main._notify_match_event(published, match['created_by'], 'joined'))
+            main._spawn(main._notify_match_feed(match['created_by']))
+
+
 async def chosen_handler(result: ChosenInlineResult, bot) -> None:
     if not result.inline_message_id or not result.result_id.startswith('match:'):
         return
@@ -130,6 +159,7 @@ async def chosen_handler(result: ChosenInlineResult, bot) -> None:
     if match is None or match['created_by'] != result.from_user.id:
         return
     await db.save_match_inline_message(match_id, result.inline_message_id)
+    await publish_draft(match)
     await refresh(bot, match_id)
 
 
@@ -148,6 +178,7 @@ async def request_join(callback: CallbackQuery, bot) -> None:
         return
     if callback.inline_message_id:
         await db.save_match_inline_message(match_id, callback.inline_message_id)
+        await publish_draft(match)
     from .bot import send_temporary_notification
     try:
         await send_temporary_notification(bot, callback.from_user.id, f"Записаться на «{html.escape(match['title'])}»?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
@@ -191,8 +222,15 @@ async def confirm_join(callback: CallbackQuery, bot) -> None:
     if status not in {'booked', 'pending'}:
         await callback.answer('Запись недоступна. Проверьте свой статус в приложении.', show_alert=True)
         return
-    await callback.message.edit_text('Заявка отправлена организатору.' if status == 'pending' else 'Вы записаны на матч.')
-    await callback.answer()
+    result_text = 'Заявка отправлена организатору.' if status == 'pending' else 'Вы записаны на матч.'
+    try:
+        await callback.answer(result_text, show_alert=True)
+    except Exception:
+        logger.info('Не удалось ответить на подтверждение матча %s', match_id, exc_info=True)
+    try:
+        await callback.message.edit_text(result_text)
+    except Exception:
+        logger.info('Не удалось обновить подтверждение матча %s', match_id, exc_info=True)
     await refresh(bot, match_id)
 
 

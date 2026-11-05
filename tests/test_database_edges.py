@@ -26,6 +26,11 @@ def test_migration_backfills_onboarding_for_existing_users(tmp_path):
             "INSERT INTO users (telegram_id, username, first_name, created_at) "
             "VALUES (42, 'old', 'Old', 1)"
         )
+        con.execute(
+            "INSERT INTO matches (title, start_at, created_by, created_at) VALUES (?, ?, ?, ?)",
+            ('Существующий матч', int(time.time()) + 86400, 42, 1),
+        )
+        con.execute("ALTER TABLE matches DROP COLUMN published")
         for column in (
             "onboarding_seen",
             "notify_matches",
@@ -46,6 +51,9 @@ def test_migration_backfills_onboarding_for_existing_users(tmp_path):
             assert row["notify_matches"] == 1
             assert row["notify_trainings"] == 1
             assert row["notify_messages"] == 1
+            matches = await db.list_upcoming_matches(int(time.time()), int(time.time()) + 172800)
+            assert len(matches) == 1 and matches[0]["title"] == 'Существующий матч'
+            assert matches[0]["published"] == 1
         finally:
             await db.close()
 

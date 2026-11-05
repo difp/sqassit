@@ -4818,3 +4818,109 @@ def test_inline_created_match_accepts_player_confirmation_with_approval_enabled(
     assert client.post(f'/api/matches/{match_id}/join', headers=PLAYER2).json()['status'] == 'booked'
     regular = client.post('/api/matches', headers=PLAYER, json={**_future(3), 'title': 'Обычный матч'}).json()['id']
     assert client.post(f'/api/matches/{regular}/join', headers=PLAYER2).json()['status'] == 'pending'
+
+
+@pytest.mark.parametrize(("change", "expected"), [("delete", 404), ("start", 400)])
+def test_match_cannot_be_joined_after_concurrent_deletion(client, monkeypatch, change, expected):
+    client.get('/api/me', headers=PLAYER)
+    client.get('/api/me', headers=PLAYER2)
+    match_id = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Матч', 'inline_direct': True}).json()['id']
+    original_get = mainmod.db.get_match
+
+    async def scenario():
+        read, resume = asyncio.Event(), asyncio.Event()
+
+        async def delayed_get(mid):
+            match = await original_get(mid)
+            read.set()
+            await resume.wait()
+            return match
+
+        monkeypatch.setattr(mainmod.db, 'get_match', delayed_get)
+        task = asyncio.create_task(mainmod.api_join_match(match_id, {'telegram_id': 556, 'phone': ''}))
+        await read.wait()
+        if change == 'delete':
+            await mainmod.db.delete_match(match_id)
+        else:
+            await mainmod.db._execute_rowcount("UPDATE matches SET start_at=? WHERE id=?", (int(time.time()) - 1, match_id))
+        resume.set()
+        return await task
+
+    result = client.portal.call(scenario)
+    assert not isinstance(result, dict) and result.status_code == expected
+    players = client.portal.call(mainmod.db.get_match_players, match_id)
+    assert all(player['telegram_id'] != 556 for player in players)
+
+
+def test_inline_draft_is_private_until_posted_and_publishes_once(client, monkeypatch):
+    from app import inline_match
+    client.get('/api/me', headers=PLAYER)
+    client.get('/api/me', headers=PLAYER2)
+    sent = []
+    async def no_notify(*args):
+        sent.append(args)
+    monkeypatch.setattr(mainmod, '_notify_match_feed', no_notify)
+    response = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Черновик', 'inline_direct': True, 'inline_draft': True})
+    match_id = response.json()['id']
+    assert not any(m['id'] == match_id for m in client.get('/api/matches', headers=PLAYER2).json()['matches'])
+    assert client.post(f'/api/matches/{match_id}/join', headers=PLAYER2).status_code == 404
+    assert client.portal.call(mainmod.db.join_match, match_id, 556, 2) == 'unavailable'
+    assert sent == []
+    results = []
+    async def answer(items, **kwargs): results.extend(items)
+    query = SimpleNamespace(from_user=SimpleNamespace(id=555), answer=answer)
+    client.portal.call(inline_match.query_handler, query)
+    assert any(result.id == f'match:{match_id}' for result in results)
+    async def edit(**kwargs): pass
+    bot = SimpleNamespace(edit_message_text=edit)
+    chosen = SimpleNamespace(inline_message_id='draft-inline', result_id=f'match:{match_id}', from_user=SimpleNamespace(id=555))
+    client.portal.call(inline_match.chosen_handler, chosen, bot)
+    client.portal.call(asyncio.sleep, 0.05)
+    assert any(m['id'] == match_id for m in client.get('/api/matches', headers=PLAYER2).json()['matches'])
+    assert len(sent) == 1
+    client.portal.call(inline_match.chosen_handler, chosen, bot)
+    client.portal.call(asyncio.sleep, 0.05)
+    assert len(sent) == 1
+    assert client.post(f'/api/matches/{match_id}/join', headers=PLAYER2).json()['status'] == 'booked'
+
+
+def test_inline_draft_recovers_publication_from_saved_message(client):
+    from app import inline_match
+    client.get('/api/me', headers=PLAYER)
+    match_id = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Черновик', 'inline_direct': True, 'inline_draft': True}).json()['id']
+    client.portal.call(mainmod.db.save_match_inline_message, match_id, 'saved-message')
+    edited = []
+    async def edit(**kwargs): edited.append(kwargs)
+    client.portal.call(inline_match.refresh, SimpleNamespace(edit_message_text=edit), match_id)
+    assert client.portal.call(mainmod.db.get_match, match_id)['published'] == 1
+    assert len(edited) == 1
+
+
+def test_inline_draft_publishes_when_first_player_clicks_without_feedback(client, monkeypatch):
+    from app import inline_match
+    client.get('/api/me', headers=PLAYER)
+    client.get('/api/me', headers=PLAYER2)
+    match_id = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Черновик', 'inline_direct': True, 'inline_draft': True}).json()['id']
+    sent, answers = [], []
+    async def send(*args, **kwargs): sent.append(args)
+    async def answer(*args, **kwargs): answers.append(args)
+    callback = SimpleNamespace(data=f'match_join:{match_id}', inline_message_id='fallback-inline', from_user=SimpleNamespace(id=556), answer=answer)
+    client.portal.call(inline_match.request_join, callback, SimpleNamespace(send_message=send))
+    assert client.portal.call(mainmod.db.get_match, match_id)['published'] == 1
+    assert sent and sent[0][0] == 556
+    assert answers and 'Подтвердите' in answers[-1][0]
+
+
+def test_simultaneous_draft_publication_notifies_only_once(client, monkeypatch):
+    from app import inline_match
+    client.get('/api/me', headers=PLAYER)
+    match_id = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Черновик', 'inline_draft': True}).json()['id']
+    sent = []
+    async def feed(*args): sent.append(args)
+    monkeypatch.setattr(mainmod, '_notify_match_feed', feed)
+    async def publish_together():
+        draft = await mainmod.db.get_match(match_id)
+        await asyncio.gather(inline_match.publish_draft(draft), inline_match.publish_draft(draft))
+        await asyncio.sleep(0.05)
+    client.portal.call(publish_together)
+    assert len(sent) == 1

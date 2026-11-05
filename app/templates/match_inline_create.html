@@ -47,10 +47,10 @@ form.addEventListener('submit', async ev => {
   try {
     if (!created) {
       const values = new FormData(form);
-      await api('/api/matches', 'POST', {title: values.get('title'), date: values.get('date'), time: values.get('time'), location: values.get('location'), max_players: Number(values.get('max_players')), inline_direct: true});
+      await api('/api/matches', 'POST', {title: values.get('title'), date: values.get('date'), time: values.get('time'), location: values.get('location'), max_players: Number(values.get('max_players')), inline_direct: true, inline_draft: true});
       created = true;
     }
-    status.textContent = 'Матч создан. Выберите чат и карточку матча.';
+    status.textContent = 'Черновик создан. Выберите чат и карточку матча. Если закрыть выбор, найти черновик можно через @SQASSITbot.';
     Telegram.WebApp.switchInlineQuery('', ['users', 'groups']);
     button.textContent = 'Выбрать чат';
   } catch (e) { status.textContent = e.message || 'Не удалось создать матч.'; }

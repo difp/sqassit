@@ -43,6 +43,8 @@ def test_command_and_inline_query_limits(monkeypatch):
     match = {'id': 1, 'created_by': 2, 'title': 'Матч', 'start_at': int(time.time()) + 3600, 'location': '', 'max_players': 4, 'deleted_at': None}
     async def matches(*args): return [{**match, 'created_by': 3}] + [match] * 60
     async def players(*args): return []
+    async def drafts(*args): return []
+    monkeypatch.setattr(mod.db, 'list_owned_match_drafts', drafts)
     monkeypatch.setattr(mod.db, 'list_upcoming_matches', matches)
     monkeypatch.setattr(mod.db, 'get_match_players', players)
     query = SimpleNamespace(from_user=SimpleNamespace(id=2), answer=answer)
@@ -116,3 +118,59 @@ def test_join_failures_and_cancel(monkeypatch):
     run(mod.confirm_join(callback, bot))
     run(mod.cancel_join(callback))
     assert edits == ['Запись отменена.']
+
+
+def test_group_command_offers_private_start():
+    answers = []
+    async def me(): return SimpleNamespace(username='ExampleBot')
+    async def answer(*args, **kwargs): answers.append(kwargs)
+    message = SimpleNamespace(bot=SimpleNamespace(me=me), from_user=object(), chat=SimpleNamespace(type='group'), answer=answer)
+    run(mod.command(message))
+    assert answers[0]['reply_markup'].inline_keyboard[0][0].url == 'https://t.me/ExampleBot?start=match'
+
+
+def test_confirmation_reports_success_when_message_edit_fails(monkeypatch):
+    answers, refreshed = [], []
+    async def answer(*args, **kwargs): answers.append(args[0])
+    async def edit_text(text): raise RuntimeError('Telegram edit failed')
+    async def user(*args): return {'telegram_id': 1}
+    async def join(*args): return {'ok': True, 'status': 'booked'}
+    async def refresh(*args): refreshed.append(True)
+    monkeypatch.setattr(mod, 'Message', SimpleNamespace)
+    monkeypatch.setattr(mod.db, 'get_user', user)
+    monkeypatch.setattr(main, 'api_join_match', join)
+    monkeypatch.setattr(mod, 'refresh', refresh)
+    callback = SimpleNamespace(data='match_confirm:1', from_user=SimpleNamespace(id=1), message=SimpleNamespace(chat=SimpleNamespace(type='private'), edit_text=edit_text), answer=answer)
+    run(mod.confirm_join(callback, object()))
+    assert answers == ['Вы записаны на матч.']
+    assert refreshed == [True]
+
+
+def test_refresh_handles_draft_deleted_during_recovery(monkeypatch):
+    calls = []
+    async def get(*args):
+        calls.append(True)
+        return {'id': 1, 'published': 0} if len(calls) == 1 else None
+    async def refs(*args): return [{'inline_message_id': 'x'}]
+    async def publish(*args): pass
+    monkeypatch.setattr(mod.db, 'get_match', get)
+    monkeypatch.setattr(mod.db, 'list_match_inline_messages', refs)
+    monkeypatch.setattr(mod, 'publish_draft', publish)
+    run(mod.refresh(object(), 1))
+    assert len(calls) == 2
+
+
+def test_confirmation_updates_message_even_if_callback_expired(monkeypatch):
+    edits = []
+    async def answer(*args, **kwargs): raise RuntimeError('callback expired')
+    async def edit_text(text): edits.append(text)
+    async def user(*args): return {'telegram_id': 1}
+    async def join(*args): return {'ok': True, 'status': 'booked'}
+    async def refresh(*args): pass
+    monkeypatch.setattr(mod, 'Message', SimpleNamespace)
+    monkeypatch.setattr(mod.db, 'get_user', user)
+    monkeypatch.setattr(main, 'api_join_match', join)
+    monkeypatch.setattr(mod, 'refresh', refresh)
+    callback = SimpleNamespace(data='match_confirm:1', from_user=SimpleNamespace(id=1), message=SimpleNamespace(chat=SimpleNamespace(type='private'), edit_text=edit_text), answer=answer)
+    run(mod.confirm_join(callback, object()))
+    assert edits == ['Вы записаны на матч.']

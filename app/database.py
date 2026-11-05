@@ -169,6 +169,7 @@ CREATE TABLE IF NOT EXISTS matches (
     max_players   INTEGER NOT NULL DEFAULT 4,
     level         TEXT NOT NULL DEFAULT '',
     inline_direct INTEGER NOT NULL DEFAULT 0,
+    published     INTEGER NOT NULL DEFAULT 1,
     created_by    INTEGER NOT NULL,
     created_at    INTEGER NOT NULL,
     room_code     TEXT,                       -- код комнаты турнира (squashtabs)
@@ -280,6 +281,7 @@ async def _migrate() -> None:
         ("trainings", "room_code"): "ALTER TABLE trainings ADD COLUMN room_code TEXT",
         ("matches", "room_code"): "ALTER TABLE matches ADD COLUMN room_code TEXT",
         ("matches", "inline_direct"): "ALTER TABLE matches ADD COLUMN inline_direct INTEGER NOT NULL DEFAULT 0",
+        ("matches", "published"): "ALTER TABLE matches ADD COLUMN published INTEGER NOT NULL DEFAULT 1",
         ("users", "bio"): "ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''",
         ("users", "links"): "ALTER TABLE users ADD COLUMN links TEXT NOT NULL DEFAULT '[]'",
         ("users", "about"): "ALTER TABLE users ADD COLUMN about TEXT NOT NULL DEFAULT ''",
@@ -810,6 +812,7 @@ async def delete_user_data(telegram_id: int) -> None:
                 ("DELETE FROM match_players WHERE user_id = ?", (telegram_id,)),
                 ("DELETE FROM reminder_deliveries WHERE user_id = ?", (telegram_id,)),
                 ("DELETE FROM event_notifications WHERE chat_id = ? OR user_id = ?", (telegram_id, telegram_id)),
+                ("DELETE FROM matches WHERE created_by = ? AND published = 0", (telegram_id,)),
                 ("UPDATE matches SET created_by = 0 WHERE created_by = ?", (telegram_id,)),
                 ("UPDATE match_players SET decided_by = NULL WHERE decided_by = ?", (telegram_id,)),
                 ("UPDATE coach_applications SET decided_by = NULL WHERE decided_by = ?", (telegram_id,)),
@@ -1752,16 +1755,17 @@ async def create_match(
     level: str,
     created_by: int,
     inline_direct: bool = False,
+    inline_draft: bool = False,
 ) -> int:
     return await _execute(
         """
         INSERT INTO matches (title, description, location, start_at, duration_min,
-                             max_players, level, created_by, created_at, inline_direct)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             max_players, level, created_by, created_at, inline_direct, published)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             title, description, location, start_at, duration_min,
-            max_players, level, created_by, int(time.time()), int(inline_direct),
+            max_players, level, created_by, int(time.time()), int(inline_direct), int(not inline_draft),
         ),
     )
 
@@ -1773,11 +1777,26 @@ async def list_upcoming_matches(now: int, until: int) -> list[aiosqlite.Row]:
                (SELECT COUNT(*) FROM match_players mp
                  WHERE mp.match_id = m.id AND mp.status = 'booked') AS players_count
           FROM matches m
-         WHERE m.start_at >= ? AND m.start_at <= ? AND m.deleted_at IS NULL
+         WHERE m.start_at >= ? AND m.start_at <= ? AND m.deleted_at IS NULL AND m.published = 1
          ORDER BY m.start_at ASC
         """,
         (now, until),
     )
+
+
+async def list_owned_match_drafts(user_id: int, now: int, until: int) -> list[aiosqlite.Row]:
+    return await _fetchall(
+        "SELECT m.*, (SELECT COUNT(*) FROM match_players mp WHERE mp.match_id=m.id AND mp.status='booked') AS players_count "
+        "FROM matches m WHERE m.created_by=? AND m.published=0 AND m.deleted_at IS NULL "
+        "AND m.start_at>=? AND m.start_at<=? ORDER BY m.start_at", (user_id, now, until),
+    )
+
+
+async def publish_match_draft(match_id: int) -> bool:
+    return bool(await _execute_rowcount(
+        "UPDATE matches SET published=1 WHERE id=? AND published=0 AND deleted_at IS NULL AND start_at>?",
+        (match_id, int(time.time())),
+    ))
 
 
 async def get_match(match_id: int) -> aiosqlite.Row | None:
@@ -1888,6 +1907,18 @@ async def join_match(
     db = _db()
     async with _lock:
         async with db.execute(
+            "SELECT deleted_at, start_at, max_players, published FROM matches WHERE id = ?",
+            (match_id,),
+        ) as cur:
+            match = await cur.fetchone()
+        if match is None or match["deleted_at"]:
+            return "unavailable"
+        if not match["published"] and not approved:
+            return "unavailable"
+        if match["start_at"] <= int(time.time()):
+            return "started"
+        max_players = int(match["max_players"])
+        async with db.execute(
             "SELECT status FROM match_players WHERE match_id = ? AND user_id = ?",
             (match_id, user_id),
         ) as cur:
@@ -1994,7 +2025,7 @@ async def user_matches(user_id: int) -> list[aiosqlite.Row]:
 
 async def has_upcoming_owned_match(user_id: int, now: int) -> bool:
     return await _fetchone(
-        "SELECT id FROM matches WHERE created_by = ? AND deleted_at IS NULL AND start_at > ? LIMIT 1",
+        "SELECT id FROM matches WHERE created_by = ? AND deleted_at IS NULL AND published=1 AND start_at > ? LIMIT 1",
         (user_id, now),
     ) is not None
 
