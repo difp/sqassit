@@ -992,6 +992,12 @@ def test_notification_scheduler_reconciles_existing_pending(monkeypatch):
         async def reconcile():
             return [(1, 555), (2, 556)]
 
+        async def inline_matches(now):
+            return [{"id": 42}]
+
+        async def refresh_inline(match_id):
+            assert match_id == 42
+
         async def get_training(tid):
             return _training(id=tid) if tid == 1 else None
 
@@ -1001,6 +1007,8 @@ def test_notification_scheduler_reconciles_existing_pending(monkeypatch):
 
         for name in ("_process_due_deletions", "_process_due_final_enrollments", "_cleanup_stale_preliminary", "_refresh_existing_match_feeds"):
             monkeypatch.setattr(mainmod, name, noop)
+        monkeypatch.setattr(db, "list_recent_inline_match_ids", inline_matches)
+        monkeypatch.setattr(mainmod, "_refresh_match_inline", refresh_inline)
         monkeypatch.setattr(db, "reconcile_full_training_waitlists", reconcile)
         monkeypatch.setattr(db, "get_training", get_training)
         monkeypatch.setattr(mainmod, "_notify_training_event", notify)

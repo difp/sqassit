@@ -60,7 +60,7 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-WEB_APP_VERSION = "52"
+WEB_APP_VERSION = "53"
 
 
 def _web_app_url() -> str:
@@ -510,6 +510,8 @@ def create_dispatcher() -> Dispatcher:
     """
     dp = Dispatcher()
     router = Router()
+    from . import inline_match
+    inline_match.register(router)
 
     # Порядок важен: команды/кнопки должны проверяться раньше fallback.
     router.message.register(cmd_start, CommandStart())

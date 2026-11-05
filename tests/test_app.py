@@ -2255,7 +2255,7 @@ def test_lifespan_webhook_startup(tmp_path, monkeypatch):
     monkeypatch.setattr(mainmod.db, "upsert_user", no_db)
     monkeypatch.setattr(mainmod.db, "close", no_db)
     monkeypatch.setattr(mainmod.bot_module, "create_bot", lambda: fake_bot)
-    monkeypatch.setattr(mainmod.bot_module, "create_dispatcher", lambda: object())
+    monkeypatch.setattr(mainmod.bot_module, "create_dispatcher", lambda: SimpleNamespace(resolve_used_update_types=lambda: ["message", "inline_query"]))
     monkeypatch.setattr(mainmod.bot_module, "reminder_loop", wait_loop)
 
     fake_app = SimpleNamespace(state=SimpleNamespace())
@@ -2270,6 +2270,7 @@ def test_lifespan_webhook_startup(tmp_path, monkeypatch):
         ("https://example.test/telegram/webhook", {
             "secret_token": "a" * 32,
             "drop_pending_updates": False,
+            "allowed_updates": ["message", "inline_query"],
         })
     ]
     assert session_closed == [True]
@@ -4730,3 +4731,90 @@ def test_tournament_finish_requires_coach_confirmation_and_sends_final_image(cli
     client.portal.call(asyncio.sleep, 0.1)
     assert len(photos) == 1
     assert client.put(url, headers=COACH, json={"revision": 3, "state": state}).status_code == 423
+
+
+def test_inline_match_message_references_are_unique_and_removable(client):
+    client.get('/api/me', headers=PLAYER)
+    response = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Матч'})
+    match_id = response.json()['id']
+    client.portal.call(mainmod.db.save_match_inline_message, match_id, 'inline-A')
+    client.portal.call(mainmod.db.save_match_inline_message, match_id, 'inline-A')
+    client.portal.call(mainmod.db.save_match_inline_message, match_id, 'inline-B')
+    recent = client.portal.call(mainmod.db.list_recent_inline_match_ids, int(time.time()))
+    assert [row['id'] for row in recent] == [match_id]
+    rows = client.portal.call(mainmod.db.list_match_inline_messages, match_id)
+    assert {row['inline_message_id'] for row in rows} == {'inline-A', 'inline-B'}
+    client.portal.call(mainmod.db.delete_match_inline_message, 'inline-A')
+    rows = client.portal.call(mainmod.db.list_match_inline_messages, match_id)
+    assert [row['inline_message_id'] for row in rows] == ['inline-B']
+
+
+def test_inline_match_publishing_and_registration(client, monkeypatch):
+    from app import inline_match
+    client.get('/api/me', headers=PLAYER)
+    client.get('/api/me', headers=PLAYER2)
+    result = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Встреча', 'max_players': 2})
+    match_id = result.json()['id']
+    sent, edits, answers, results = [], [], [], []
+
+    class FakeBot:
+        async def send_message(self, *args, **kwargs):
+            sent.append((args, kwargs))
+        async def edit_message_text(self, **kwargs):
+            edits.append(kwargs)
+    async def answer(*args, **kwargs):
+        answers.append((args, kwargs))
+    async def query_answer(items, **kwargs):
+        results.extend(items)
+    fake_bot = FakeBot()
+    query = SimpleNamespace(from_user=SimpleNamespace(id=555), answer=query_answer)
+    client.portal.call(inline_match.query_handler, query)
+    assert len(results) == 1 and results[0].id == f'match:{match_id}'
+    chosen = SimpleNamespace(inline_message_id='published-id', result_id=f'match:{match_id}', from_user=SimpleNamespace(id=555))
+    client.portal.call(inline_match.chosen_handler, chosen, fake_bot)
+    assert edits and '1 из 2' in edits[-1]['text']
+    callback = SimpleNamespace(data=f'match_join:{match_id}', inline_message_id='published-id', from_user=SimpleNamespace(id=556), answer=answer)
+    client.portal.call(inline_match.request_join, callback, fake_bot)
+    assert sent and sent[-1][0][0] == 556
+    messages = []
+    async def edit_text(text):
+        messages.append(text)
+    monkeypatch.setattr(inline_match, 'Message', SimpleNamespace)
+    callback.data = f'match_confirm:{match_id}'
+    callback.message = SimpleNamespace(chat=SimpleNamespace(type='private'), edit_text=edit_text)
+    client.portal.call(inline_match.confirm_join, callback, fake_bot)
+    assert messages == ['Вы записаны на матч.']
+    assert '2 из 2' in edits[-1]['text']
+    assert edits[-1]['reply_markup'].inline_keyboard[0][0].text == 'Мест нет'
+    callback.data = f'match_join:{match_id}'
+    client.portal.call(inline_match.request_join, callback, fake_bot)
+    assert answers[-1][0][0] == 'Мест нет'
+    assert len(sent) == 1
+
+
+def test_inline_match_card_respects_anonymous_identity():
+    from app import inline_match
+    match = {'title': '<Тест>', 'start_at': int(time.time()) + 3600, 'location': '<Парк>', 'max_players': 3, 'deleted_at': None}
+    players = [{'status': 'booked', 'display_mode': 'animal', 'telegram_id': 555, 'first_name': 'Секретное имя'}]
+    text = inline_match.card(match, players)
+    assert 'Секретное имя' not in text
+    assert '&lt;Тест&gt;' in text and '&lt;Парк&gt;' in text
+
+
+def test_inline_match_create_page(client):
+    response = client.get('/match/create')
+    assert response.status_code == 200
+    assert 'inline-match-form' in response.text
+
+
+def test_inline_created_match_accepts_player_confirmation_with_approval_enabled(client, monkeypatch):
+    from dataclasses import replace
+    monkeypatch.setattr(mainmod, 'settings', replace(settings, require_event_approval=True))
+    client.get('/api/me', headers=PLAYER)
+    client.get('/api/me', headers=PLAYER2)
+    response = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Матч из чата', 'max_players': 21, 'inline_direct': True})
+    assert response.status_code == 200
+    match_id = response.json()['id']
+    assert client.post(f'/api/matches/{match_id}/join', headers=PLAYER2).json()['status'] == 'booked'
+    regular = client.post('/api/matches', headers=PLAYER, json={**_future(3), 'title': 'Обычный матч'}).json()['id']
+    assert client.post(f'/api/matches/{regular}/join', headers=PLAYER2).json()['status'] == 'pending'

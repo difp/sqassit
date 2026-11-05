@@ -168,6 +168,7 @@ CREATE TABLE IF NOT EXISTS matches (
     duration_min  INTEGER NOT NULL DEFAULT 60,
     max_players   INTEGER NOT NULL DEFAULT 4,
     level         TEXT NOT NULL DEFAULT '',
+    inline_direct INTEGER NOT NULL DEFAULT 0,
     created_by    INTEGER NOT NULL,
     created_at    INTEGER NOT NULL,
     room_code     TEXT,                       -- код комнаты турнира (squashtabs)
@@ -184,6 +185,15 @@ CREATE TABLE IF NOT EXISTS match_players (
     created_at  INTEGER NOT NULL,
     UNIQUE (match_id, user_id)
 );
+
+-- Inline-сообщения Telegram не имеют chat_id/message_id. Сохраняем их отдельно,
+-- чтобы обновлять все опубликованные копии одного матча после перезапуска.
+CREATE TABLE IF NOT EXISTS match_inline_messages (
+    inline_message_id TEXT PRIMARY KEY,
+    match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_match_inline_messages_match ON match_inline_messages(match_id);
 
 CREATE TABLE IF NOT EXISTS reminder_deliveries (
     training_id INTEGER NOT NULL,
@@ -269,6 +279,7 @@ async def _migrate() -> None:
         ("trainings", "level"): "ALTER TABLE trainings ADD COLUMN level TEXT NOT NULL DEFAULT ''",
         ("trainings", "room_code"): "ALTER TABLE trainings ADD COLUMN room_code TEXT",
         ("matches", "room_code"): "ALTER TABLE matches ADD COLUMN room_code TEXT",
+        ("matches", "inline_direct"): "ALTER TABLE matches ADD COLUMN inline_direct INTEGER NOT NULL DEFAULT 0",
         ("users", "bio"): "ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''",
         ("users", "links"): "ALTER TABLE users ADD COLUMN links TEXT NOT NULL DEFAULT '[]'",
         ("users", "about"): "ALTER TABLE users ADD COLUMN about TEXT NOT NULL DEFAULT ''",
@@ -1740,16 +1751,17 @@ async def create_match(
     max_players: int,
     level: str,
     created_by: int,
+    inline_direct: bool = False,
 ) -> int:
     return await _execute(
         """
         INSERT INTO matches (title, description, location, start_at, duration_min,
-                             max_players, level, created_by, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             max_players, level, created_by, created_at, inline_direct)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             title, description, location, start_at, duration_min,
-            max_players, level, created_by, int(time.time()),
+            max_players, level, created_by, int(time.time()), int(inline_direct),
         ),
     )
 
@@ -1778,6 +1790,36 @@ async def get_match(match_id: int) -> aiosqlite.Row | None:
          WHERE m.id = ?
         """,
         (match_id,),
+    )
+
+
+async def save_match_inline_message(match_id: int, inline_message_id: str) -> None:
+    """Запоминает копию опубликованной карточки; повторный update идемпотентен."""
+    await _execute(
+        "INSERT INTO match_inline_messages (match_id, inline_message_id, created_at) "
+        "VALUES (?, ?, ?) ON CONFLICT(inline_message_id) DO NOTHING",
+        (match_id, inline_message_id, int(time.time())),
+    )
+
+
+async def list_match_inline_messages(match_id: int) -> list[aiosqlite.Row]:
+    return await _fetchall(
+        "SELECT inline_message_id FROM match_inline_messages WHERE match_id = ? ORDER BY created_at, inline_message_id",
+        (match_id,),
+    )
+
+
+async def list_recent_inline_match_ids(since: int) -> list[aiosqlite.Row]:
+    """Матчи с опубликованными карточками для повторной синхронизации."""
+    return await _fetchall(
+        "SELECT DISTINCT m.id FROM matches m JOIN match_inline_messages i ON i.match_id = m.id "
+        "WHERE m.start_at >= ? ORDER BY m.id", (since,)
+    )
+
+
+async def delete_match_inline_message(inline_message_id: str) -> None:
+    await _execute_rowcount(
+        "DELETE FROM match_inline_messages WHERE inline_message_id = ?", (inline_message_id,)
     )
 
 

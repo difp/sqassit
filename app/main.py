@@ -650,8 +650,9 @@ class MatchIn(BaseModel):
     description: str = Field(default="", max_length=450)
     location: str = Field(default="", max_length=120)
     duration_min: int = Field(default=60, ge=15, le=600)
-    max_players: int = Field(default=4, ge=2, le=20)
+    max_players: int = Field(default=4, ge=2, le=2147483647)
     level: str = Field(default="", max_length=60)
+    inline_direct: bool = False
 
 
 async def _notifications_allowed(telegram_id: int, category: str) -> bool:
@@ -736,7 +737,8 @@ async def lifespan(app: FastAPI):
     if settings.bot_mode == "webhook":
         url = f"{settings.webhook_base_url.rstrip('/')}/telegram/webhook"
         await tg_bot.set_webhook(
-            url, secret_token=settings.webhook_secret or None, drop_pending_updates=False
+            url, secret_token=settings.webhook_secret or None, drop_pending_updates=False,
+            allowed_updates=dp.resolve_used_update_types()
         )
         logger.info("Webhook установлен: %s", url)
     else:
@@ -864,6 +866,13 @@ async def page_tabs():
 async def page_match(request: Request):
     return templates.TemplateResponse(
         request, "match.html", {"allow_dev_init_data": settings.allow_dev_init_data}
+    )
+
+
+@app.get("/match/create", response_class=HTMLResponse)
+async def page_match_create(request: Request):
+    return templates.TemplateResponse(
+        request, "match_inline_create.html", {"allow_dev_init_data": settings.allow_dev_init_data}
     )
 
 
@@ -1489,6 +1498,7 @@ async def api_create_match(
             max_players=payload.max_players,
             level=level,
             created_by=user["telegram_id"],
+            inline_direct=payload.inline_direct,
         )
         await db.join_match(
         match_id, user["telegram_id"], payload.max_players, approved=True
@@ -1550,7 +1560,7 @@ async def api_join_match(
             match_id,
             user["telegram_id"],
             match["max_players"],
-            requires_approval=settings.require_event_approval,
+            requires_approval=settings.require_event_approval and not _row_value(match, "inline_direct", 0),
         )
         if status == "full":
             return error_json("Мест нет", 409)
@@ -3518,6 +3528,8 @@ async def _training_notifications_loop(interval_seconds: int = 60) -> None:
             await _process_due_final_enrollments(now)
             await _cleanup_stale_preliminary(now)
             await _refresh_existing_match_feeds(now)
+            for inline_match in await db.list_recent_inline_match_ids(now - 86400):
+                await _refresh_match_inline(int(inline_match["id"]))
             for training_id, user_id in await db.reconcile_full_training_waitlists():
                 training = await db.get_training(training_id)
                 if training is not None:
@@ -3598,8 +3610,17 @@ def _match_request_keyboard(pending_count: int) -> InlineKeyboardMarkup:
     )
 
 
+async def _refresh_match_inline(match_id: int) -> None:
+    try:
+        from .inline_match import refresh
+        await refresh(app.state.bot, match_id)
+    except Exception:
+        logger.exception("Не удалось обновить карточки матча %s", match_id)
+
+
 async def _notify_match_request(match: aiosqlite.Row, user_id: int) -> None:
     """Заявка на матч: организатор видит её в приложении, игрок — статус."""
+    await _refresh_match_inline(match["id"])
     players = await db.get_match_players(match["id"])
     booked = [p for p in players if _row_status(p) == "booked"]
     pending = [p for p in players if _row_status(p) == "pending"]
@@ -3650,6 +3671,7 @@ async def _notify_match_request(match: aiosqlite.Row, user_id: int) -> None:
 async def _notify_match_event(
     match: aiosqlite.Row, user_id: int | None = None, status: str = "joined"
 ) -> None:
+    await _refresh_match_inline(match["id"])
     players = await db.get_match_players(match["id"])
     booked = [p for p in players if _row_status(p) == "booked"]
     pending = [p for p in players if _row_status(p) == "pending"]
@@ -3768,6 +3790,7 @@ async def _notify_match_feed(exclude_user_id: int | None = None) -> None:
 
 
 async def _notify_match_deleted(match: aiosqlite.Row) -> None:
+    await _refresh_match_inline(match["id"])
     players = await db.get_match_players(match["id"])
     if match["created_by"] and await _notifications_allowed(
         match["created_by"], "matches"
