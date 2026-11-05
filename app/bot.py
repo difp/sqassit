@@ -20,6 +20,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import BaseFilter, Command, CommandStart
 from aiogram.types import (
     CallbackQuery,
@@ -59,7 +60,7 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-WEB_APP_VERSION = "51"
+WEB_APP_VERSION = "52"
 
 
 def _web_app_url() -> str:
@@ -133,6 +134,7 @@ async def ensure_rules_message(
     try:
         record = await db.get_event_notification("rules", 0, chat_id, 0)
         message_id = int(record["message_id"] or 0) if record is not None else 0
+        missing_message = False
         if message_id and record is not None and record["text"] != RULES_TEXT:
             try:
                 await bot.edit_message_text(
@@ -141,9 +143,14 @@ async def ensure_rules_message(
             except Exception as exc:
                 if "message is not modified" not in str(exc).lower():
                     logger.info("Не удалось обновить правила %s", chat_id, exc_info=True)
-                    message_id = 0
+                    if isinstance(exc, TelegramBadRequest) and "message to edit not found" in str(exc).lower():
+                        message_id = 0
+                        missing_message = True
+                    else:
+                        return
+        existing_message = bool(message_id)
         if not message_id:
-            if not create_if_missing:
+            if not create_if_missing and not missing_message:
                 return
             sent = await bot.send_message(chat_id, RULES_TEXT)
             message_id = int(getattr(sent, "message_id", 0) or 0)
@@ -158,8 +165,20 @@ async def ensure_rules_message(
                 message_id=message_id,
                 disable_notification=True,
             )
-        except Exception:
+        except Exception as exc:
             logger.info("Не удалось закрепить правила %s", chat_id, exc_info=True)
+            if existing_message and isinstance(exc, TelegramBadRequest) and "message to pin not found" in str(exc).lower():
+                sent = await bot.send_message(chat_id, RULES_TEXT)
+                new_id = int(getattr(sent, "message_id", 0) or 0)
+                if not new_id:
+                    return
+                await db.save_event_notification("rules", 0, chat_id, 0, new_id, RULES_TEXT)
+                try:
+                    await bot.pin_chat_message(
+                        chat_id=chat_id, message_id=new_id, disable_notification=True
+                    )
+                except Exception:
+                    logger.info("Не удалось закрепить новые правила %s", chat_id, exc_info=True)
     except Exception:
         logger.info("Не удалось отправить правила %s", chat_id, exc_info=True)
 

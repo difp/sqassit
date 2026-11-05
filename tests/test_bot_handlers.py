@@ -12,6 +12,8 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.methods import EditMessageText, PinChatMessage
 
 from app import bot as botmod
 from app import database as db
@@ -724,14 +726,14 @@ def test_ensure_rules_message_recovers_from_missing_message(monkeypatch):
 
         async def edit_message_text(self, **kwargs):
             state["edited"] += 1
-            raise RuntimeError("message not found")
+            raise TelegramBadRequest(method=EditMessageText(chat_id=123, message_id=55, text="x"), message="message to edit not found")
 
         async def pin_chat_message(self, **kwargs):
             return None
 
     monkeypatch.setattr(db, "get_event_notification", fake_get)
     monkeypatch.setattr(db, "save_event_notification", fake_save)
-    asyncio.run(botmod.ensure_rules_message(RulesBot(), 123))
+    asyncio.run(botmod.ensure_rules_message(RulesBot(), 123, create_if_missing=False))
     assert state["edited"] == 1
     assert state["sent"] == 1
 
@@ -748,6 +750,92 @@ def test_ensure_rules_message_recovers_from_missing_message(monkeypatch):
 
     monkeypatch.setattr(db, "get_event_notification", broken_get)
     asyncio.run(botmod.ensure_rules_message(RulesBot(), 123))
+
+
+@pytest.mark.parametrize("create_if_missing", [True, False])
+def test_rules_recover_missing_pinned_message(monkeypatch, create_if_missing):
+    state = {"record": {"message_id": 55, "text": botmod.RULES_TEXT}, "sent": 0, "pins": []}
+
+    async def get(*args):
+        return state["record"]
+
+    async def save(*args):
+        state["record"] = {"message_id": args[4], "text": args[5]}
+
+    class Bot:
+        async def send_message(self, chat_id, text):
+            state["sent"] += 1
+            return SimpleNamespace(message_id=88)
+
+        async def pin_chat_message(self, **kwargs):
+            state["pins"].append(kwargs["message_id"])
+            if kwargs["message_id"] == 55:
+                raise TelegramBadRequest(method=PinChatMessage(chat_id=123, message_id=55), message="message to pin not found")
+
+    monkeypatch.setattr(db, "get_event_notification", get)
+    monkeypatch.setattr(db, "save_event_notification", save)
+    asyncio.run(botmod.ensure_rules_message(Bot(), 123, create_if_missing=create_if_missing))
+    assert state["sent"] == 1
+    assert state["pins"] == [55, 88]
+    assert state["record"]["message_id"] == 88
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("timeout"), TelegramBadRequest(method=PinChatMessage(chat_id=123, message_id=55), message="not enough rights")])
+def test_rules_edit_failure_does_not_create_duplicate(monkeypatch, failure):
+    saved = []
+    async def get(*args):
+        return {"message_id": 55, "text": "old"}
+    async def save(*args):
+        saved.append(args)
+    class Bot:
+        async def edit_message_text(self, **kwargs):
+            raise failure
+        async def send_message(self, *args):
+            pytest.fail("must not send duplicate")
+    monkeypatch.setattr(db, "get_event_notification", get)
+    monkeypatch.setattr(db, "save_event_notification", save)
+    asyncio.run(botmod.ensure_rules_message(Bot(), 123))
+    assert saved == []
+
+
+@pytest.mark.parametrize("replacement_id", [0, 88])
+def test_rules_replacement_failure_is_bounded(monkeypatch, replacement_id):
+    state = {"saved": [], "sent": 0, "pins": []}
+    async def get(*args):
+        return {"message_id": 55, "text": botmod.RULES_TEXT}
+    async def save(*args):
+        state["saved"].append(args[4])
+    class Bot:
+        async def send_message(self, *args):
+            state["sent"] += 1
+            return SimpleNamespace(message_id=replacement_id)
+        async def pin_chat_message(self, **kwargs):
+            state["pins"].append(kwargs["message_id"])
+            raise TelegramBadRequest(method=PinChatMessage(chat_id=123, message_id=kwargs["message_id"]), message="message to pin not found")
+    monkeypatch.setattr(db, "get_event_notification", get)
+    monkeypatch.setattr(db, "save_event_notification", save)
+    asyncio.run(botmod.ensure_rules_message(Bot(), 123))
+    assert state["sent"] == 1
+    assert state["pins"] == ([55, 88] if replacement_id else [55])
+    assert state["saved"] == ([55, 88] if replacement_id else [55])
+
+
+def test_rules_new_message_pin_failure_does_not_send_twice(monkeypatch):
+    sent = []
+    async def get(*args):
+        return None
+    async def save(*args):
+        pass
+    class Bot:
+        async def send_message(self, *args):
+            sent.append(args)
+            return SimpleNamespace(message_id=88)
+        async def pin_chat_message(self, **kwargs):
+            raise TelegramBadRequest(method=PinChatMessage(chat_id=123, message_id=88), message="message to pin not found")
+    monkeypatch.setattr(db, "get_event_notification", get)
+    monkeypatch.setattr(db, "save_event_notification", save)
+    asyncio.run(botmod.ensure_rules_message(Bot(), 123))
+    assert len(sent) == 1
 
 
 def test_ensure_rules_for_all_iterates_users(monkeypatch):

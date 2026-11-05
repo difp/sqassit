@@ -935,7 +935,7 @@ function participantRow(tid, p, own) {
     <button type="button" class="participant-open" data-profile-token="${esc(p.profile_token || '')}">
       ${avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)}
       <div style="flex:1;min-width:0">
-        <div style="font-weight:600;font-size:14px">${esc(p.first_name)}</div>
+        <div class="participant-name" style="font-weight:600;font-size:14px">${esc(p.first_name)}</div>
         ${badge}
         ${p.skill_level ? `<div class="hint">${esc(p.skill_level)}</div>` : ''}
       </div>
@@ -1009,13 +1009,16 @@ document.getElementById('list').addEventListener('click', async (ev) => {
       await refreshKeepingPlace();
     } else if (premove && row) {
       const uid = premove, tid = row.dataset.ptid;
+      const name = row.querySelector('.participant-name')?.textContent || 'Игрок';
+      if (!confirm(`Снять игрока «${name}» с тренировки?`)) return;
       haptic('medium');
       await api(`/api/coach/trainings/${tid}/participants/${uid}/cancel`, 'POST');
       hapticNotify('success');
-      toast('Игрок снят', { label: 'Вернуть', onClick: () => restoreParticipant(tid, uid) });
+      toast('Игрок снят', { label: 'Вернуть', onClick: () => restoreParticipant(tid, uid, name) });
       await refreshKeepingPlace();
     } else if (prestore && row) {
-      await restoreParticipant(row.dataset.ptid, prestore);
+      const name = row.querySelector('.participant-name')?.textContent || 'Игрок';
+      await restoreParticipant(row.dataset.ptid, prestore, name);
     }
   } catch (e) {
     hapticNotify('error');
@@ -1032,7 +1035,8 @@ async function restoreTraining(id) {
     setView('active');
   } catch (e) { hapticNotify('error'); toast(e.message); }
 }
-async function restoreParticipant(tid, uid) {
+async function restoreParticipant(tid, uid, name) {
+  if (!confirm(`Вернуть игрока «${name}» на тренировку? Если мест нет, игрок попадёт в очередь.`)) return;
   try {
     const r = await api(`/api/coach/trainings/${tid}/participants/${uid}/restore`, 'POST');
     hapticNotify('success');
