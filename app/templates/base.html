@@ -673,6 +673,8 @@
     }
     .tabs-overlay__close svg { width: 22px; height: 22px; }
     .tabs-overlay__close:active { background: #1A1A1A; }
+    .tabs-finish { background: #f6d64a; color: #161616; border: 0; border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+    .tabs-finish[hidden] { display: none; }
     .tabs-overlay__title { font-size: 15px; font-weight: 600; letter-spacing: -.01em; color: #F0EFE9; }
     .tabs-overlay__code {
       margin-inline-start: auto; padding-inline-end: 4px;
@@ -1148,6 +1150,7 @@
       </button>
       <span class="tabs-overlay__title">Турнир</span>
       <code class="tabs-overlay__code" id="tabs-code"></code>
+      <button class="tabs-finish" id="tabs-finish" type="button" hidden>Завершить турнир</button>
       <button type="button" class="tabs-overlay__close" id="tabs-share" aria-label="Поделиться турниром"
               aria-haspopup="menu" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -1659,6 +1662,7 @@
     const tabsOverlay = document.getElementById('tabs-overlay');
     const tabsFrame = document.getElementById('tabs-frame');
     const tabsCode = document.getElementById('tabs-code');
+    const tabsFinish = document.getElementById('tabs-finish');
     const tabsMenu = document.getElementById('tabs-share-menu');
     const tabsMenuCode = document.getElementById('tabs-menu-code');
     const tabsShareBtn = document.getElementById('tabs-share');
@@ -1670,6 +1674,7 @@
 
     function openTournamentRoom(code, names) {
       tabsTraining = null;
+      tabsFinish.hidden = true;
       tabsShareBtn.hidden = false;
       tabsRoom = String(code || '');
       tabsCode.textContent = tabsRoom;
@@ -1692,9 +1697,10 @@
     // Общая комната занятия хранится на сервере и использует права Telegram.
     async function openTrainingTournamentRoom(id, names, initial) {
       const data = initial || await api(`/api/trainings/${id}/tournament`);
-      const session = { id, revision: data.revision, canManage: data.can_manage,
+      const session = { id, revision: data.revision, canManage: data.can_manage && !data.state?.finished,
         state: data.state, names, pending: null, busy: false, conflict: false, saveError: false, timer: null };
       tabsTraining = session;
+      tabsFinish.hidden = !session.canManage || !data.started;
       tabsRoom = '';
       tabsCode.textContent = 'Общий турнир';
       tabsShareBtn.hidden = true;
@@ -1724,12 +1730,15 @@
           { revision: session.revision, state });
         session.revision = result.revision;
         session.saveError = false;
-        if (tabsTraining === session) tabsCode.textContent = 'Сохранено';
+        if (tabsTraining === session) {
+          tabsCode.textContent = 'Сохранено';
+          tabsFinish.hidden = !session.canManage || !state.schedule?.length;
+        }
       } catch (e) {
         session.pending = session.pending || state;
         session.saveError = true;
         if (tabsTraining === session) tabsCode.textContent = 'Не сохранено';
-        if (e.status === 409 || e.status === 403) {
+        if (e.status === 409 || e.status === 403 || e.status === 423) {
           session.conflict = true;
           toast(e.status === 409 ? 'Турнир изменён в другом окне. Скопируйте несохранённые результаты и откройте турнир заново.' : e.message);
         } else {
@@ -1748,8 +1757,9 @@
       try {
         const data = await api(`/api/trainings/${session.id}/tournament`);
         if (tabsTraining !== session || session.busy || session.pending || session.conflict) return;
-        if (session.canManage && !data.can_manage) {
+        if (session.canManage && (!data.can_manage || data.state?.finished)) {
           session.canManage = false;
+          tabsFinish.hidden = true;
           tabsFrame.contentWindow.postMessage({ type: 'sqassit-role', role: 'viewer' }, location.origin);
           toast('Турнир открыт только для просмотра.');
         }
@@ -1773,6 +1783,26 @@
       saveTrainingTournament(session);
     });
 
+    tabsFinish.addEventListener('click', async () => {
+      const session = tabsTraining;
+      if (!session || !session.canManage) return;
+      if (session.pending || session.busy || session.conflict) {
+        toast('Сначала дождитесь сохранения результатов.'); return;
+      }
+      if (!confirm('Завершить турнир? Игроки получат итоговую таблицу. После завершения изменить результаты будет нельзя.')) return;
+      tabsFinish.disabled = true;
+      try {
+        const result = await api(`/api/trainings/${session.id}/tournament/finish`, 'POST', {revision: session.revision});
+        session.revision = result.revision;
+        session.canManage = false;
+        tabsFinish.hidden = true;
+        tabsCode.textContent = 'Завершён';
+        tabsFrame.contentWindow.postMessage({ type: 'sqassit-role', role: 'viewer' }, location.origin);
+        toast('Турнир завершён. Итоговая таблица отправляется игрокам.');
+      } catch (e) { toast(e.message); }
+      finally { tabsFinish.disabled = false; }
+    });
+
     function closeTabs() {
       if (tabsTraining && (tabsTraining.pending || tabsTraining.busy)) {
         if (!(tabsTraining.conflict || tabsTraining.saveError) || !confirm('Изменения турнира не сохранены. Закрыть без сохранения?')) {
@@ -1784,6 +1814,7 @@
       tabsTraining = null;
       tabsFrame.onload = null;
       tabsShareBtn.hidden = false;
+      tabsFinish.hidden = true;
       tabsOverlay.hidden = true;
       tabsMenu.hidden = true;
       tabsShareBtn.setAttribute('aria-expanded', 'false');

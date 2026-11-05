@@ -56,11 +56,11 @@ def test_disclosures_use_aligned_dots() -> None:
 def test_coach_participants_open_by_default() -> None:
     coach = (TEMPLATES / "coach.html").read_text()
 
-    # Своё и чужое занятие: список участников раскрыт сразу после загрузки.
-    assert coach.count('data-pid="${t.id}" open') == 2
+    # На карточке занятия список участников раскрыт сразу после загрузки.
+    assert coach.count('data-pid="${t.id}" open') == 1
     assert "hydrateParticipants();" in coach
     # Заявки видны на карточке, а не только внутри раскрытого списка.
-    assert coach.count('badge badge--warn">Заявки: ${pending}') == 2
+    assert coach.count('badge badge--warn">Заявки: ${pending}') == 1
 
 
 def test_coach_tab_has_pending_badge() -> None:

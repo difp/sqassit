@@ -2985,6 +2985,7 @@ def test_deleted_training_alerts_players_on_edited_message(monkeypatch):
     monkeypatch.setattr(mainmod, "_send_event_notification", send)
     monkeypatch.setattr(mainmod, "_send_user_message", alert)
     monkeypatch.setattr(mainmod, "_delete_training_status_messages", noop)
+    monkeypatch.setattr(mainmod.db, "expire_event_notifications", noop)
 
     asyncio.run(mainmod._notify_training_deleted(training))
     assert len(alerts) == 1
@@ -3343,6 +3344,7 @@ def test_suppressed_event_notifications(monkeypatch):
     monkeypatch.setattr(mainmod.db, "get_user", a_user)
     monkeypatch.setattr(mainmod.db, "list_managers", no_managers)
     monkeypatch.setattr(mainmod, "_delete_training_status_messages", noop)
+    monkeypatch.setattr(mainmod.db, "expire_event_notifications", noop)
     monkeypatch.setattr(mainmod.app.state, "bot", SimpleNamespace(send_message=fake_send))
 
     asyncio.run(mainmod._notify_training_deleted(training))
@@ -4583,3 +4585,148 @@ def test_unaccepted_queue_vacancy_announced_after_rejection_and_cancellation(cli
     assert client.post(f"/api/coach/trainings/{tid}/participants/555/cancel", headers=COACH).status_code == 200
     client.portal.call(asyncio.sleep, 0.03)
     assert (tid, 555) in notices
+
+
+def test_tournament_notification_only_confirmed_and_once(client, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(mainmod, "settings", replace(settings, require_event_approval=True))
+    third = {"X-Init-Data": _init({"id": 559, "first_name": "Третий"})}
+    muted = {"X-Init-Data": _init({"id": 560, "first_name": "Без уведомлений"})}
+    for headers in (PLAYER, PLAYER2, third, muted):
+        client.get("/api/me", headers=headers)
+    tid = _create_training(client, day=3, time_str="19:00", capacity=4)
+    for user_id, status in ((555, "booked"), (556, "pending"), (559, "waitlist"), (560, "booked")):
+        client.portal.call(mainmod.db._execute,
+            "INSERT INTO bookings (training_id,user_id,status,created_at) VALUES (?,?,?,?)",
+            (tid, user_id, status, int(time.time())))
+    client.put("/api/me/notifications", headers=muted, json={"enabled": False})
+    sent = []
+
+    async def fake_send(chat_id, text, **kwargs):
+        sent.append((chat_id, text, kwargs))
+        return SimpleNamespace(message_id=1000 + len(sent))
+
+    monkeypatch.setattr(mainmod.app.state.bot, "send_message", fake_send)
+    url = f"/api/trainings/{tid}/tournament"
+    draft = {"players": ["Иван", "Мария"], "schedule": [], "scores": {}}
+    grid = {**draft, "schedule": [{"courts": [[0, 1]], "resting": []}]}
+    assert client.put(url, headers=COACH, json={"revision": 0, "state": draft}).status_code == 200
+    client.portal.call(asyncio.sleep, 0.03)
+    assert sent == []
+    assert client.put(url, headers=COACH, json={"revision": 1, "state": grid}).status_code == 200
+    client.portal.call(asyncio.sleep, 0.05)
+    notices = [item for item in sent if "Сетка матчей" in item[1]]
+    assert [item[0] for item in notices] == [555]
+    button = notices[0][2]["reply_markup"].inline_keyboard[0][0]
+    assert button.text == "Открыть сетку" and f"tournament={tid}" in button.web_app.url
+    client.portal.call(mainmod._notify_training_tournament_player, tid, 555)
+    assert len([item for item in sent if "Сетка матчей" in item[1]]) == 1
+    assert client.put(url, headers=COACH, json={"revision": 2, "state": {**grid, "scores": {"0-0": {"a": 1}}}}).status_code == 200
+    client.portal.call(asyncio.sleep, 0.05)
+    assert len([item for item in sent if "Сетка матчей" in item[1]]) == 1
+    assert client.post(f"/api/coach/trainings/{tid}/participants/556/approve", headers=COACH).status_code == 200
+    client.portal.call(asyncio.sleep, 0.1)
+    notices = [item for item in sent if "Сетка матчей" in item[1]]
+    assert [item[0] for item in notices] == [555, 556]
+    assert client.put(url, headers=COACH, json={"revision": 3, "state": draft}).status_code == 200
+    row = client.portal.call(mainmod.db.get_event_notification, "training_tournament", tid, 555, 555)
+    assert row["delete_at"] <= int(time.time())
+
+
+def test_tournament_notice_handles_expired_message_and_cancellation_race(client, monkeypatch):
+    client.get("/api/me", headers=PLAYER)
+    tid = _create_training(client, day=3, time_str="19:00", capacity=4)
+    client.portal.call(mainmod.db.book_training, tid, 555, 4)
+    grid = {"players": ["Иван", "Мария"], "schedule": [{"courts": [[0, 1]], "resting": []}], "scores": {}}
+    assert client.portal.call(mainmod.db.save_training_tournament, tid, json.dumps(grid), 0, True)
+
+    async def save_expired():
+        await mainmod.db.save_event_notification(
+            "training_tournament", tid, 555, 555, 9, "old", delete_at=int(time.time()) - 1,
+        )
+
+    client.portal.call(save_expired)
+    sent = []
+
+    async def fail_delete(*args):
+        raise RuntimeError("timeout")
+
+    async def failing_send(*args, **kwargs):
+        raise RuntimeError("network timeout")
+
+    async def deleted(*args):
+        return True
+
+    monkeypatch.setattr(mainmod.app.state.bot, "delete_message", fail_delete)
+    monkeypatch.setattr(mainmod.app.state.bot, "send_message", failing_send)
+    client.portal.call(mainmod._notify_training_tournament_player, tid, 555)
+    assert client.portal.call(mainmod.db.get_event_notification, "training_tournament", tid, 555, 555)["message_id"] == 9
+    monkeypatch.setattr(mainmod.app.state.bot, "delete_message", deleted)
+    client.portal.call(mainmod._notify_training_tournament_player, tid, 555)
+    assert client.portal.call(mainmod.db.get_event_notification, "training_tournament", tid, 555, 555) is None
+
+    async def race_send(chat_id, text, **kwargs):
+        sent.append(chat_id)
+        await mainmod.db._execute("UPDATE bookings SET status='cancelled' WHERE training_id=? AND user_id=?", (tid, 555))
+        return SimpleNamespace(message_id=11)
+
+    monkeypatch.setattr(mainmod.app.state.bot, "send_message", race_send)
+    client.portal.call(mainmod._notify_training_tournament_player, tid, 555)
+    assert sent == [555]
+    row = client.portal.call(mainmod.db.get_event_notification, "training_tournament", tid, 555, 555)
+    assert row["delete_at"] <= int(time.time())
+
+
+def test_tournament_finish_requires_coach_confirmation_and_sends_final_image(client, monkeypatch):
+    client.get("/api/me", headers=PLAYER)
+    tid = _create_training(client, day=3, time_str="19:00", capacity=4)
+    client.portal.call(mainmod.db.book_training, tid, 555, 4)
+    sent, edited, photos = [], [], []
+
+    async def send(chat, text, **kwargs):
+        sent.append((chat, text, kwargs))
+        return SimpleNamespace(message_id=101)
+
+    async def edit(**kwargs):
+        edited.append(kwargs)
+
+    async def photo(chat, image, **kwargs):
+        photos.append((chat, image, kwargs))
+        return SimpleNamespace(message_id=102)
+
+    monkeypatch.setattr(mainmod.app.state.bot, "send_message", send)
+    monkeypatch.setattr(mainmod.app.state.bot, "edit_message_text", edit)
+    monkeypatch.setattr(mainmod.app.state.bot, "send_photo", photo)
+    url = f"/api/trainings/{tid}/tournament"
+    assert client.post("/api/trainings/999999/tournament/finish", headers=COACH, json={"revision": 0}).status_code == 404
+    assert client.post(url + "/finish", headers=COACH, json={"revision": 0}).status_code == 400
+    state = {"players": ["Илья", "Марго"], "schedule": [{"courts": [[0, 1]]}], "scores": {}}
+    assert client.put(url, headers=COACH, json={"revision": 0, "state": state}).status_code == 200
+    client.portal.call(asyncio.sleep, 0.1)
+    assert len(sent) == 1 and "Илья — Марго" in sent[0][1]
+    assert client.post(url + "/finish", headers=PLAYER, json={"revision": 1}).status_code == 403
+    assert client.post(url + "/finish", headers=COACH, json={"revision": 1}).status_code == 400
+    assert photos == []
+    state["scores"] = {"0-0": {"a": 11, "b": 2}}
+    assert client.put(url, headers=COACH, json={"revision": 1, "state": state}).status_code == 200
+    client.portal.call(asyncio.sleep, 0.1)
+    assert len(sent) == 1 and any("11 : 2" in item["text"] for item in edited)
+    assert photos == []
+    assert client.post(url + "/finish", headers=COACH, json={"revision": 1}).status_code == 409
+    original_save = mainmod.db.save_training_tournament
+    async def conflict(*args, **kwargs):
+        return False
+    monkeypatch.setattr(mainmod.db, "save_training_tournament", conflict)
+    assert client.post(url + "/finish", headers=COACH, json={"revision": 2}).status_code == 409
+    monkeypatch.setattr(mainmod.db, "save_training_tournament", original_save)
+    assert client.post(url + "/finish", headers=COACH, json={"revision": 2}).status_code == 200
+    client.portal.call(asyncio.sleep, 0.3)
+    assert len(photos) == 1 and photos[0][0] == 555
+    assert photos[0][1].filename == "standings.png"
+    row = client.portal.call(mainmod.db.get_event_notification, "training_tournament_final", tid, 555, 555)
+    assert row["message_id"] == 102
+    assert client.post(url + "/finish", headers=COACH, json={"revision": 3}).status_code == 200
+    client.portal.call(asyncio.sleep, 0.1)
+    assert len(photos) == 1
+    assert client.put(url, headers=COACH, json={"revision": 3, "state": state}).status_code == 423

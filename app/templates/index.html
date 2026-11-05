@@ -786,7 +786,16 @@ window.PAGE_REFRESH = async () => {
 
 Promise.allSettled([loadProfile(), loadSchedule(), loadTournamentHistory()]).then(() => {
   hideAppLoader();
-  setTimeout(maybeShowOnboarding, 350);
+  const params = new URLSearchParams(location.search);
+  const tournament = params.get('tournament');
+  if (tournament && /^[1-9]\d*$/.test(tournament)) {
+    params.delete('tournament');
+    const query = params.toString();
+    history.replaceState(history.state, '', location.pathname + (query ? '?' + query : '') + location.hash);
+    openTrainingTournament(tournament);
+  } else {
+    setTimeout(maybeShowOnboarding, 350);
+  }
 });
 </script>
 {% endblock %}

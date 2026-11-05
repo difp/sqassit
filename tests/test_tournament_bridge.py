@@ -15,6 +15,7 @@ const assert = require('assert');
 const calls = [], scheduled = [];
 let resolveFirst;
 const tabsCode = {textContent:''};
+const tabsFinish = {hidden: true};
 let tabsTraining = {id: 4, revision: 0, canManage: true, busy: false, conflict: false,
                     pending:{scores: {'0-0': {a: 1}}}};
 function api(path, method, body) {

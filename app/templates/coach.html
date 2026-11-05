@@ -28,7 +28,6 @@
     <button type="button" data-view="active" class="is-active">Активные</button>
     <button type="button" data-view="history">История</button>
     <button type="button" data-view="deleted">Корзина</button>
-    <button type="button" data-view="club">Око</button>
   </div>
 
   <div id="list">
@@ -107,7 +106,7 @@
         <input class="input" id="coach-input" placeholder="telegram_id или @username" autocomplete="off">
       </label>
       <button class="btn btn--primary btn--block" id="coach-add">Добавить тренера</button>
-      <p class="hint hint--tight">Добавить можно только после /start. Администратора снять нельзя; чужие занятия видны в режиме «Око».</p>
+      <p class="hint hint--tight">Добавить можно только после /start. Администратора снять нельзя.</p>
     </div>
   </section>
 </div>
@@ -693,8 +692,7 @@ async function loadView() {
   }
   const url = VIEW === 'active' ? '/api/coach/trainings'
     : VIEW === 'history' ? '/api/coach/history'
-      : VIEW === 'deleted' ? '/api/coach/deleted'
-        : '/api/coach/club/trainings';
+      : '/api/coach/deleted';
   try {
     const data = await api(url);
     cacheWrite(cacheName, data.trainings);
@@ -750,14 +748,13 @@ function renderList() {
     list.innerHTML = emptyState(
       VIEW === 'active' ? 'Предстоящих тренировок нет. Создайте кнопкой «＋».'
         : VIEW === 'history' ? 'История пуста.'
-          : VIEW === 'deleted' ? 'Корзина пуста.'
-            : 'У других тренеров занятий нет.');
+          : 'Корзина пуста.');
     hideAppLoader();
     return;
   }
   const render = VIEW === 'active' ? activeRow
     : VIEW === 'history' ? historyRow
-      : VIEW === 'deleted' ? deletedRow : clubRow;
+      : deletedRow;
   list.innerHTML = TRAININGS.map(render).join('');
   HYDRATION = hydrateParticipants();
   hideAppLoader();
@@ -884,31 +881,6 @@ function deletedRow(t) {
       <button class="btn btn--primary" data-restore="${t.id}">Восстановить</button>
       <button class="btn btn--danger" data-purge="${t.id}">Удалить навсегда</button>
     </div>
-  </div>`;
-}
-
-// ---------- Око (чужое, только чтение) ----------
-function clubRow(t) {
-  const coach = t.coach ? esc(t.coach.first_name) : 'Тренер';
-  const avatar = t.coach ? avatarHtml(t.coach.first_name, t.coach.avatar_url, true) : '';
-  const pending = t.pending_count || 0;
-  return `
-  <div class="card">
-    <div class="t-top">
-      <div class="t-time-line"><div class="t-time">${esc(t.time)}</div>${trainingLiveIndicator(t)}</div>
-      <div class="t-occ"><b>${t.booked_count}</b> из ${t.capacity} мест</div>
-    </div>
-    <div class="t-title">${esc(t.type)}${pending ? ` <span class="badge badge--warn">Заявки: ${pending}</span>` : ''}</div>
-    <div class="t-meta">${dateAndLevel(t.date, t.level)}</div>
-    <div class="t-coach" style="cursor:default">
-      ${avatar}
-      <div class="t-coach__text"><div class="t-coach__name">Тренер · ${coach}</div></div>
-      <span class="badge badge--muted">Только чтение</span>
-    </div>
-    <details class="disclosure" data-pid="${t.id}" open>
-      <summary>Участники${pending ? ` · заявок ${pending}` : ''}</summary>
-      <div data-plist="${t.id}"><div class="hint" style="padding:10px 0">Загрузка…</div></div>
-    </details>
   </div>`;
 }
 

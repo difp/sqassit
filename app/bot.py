@@ -59,7 +59,7 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-WEB_APP_VERSION = "50"
+WEB_APP_VERSION = "51"
 
 
 def _web_app_url() -> str:
@@ -71,6 +71,15 @@ def _web_app_url() -> str:
     # заметных обновлений интерфейса. Меняйте при крупных релизах.
     separator = "&" if "?" in base else "?"
     return f"{base}{separator}v={WEB_APP_VERSION}"
+
+
+def _training_tournament_url(training_id: int) -> str:
+    """Открывает сетку занятия в мини-приложении участника."""
+    parts = urlsplit(_web_app_url())
+    query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)
+             if key != "tournament"]
+    query.append(("tournament", str(training_id)))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 def _coach_training_url(training_id: int) -> str:

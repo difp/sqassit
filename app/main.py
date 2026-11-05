@@ -25,7 +25,13 @@ from typing import Annotated, Any, Literal, cast
 from urllib.parse import urlencode
 
 import aiosqlite
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from aiogram.types import (
+    BufferedInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+    WebAppInfo,
+)
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -34,6 +40,7 @@ from pydantic import BaseModel, Field
 
 from . import bot as bot_module
 from . import database as db
+from . import tournament_summary
 from .avatars import (
     AVATAR_URL_TTL_SECONDS,
     AvatarCache,
@@ -538,6 +545,10 @@ class TrainingIn(BaseModel):
     reminder_enabled: bool = True
     reminder_offset_min: int = Field(default=DEFAULT_REMINDER_OFFSET_MINUTES, ge=0, le=2880)
     force: bool = False  # подтверждение при возможном дубле
+
+
+class TournamentFinishIn(BaseModel):
+    revision: int = Field(ge=0)
 
 
 class TournamentStateIn(BaseModel):
@@ -1210,8 +1221,48 @@ async def api_save_training_tournament(
         return error_json("Некорректные данные турнира", 422)
     if len(raw.encode("utf-8")) > 512_000:
         return error_json("Данные турнира слишком велики", 413)
-    if not await db.save_training_tournament(training_id, raw, payload.revision, bool(state["schedule"])):
+    previous = await db.get_training_tournament(training_id)
+    was_started = bool(previous and previous["started"])
+    if previous and json.loads(previous["state_json"]).get("finished"):
+        return error_json("Турнир завершён; результаты больше нельзя изменять.", 423)
+    # Завершение доступно только через отдельное подтверждённое действие.
+    state.pop("finished", None)
+    raw = json.dumps(state, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    started = bool(state["schedule"])
+    if not await db.save_training_tournament(training_id, raw, payload.revision, started):
         return error_json("Турнир уже изменён в другом окне. Обновите данные.", 409)
+    if started:
+        _spawn(_notify_training_tournament(training_id))
+    elif was_started and not started:
+        await db.expire_event_notifications("training_tournament", training_id)
+    return {"ok": True, "revision": payload.revision + 1}
+
+
+@app.post("/api/trainings/{training_id}/tournament/finish")
+async def api_finish_training_tournament(
+    training_id: int, payload: TournamentFinishIn,
+    user: Annotated[dict, Depends(current_user)],
+):
+    training = await db.get_training(training_id)
+    if training is None or training["deleted_at"]:
+        return error_json("Тренировка не найдена", 404)
+    if not user.get("is_coach") or not await _can_manage_training(training, user["telegram_id"]):
+        return error_json("Завершить турнир может только тренер занятия", 403)
+    row = await db.get_training_tournament(training_id)
+    if row is None or not row["started"]:
+        return error_json("Сначала создайте сетку", 400)
+    state = json.loads(row["state_json"])
+    if row["revision"] != payload.revision:
+        return error_json("Турнир изменён в другом окне. Обновите данные.", 409)
+    if state.get("finished"):
+        return {"ok": True, "revision": row["revision"]}
+    if not tournament_summary.complete(state):
+        return error_json("Сначала завершите все матчи, включая плей-офф.", 400)
+    state["finished"] = True
+    raw = json.dumps(state, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    if not await db.save_training_tournament(training_id, raw, payload.revision, True):
+        return error_json("Турнир изменён в другом окне. Обновите данные.", 409)
+    _spawn(_notify_training_tournament(training_id))
     return {"ok": True, "revision": payload.revision + 1}
 
 
@@ -3131,6 +3182,11 @@ async def _notify_training_event(
         else ""
     )
     if user_id is not None:
+        if status in {"booked", "promoted"}:
+            _spawn(_notify_training_tournament_player(int(training["id"]), user_id))
+        else:
+            await db.expire_event_notifications("training_tournament", training["id"], user_id)
+            await db.expire_event_notifications("training_tournament_final", training["id"], user_id)
         if status not in {"booked", "promoted"}:
             await db.expire_event_notifications("training_reminder", training["id"], user_id)
         await _ensure_training_status_message(
@@ -3197,6 +3253,78 @@ async def _notify_training_event(
                 await _send_user_message(recipient, alert_text, reply_markup=keyboard)
 
 
+async def _notify_training_tournament_player(training_id: int, user_id: int) -> None:
+    """Отправляет одну актуальную ссылку подтверждённому участнику."""
+    async with _training_request_lock():
+        training = await db.get_training(training_id)
+        tournament = await db.get_training_tournament(training_id)
+        booking = await db.get_booking(training_id, user_id)
+        now = int(time.time())
+        if (training is None or training["deleted_at"] or tournament is None
+                or not tournament["started"] or booking is None or booking["status"] != "booked"
+                or _training_delete_at(training) <= now
+                or not await _notifications_allowed(user_id, "trainings")):
+            return
+        existing = await db.get_event_notification("training_tournament", training_id, user_id, user_id)
+        if existing is not None and (existing["delete_at"] or 0) <= now:
+            await _delete_notification_row(existing)
+            if await db.get_event_notification("training_tournament", training_id, user_id, user_id) is not None:
+                return
+            existing = None
+        coach_name = await _training_coach_name(training)
+        state = json.loads(tournament["state_json"])
+        heading = _training_player_header(training, coach_name) + "\n" + _training_datetime(training)
+        text = tournament_summary.message(state, heading)
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="Открыть сетку", web_app=WebAppInfo(
+                url=bot_module._training_tournament_url(training_id)))
+        ]])
+        try:
+            if existing is not None and existing["message_id"]:
+                if existing["text"] != text:
+                    await app.state.bot.edit_message_text(
+                        text=text, chat_id=user_id, message_id=existing["message_id"], reply_markup=keyboard,
+                    )
+                    await db.update_event_notification_text("training_tournament", training_id, user_id, user_id, text)
+            else:
+                await bot_module.send_temporary_notification(
+                    app.state.bot, user_id, text, kind="training_tournament", entity_id=training_id,
+                    user_id=user_id, delete_at=min(_training_delete_at(training), now + 86400),
+                    reply_markup=keyboard,
+                )
+            if state.get("finished"):
+                final = await db.get_event_notification("training_tournament_final", training_id, user_id, user_id)
+                if final is None:
+                    picture = await asyncio.to_thread(tournament_summary.image, state)
+                    sent = await app.state.bot.send_photo(
+                        user_id, BufferedInputFile(picture, filename="standings.png"),
+                        caption="Итоговая таблица турнира", reply_markup=keyboard,
+                    )
+                    message_id = int(getattr(sent, "message_id", 0) or 0)
+                    if message_id:
+                        await db.save_event_notification(
+                            "training_tournament_final", training_id, user_id, user_id,
+                            message_id, "Итоговая таблица турнира",
+                            delete_at=min(_training_delete_at(training), now + 86400),
+                        )
+            current_training = await db.get_training(training_id)
+            current_tournament = await db.get_training_tournament(training_id)
+            current_booking = await db.get_booking(training_id, user_id)
+            if (current_training is None or current_training["deleted_at"] or current_tournament is None
+                    or not current_tournament["started"] or current_booking is None
+                    or current_booking["status"] != "booked"):
+                await db.expire_event_notifications("training_tournament", training_id, user_id)
+                await db.expire_event_notifications("training_tournament_final", training_id, user_id)
+        except Exception:
+            logger.info("Не удалось отправить уведомление о сетке", exc_info=True)
+
+
+async def _notify_training_tournament(training_id: int) -> None:
+    for participant in await db.get_participants(training_id):
+        if participant["status"] == "booked":
+            await _notify_training_tournament_player(training_id, int(participant["telegram_id"]))
+
+
 async def _notify_training_vacancy(training: aiosqlite.Row, excluded_user: int) -> None:
     """Сообщает о месте игрокам того же уровня, когда очередь пуста."""
     training_id = int(training["id"])
@@ -3257,6 +3385,8 @@ async def _notify_training_deleted(training: aiosqlite.Row) -> None:
     participants = await db.get_participants(training["id"])
     coach_name = await _training_coach_name(training)
     await _delete_training_status_messages(training["id"])
+    await db.expire_event_notifications("training_tournament", training["id"])
+    await db.expire_event_notifications("training_tournament_final", training["id"])
     if training["created_by"] and await _notifications_allowed(
         training["created_by"], "trainings"
     ):
