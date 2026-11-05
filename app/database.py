@@ -114,6 +114,15 @@ CREATE TABLE IF NOT EXISTS bookings (
 CREATE INDEX IF NOT EXISTS idx_trainings_start ON trainings(start_at);
 CREATE INDEX IF NOT EXISTS idx_bookings_training ON bookings(training_id, status, position);
 
+CREATE TABLE IF NOT EXISTS training_tournaments (
+    training_id INTEGER PRIMARY KEY,
+    state_json TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    started INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+);
+
+
 CREATE TABLE IF NOT EXISTS coaches (
     telegram_id INTEGER PRIMARY KEY,
     added_by    INTEGER,                 -- кто выдал доступ (telegram_id), NULL для владельца
@@ -980,6 +989,47 @@ async def get_training(training_id: int) -> aiosqlite.Row | None:
     return await _fetchone("SELECT * FROM trainings WHERE id = ?", (training_id,))
 
 
+async def list_user_tournaments(user_id: int, now: int) -> list[aiosqlite.Row]:
+    return await _fetchall(
+        "SELECT t.* FROM trainings t "
+        "JOIN training_tournaments st ON st.training_id = t.id AND st.started = 1 "
+        "JOIN bookings b ON b.training_id = t.id AND b.user_id = ? AND b.status = 'booked' "
+        "WHERE t.deleted_at IS NULL AND t.start_at + t.duration_min * 60 <= ? ORDER BY t.start_at DESC LIMIT 100",
+        (user_id, now),
+    )
+
+
+async def get_training_tournament(training_id: int) -> aiosqlite.Row | None:
+    return await _fetchone(
+        "SELECT state_json, revision, started, updated_at FROM training_tournaments WHERE training_id = ?",
+        (training_id,),
+    )
+
+
+async def save_training_tournament(
+    training_id: int, state_json: str, expected_revision: int, started: bool
+) -> bool:
+    """Атомарная запись с проверкой версии при одновременной работе тренеров."""
+    db = _db()
+    async with _lock:
+        if expected_revision == 0:
+            cursor = await db.execute(
+                "INSERT OR IGNORE INTO training_tournaments "
+                "(training_id, state_json, revision, started, updated_at) VALUES (?, ?, 1, ?, ?)",
+                (training_id, state_json, int(started), int(time.time())),
+            )
+        else:
+            cursor = await db.execute(
+                "UPDATE training_tournaments SET state_json = ?, revision = revision + 1, "
+                "started = ?, updated_at = ? WHERE training_id = ? AND revision = ?",
+                (state_json, int(started), int(time.time()), training_id, expected_revision),
+            )
+        changed = cursor.rowcount == 1
+        await cursor.close()
+        await db.commit()
+        return changed
+
+
 async def get_training_room(training_id: int) -> str | None:
     """Код комнаты турнира для занятия (None, если ещё не создавали)."""
     row = await _fetchone(
@@ -1016,9 +1066,11 @@ async def list_upcoming_trainings(now: int, until: int) -> list[aiosqlite.Row]:
         """
         SELECT t.*,
                (SELECT COUNT(*) FROM bookings b
-                 WHERE b.training_id = t.id AND b.status = 'booked') AS booked_count
+                 WHERE b.training_id = t.id AND b.status = 'booked') AS booked_count,
+               EXISTS(SELECT 1 FROM training_tournaments st
+                       WHERE st.training_id = t.id AND st.started = 1) AS tournament_started
           FROM trainings t
-         WHERE t.start_at >= ? AND t.start_at <= ? AND t.deleted_at IS NULL
+         WHERE t.start_at + t.duration_min * 60 > ? AND t.start_at <= ? AND t.deleted_at IS NULL
          ORDER BY t.start_at ASC
         """,
         (now, until),
@@ -1035,7 +1087,7 @@ async def list_active_trainings(now: int, owner_id: int) -> list[aiosqlite.Row]:
                (SELECT COUNT(*) FROM bookings b
                  WHERE b.training_id = t.id AND b.status = 'waitlist') AS waitlist_count
           FROM trainings t
-         WHERE t.start_at >= ? AND t.deleted_at IS NULL
+         WHERE t.start_at + t.duration_min * 60 > ? AND t.deleted_at IS NULL
            AND (
                t.created_by = ?
                OR EXISTS (
@@ -1059,13 +1111,14 @@ async def list_history_trainings(
                (SELECT COUNT(*) FROM bookings b
                  WHERE b.training_id = t.id AND b.status = 'booked') AS booked_count,
                (SELECT COUNT(*) FROM bookings b
-                 WHERE b.training_id = t.id AND b.status = 'waitlist') AS waitlist_count
+                 WHERE b.training_id = t.id AND b.status = 'waitlist') AS waitlist_count,
+               EXISTS(SELECT 1 FROM training_tournaments st WHERE st.training_id = t.id AND st.started = 1) AS tournament_started
           FROM trainings t
-         WHERE t.start_at < ? AND t.deleted_at IS NULL AND t.created_by = ?
+         WHERE t.start_at + t.duration_min * 60 <= ? AND t.deleted_at IS NULL AND (t.created_by = ? OR EXISTS (SELECT 1 FROM event_coauthors c WHERE c.event_type = 'training' AND c.event_id = t.id AND c.user_id = ?))
          ORDER BY t.start_at DESC
          LIMIT ?
         """,
-        (now, owner_id, limit),
+        (now, owner_id, owner_id, limit),
     )
 
 
@@ -1113,7 +1166,7 @@ async def list_other_active_trainings(now: int, coach_id: int) -> list[aiosqlite
                (SELECT COUNT(*) FROM bookings b
                  WHERE b.training_id = t.id AND b.status = 'waitlist') AS waitlist_count
           FROM trainings t
-         WHERE t.start_at >= ? AND t.deleted_at IS NULL AND t.created_by != ?
+         WHERE t.start_at + t.duration_min * 60 > ? AND t.deleted_at IS NULL AND t.created_by != ?
          ORDER BY t.start_at ASC
         """,
         (now, coach_id),
@@ -1152,6 +1205,7 @@ async def purge_training(training_id: int) -> None:
     async with _lock:
         await db.execute("DELETE FROM reminder_deliveries WHERE training_id = ?", (training_id,))
         await db.execute("DELETE FROM bookings WHERE training_id = ?", (training_id,))
+        await db.execute("DELETE FROM training_tournaments WHERE training_id = ?", (training_id,))
         await db.execute("DELETE FROM trainings WHERE id = ?", (training_id,))
         await db.execute(
             """
@@ -1974,6 +2028,15 @@ async def expire_event_notifications(kind: str, entity_id: int, chat_id: int | N
         "UPDATE event_notifications SET delete_at = ? "
         "WHERE kind = ? AND entity_id = ? AND (? IS NULL OR chat_id = ?)",
         (int(time.time()), kind, entity_id, chat_id, chat_id),
+    )
+
+
+async def expire_training_request_notifications(training_id: int, user_id: int) -> None:
+    """Помечает уведомления тренеров об уже рассмотренной заявке."""
+    await _execute(
+        "UPDATE event_notifications SET delete_at = ? "
+        "WHERE kind = 'training_request' AND entity_id = ? AND user_id = ?",
+        (int(time.time()), training_id, user_id),
     )
 
 

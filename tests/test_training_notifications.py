@@ -887,3 +887,51 @@ def test_pending_training_button_opens_coach_and_specific_training(monkeypatch):
         "source": ["bot"], "v": [mainmod.bot_module.WEB_APP_VERSION], "training": ["42"]
     }
     assert urlsplit(mainmod.bot_module._web_app_url()).path == "/app"
+
+
+def test_request_alert_checks_status_and_deduplicates(bot, monkeypatch):
+    sent = []
+    state = {"status": "pending", "existing": None}
+
+    async def booking(*args):
+        return {"status": state["status"]} if state["status"] else None
+
+    async def existing(*args):
+        return state["existing"]
+
+    async def send(*args, **kwargs):
+        sent.append((args, kwargs))
+
+    monkeypatch.setattr(db, "get_booking", booking)
+    monkeypatch.setattr(db, "get_event_notification", existing)
+    monkeypatch.setattr(mainmod.bot_module, "send_temporary_notification", send)
+
+    async def run():
+        await mainmod._send_training_request_alert(123, 1, 555, "Заявка")
+        assert len(sent) == 1
+        assert sent[0][1]["user_id"] == 555
+        state["existing"] = {"message_id": 101}
+        await mainmod._send_training_request_alert(123, 1, 555, "Заявка")
+        state["status"] = "booked"
+        await mainmod._send_training_request_alert(123, 1, 555, "Заявка")
+        state["status"] = None
+        await mainmod._send_training_request_alert(123, 1, 555, "Заявка")
+        assert len(sent) == 1
+
+        async def fail(*args):
+            raise RuntimeError("database unavailable")
+        monkeypatch.setattr(db, "get_booking", fail)
+        await mainmod._send_training_request_alert(123, 1, 555, "Заявка")
+    asyncio.run(run())
+
+
+def test_stale_pending_event_does_not_send_notification(monkeypatch):
+    async def participants(_id):
+        return [_person(status="booked")]
+
+    async def name(_training):
+        return "Тренер"
+
+    monkeypatch.setattr(db, "get_participants", participants)
+    monkeypatch.setattr(mainmod, "_training_coach_name", name)
+    asyncio.run(mainmod._notify_training_event(_training(), 555, "pending", actor_id=555))

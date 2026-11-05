@@ -59,7 +59,7 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-WEB_APP_VERSION = "48"
+WEB_APP_VERSION = "49"
 
 
 def _web_app_url() -> str:
@@ -96,7 +96,8 @@ RULES_TEXT = (
 
 async def send_temporary_notification(
     bot: Bot, chat_id: int, text: str, *, kind: str = "notice",
-    entity_id: int | None = None, delete_at: int | None = None, **kwargs,
+    entity_id: int | None = None, user_id: int | None = None,
+    delete_at: int | None = None, **kwargs,
 ):
     """Отправляет уведомление и планирует удаление через сутки."""
     sent = await bot.send_message(chat_id, text, **kwargs)
@@ -104,7 +105,7 @@ async def send_temporary_notification(
     if message_id:
         await db.save_event_notification(
             kind, message_id if entity_id is None else entity_id,
-            chat_id, chat_id, message_id, text,
+            chat_id, chat_id if user_id is None else user_id, message_id, text,
             delete_at=delete_at or int(time.time()) + 86400,
         )
     return sent

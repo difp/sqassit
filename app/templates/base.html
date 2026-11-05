@@ -325,6 +325,18 @@
       font-size: 22px; font-weight: 600; letter-spacing: -.01em; line-height: 1.15;
       font-variant-numeric: tabular-nums;
     }
+    .t-time-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+    .training-live {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 7px; border-radius: 999px;
+      background: var(--danger-soft); color: var(--danger);
+      font-size: 10px; font-weight: 700; line-height: 1; letter-spacing: .04em;
+    }
+    .training-live__dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; }
+    @media (prefers-reduced-motion: no-preference) {
+      .training-live__dot { animation: training-live-pulse 2s ease-in-out infinite; }
+      @keyframes training-live-pulse { 50% { opacity: .4; } }
+    }
     .t-title {
       font-weight: 600; font-size: 17px; line-height: 1.3; letter-spacing: -.01em;
       margin-top: 2px; overflow-wrap: break-word;
@@ -404,6 +416,17 @@
     .list-action__chevron { margin-inline-start: auto; color: var(--text-3); }
     .list-action--danger { color: var(--danger); }
     /* Строка-переход в другое приложение: подпись в две строки. */
+    .training-grid-action {
+      display: inline-flex; align-items: center; min-height: 44px; margin: 4px 0 -4px;
+      padding: 4px 0; border: 0; background: transparent; color: var(--accent-ink);
+      cursor: pointer; font: inherit;
+    }
+    .training-grid-action__label {
+      display: inline-flex; align-items: center; padding: 6px 11px;
+      border: 1px solid var(--border); border-radius: 999px;
+      background: var(--surface); font-size: 12px; font-weight: 600; line-height: 1.2;
+    }
+    .training-grid-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 999px; }
     .tournament-row { margin-top: 12px; }
     .list-action__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
     .list-action__hint { font-size: 12px; font-weight: 400; color: var(--text-3); }
@@ -1495,7 +1518,31 @@
     // повторное обновление профиля не теряло контейнер.
     // Турнир — переход не в другое приложение, а в полноэкранный слой
     // с локальной сборкой squashtabs. Одна разметка для занятий и матчей.
-    function tournamentRow(id) {
+    function trainingIsLive(start, duration, now = Date.now() / 1000) {
+      return Number.isFinite(start) && Number.isFinite(duration) && duration > 0 &&
+        start <= now && now < start + duration * 60;
+    }
+
+    function trainingLiveIndicator(training) {
+      const start = Number(training.start_at);
+      const duration = Number(training.duration_min);
+      if (!Number.isFinite(start) || !Number.isFinite(duration) || start <= 0 || duration <= 0) return '';
+      const hidden = trainingIsLive(start, duration) ? '' : ' hidden';
+      return `<span class="training-live" data-live-start="${start}" data-live-duration="${duration}" aria-label="Тренировка идёт сейчас"${hidden}><span class="training-live__dot" aria-hidden="true"></span>LIVE</span>`;
+    }
+
+    function updateTrainingLiveIndicators() {
+      const now = Date.now() / 1000;
+      document.querySelectorAll('[data-live-start]').forEach(indicator => {
+        indicator.hidden = !trainingIsLive(Number(indicator.dataset.liveStart), Number(indicator.dataset.liveDuration), now);
+      });
+    }
+    setInterval(() => { if (!document.hidden) updateTrainingLiveIndicators(); }, 10000);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) updateTrainingLiveIndicators();
+    });
+
+    function tournamentRow(id, spectator = false) {
       return `
       <button type="button" class="list-action tournament-row" data-tournament="${id}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -1506,7 +1553,7 @@
         </svg>
         <span class="list-action__text">
           <span>Турнир</span>
-          <span class="list-action__hint">сетка и судейство</span>
+          <span class="list-action__hint">${spectator ? 'сетка и результаты' : 'сетка и судейство'}</span>
         </span>
         <svg class="list-action__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1613,11 +1660,14 @@
     const tabsMenuCode = document.getElementById('tabs-menu-code');
     const tabsShareBtn = document.getElementById('tabs-share');
     let tabsRoom = '';
+    let tabsTraining = null;
     let tabsTrigger = null;
 
     function isTabsOpen() { return !tabsOverlay.hidden; }
 
     function openTournamentRoom(code, names) {
+      tabsTraining = null;
+      tabsShareBtn.hidden = false;
       tabsRoom = String(code || '');
       tabsCode.textContent = tabsRoom;
       tabsMenuCode.textContent = tabsRoom;
@@ -1636,7 +1686,101 @@
       document.getElementById('tabs-close').focus();
     }
 
+    // Общая комната занятия хранится на сервере и использует права Telegram.
+    async function openTrainingTournamentRoom(id, names, initial) {
+      const data = initial || await api(`/api/trainings/${id}/tournament`);
+      const session = { id, revision: data.revision, canManage: data.can_manage,
+        state: data.state, names, pending: null, busy: false, conflict: false, saveError: false, timer: null };
+      tabsTraining = session;
+      tabsRoom = '';
+      tabsCode.textContent = 'Общий турнир';
+      tabsShareBtn.hidden = true;
+      tabsTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      tabsFrame.onload = () => {
+        if (tabsTraining !== session || !tabsFrame.contentWindow) return;
+        tabsFrame.contentWindow.postMessage({ type: 'sqassit-init', role: session.canManage ? 'owner' : 'viewer',
+          state: session.state, names: session.names }, location.origin);
+      };
+      tabsFrame.src = '/tabs#sqassit=training&training=' + encodeURIComponent(id);
+      tabsOverlay.hidden = false;
+      tabsMenu.hidden = true;
+      document.documentElement.classList.add('has-tabs');
+      try { tg && tg.BackButton && tg.BackButton.show(); } catch (e) {}
+      document.getElementById('tabs-close').focus();
+      session.timer = setInterval(() => pollTrainingTournament(session), 3000);
+    }
+
+    async function saveTrainingTournament(session) {
+      if (tabsTraining !== session || session.busy || session.conflict || !session.pending) return;
+      const state = session.pending;
+      session.pending = null;
+      session.busy = true;
+      tabsCode.textContent = 'Сохранение…';
+      try {
+        const result = await api(`/api/trainings/${session.id}/tournament`, 'PUT',
+          { revision: session.revision, state });
+        session.revision = result.revision;
+        session.saveError = false;
+        if (tabsTraining === session) tabsCode.textContent = 'Сохранено';
+      } catch (e) {
+        session.pending = session.pending || state;
+        session.saveError = true;
+        if (tabsTraining === session) tabsCode.textContent = 'Не сохранено';
+        if (e.status === 409 || e.status === 403) {
+          session.conflict = true;
+          toast(e.status === 409 ? 'Турнир изменён в другом окне. Скопируйте несохранённые результаты и откройте турнир заново.' : e.message);
+        } else {
+          toast('Не удалось сохранить турнир. Повторяем попытку.');
+        }
+      } finally {
+        session.busy = false;
+        if (session.pending && !session.conflict) {
+          setTimeout(() => saveTrainingTournament(session), 3000);
+        }
+      }
+    }
+
+    async function pollTrainingTournament(session) {
+      if (tabsTraining !== session || session.busy || session.pending || session.conflict) return;
+      try {
+        const data = await api(`/api/trainings/${session.id}/tournament`);
+        if (tabsTraining !== session || session.busy || session.pending || session.conflict) return;
+        if (session.canManage && !data.can_manage) {
+          session.canManage = false;
+          tabsFrame.contentWindow.postMessage({ type: 'sqassit-role', role: 'viewer' }, location.origin);
+          toast('Турнир открыт только для просмотра.');
+        }
+        if (data.revision > session.revision && data.state) {
+          session.revision = data.revision;
+          tabsFrame.contentWindow.postMessage({ type: 'sqassit-state', state: data.state }, location.origin);
+        }
+      } catch (e) {
+        if (e.status === 403 || e.status === 404) {
+          closeTabs();
+          toast('Доступ к турниру больше недоступен.');
+        }
+      }
+    }
+
+    window.addEventListener('message', (event) => {
+      const session = tabsTraining;
+      if (!session || !session.canManage || event.origin !== location.origin ||
+          event.source !== tabsFrame.contentWindow || event.data?.type !== 'sqassit-save') return;
+      session.pending = event.data.state;
+      saveTrainingTournament(session);
+    });
+
     function closeTabs() {
+      if (tabsTraining && (tabsTraining.pending || tabsTraining.busy)) {
+        if (!(tabsTraining.conflict || tabsTraining.saveError) || !confirm('Изменения турнира не сохранены. Закрыть без сохранения?')) {
+          toast('Дождитесь сохранения турнира.');
+          return;
+        }
+      }
+      if (tabsTraining) clearInterval(tabsTraining.timer);
+      tabsTraining = null;
+      tabsFrame.onload = null;
+      tabsShareBtn.hidden = false;
       tabsOverlay.hidden = true;
       tabsMenu.hidden = true;
       tabsShareBtn.setAttribute('aria-expanded', 'false');

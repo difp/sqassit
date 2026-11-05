@@ -822,7 +822,7 @@ function activeRow(t) {
   return `
   <div class="card">
     <div class="t-top">
-      <div class="t-time">${esc(t.time)}</div>
+      <div class="t-time-line"><div class="t-time">${esc(t.time)}</div>${trainingLiveIndicator(t)}</div>
       <div class="t-occ"><b>${t.booked_count}</b> из ${t.capacity} мест</div>
     </div>
     <div class="training-title-row">
@@ -859,6 +859,7 @@ function historyRow(t) {
       <span>Посещаемость: <b style="color:var(--text)">${t.booked_count}</b> из ${t.capacity}</span>
       <span class="badge badge--muted">Завершена</span>
     </div>
+    ${t.tournament_started ? tournamentRow(t.id) : ''}
     <div class="t-actions">
       <button class="btn" data-cal="${t.id}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_CAL}</svg>
@@ -894,7 +895,7 @@ function clubRow(t) {
   return `
   <div class="card">
     <div class="t-top">
-      <div class="t-time">${esc(t.time)}</div>
+      <div class="t-time-line"><div class="t-time">${esc(t.time)}</div>${trainingLiveIndicator(t)}</div>
       <div class="t-occ"><b>${t.booked_count}</b> из ${t.capacity} мест</div>
     </div>
     <div class="t-title">${esc(t.type)}${pending ? ` <span class="badge badge--warn">Заявки: ${pending}</span>` : ''}</div>
@@ -1297,13 +1298,13 @@ async function openTournament(id) {
     // В карточке тренера нет массива участников: имена берём отдельным
     // запросом, иначе openTournamentRoom получает undefined.
     const [d, roster] = await Promise.all([
-      api(`/api/trainings/${id}/room`, 'POST'),
+      api(`/api/trainings/${id}/tournament`),
       api(`/api/coach/trainings/${id}/participants`),
     ]);
     const names = (roster.participants || [])
       .filter(p => p.status === 'booked')
       .map(p => p.first_name);
-    openTournamentRoom(d.code, names);
+    await openTrainingTournamentRoom(id, names, d);
   } catch (e) {
     hapticNotify('error');
     toast(e.message);

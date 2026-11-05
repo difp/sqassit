@@ -2809,6 +2809,7 @@ def test_training_notification_texts_and_targets(monkeypatch):
     monkeypatch.setattr(mainmod, "_ensure_training_status_message", noop_status)
     monkeypatch.setattr(mainmod, "_refresh_training_messages", noop_refresh)
     monkeypatch.setattr(mainmod, "_delete_training_status_messages", noop_refresh)
+    monkeypatch.setattr(mainmod, "_remove_training_request_alerts", noop_refresh)
     asyncio.run(mainmod._notify_training_event(training, 555))
     assert any(call[2] == 123 and call[3] == 0 for call in calls)
     assert any(call[2] == 555 and call[3] == 555 for call in calls)
@@ -2878,6 +2879,10 @@ def test_training_notification_alert_only_on_edit(monkeypatch):
     monkeypatch.setattr(mainmod.db, "notification_enabled", allowed)
     monkeypatch.setattr(mainmod, "_send_event_notification", send)
     monkeypatch.setattr(mainmod, "_send_user_message", alert)
+    async def request_alert(recipient, training_id, user_id, text):
+        alerts.append((recipient, text, mainmod._pending_booking_keyboard(people, training_id)))
+    monkeypatch.setattr(mainmod, "_send_training_request_alert", request_alert)
+    monkeypatch.setattr(mainmod, "_remove_training_request_alerts", noop_refresh)
     monkeypatch.setattr(mainmod, "_ensure_training_status_message", noop_status)
     monkeypatch.setattr(mainmod, "_refresh_training_messages", noop_refresh)
 
@@ -4288,3 +4293,142 @@ def test_edit_training_handles_no_change_started_and_deleted_race(client, monkey
     monkeypatch.setattr(mainmod.db, "find_duplicate_training", no_duplicate)
     monkeypatch.setattr(mainmod.db, "update_training_details", deleted_during_edit)
     assert client.patch(url, headers=COACH, json=same).status_code == 404
+
+
+@pytest.mark.parametrize("decision", ["approve", "reject", "cancel"])
+def test_coach_request_notification_removed_after_decision(client, monkeypatch, decision):
+    from dataclasses import replace
+
+    monkeypatch.setattr(mainmod, "settings", replace(settings, require_event_approval=True))
+    sent = []
+    deleted = []
+
+    async def send(chat_id, text, **kwargs):
+        message_id = len(sent) + 100
+        sent.append((message_id, chat_id, text))
+        return SimpleNamespace(message_id=message_id)
+
+    async def delete(chat_id, message_id, **kwargs):
+        deleted.append((chat_id, message_id))
+        return True
+
+    monkeypatch.setattr(mainmod.app.state.bot, "send_message", send)
+    monkeypatch.setattr(mainmod.app.state.bot, "delete_message", delete)
+    client.get('/api/me', headers=COACH)
+    tid = _create_training(client, day=2, time_str='19:00')
+    assert client.post(f'/api/trainings/{tid}/book', headers=PLAYER).json()['status'] == 'pending'
+    for _ in range(100):
+        notices = [(mid, chat) for mid, chat, text in sent if text.startswith('Новая заявка:')]
+        if notices:
+            break
+        time.sleep(.02)
+    assert notices
+    if decision == 'cancel':
+        response = client.post(f'/api/trainings/{tid}/cancel', headers=PLAYER)
+    else:
+        response = client.post(f'/api/coach/trainings/{tid}/participants/555/{decision}', headers=COACH)
+    assert response.status_code == 200
+    for _ in range(100):
+        if all((chat, mid) in deleted for mid, chat in notices):
+            break
+        time.sleep(.02)
+    assert all((chat, mid) in deleted for mid, chat in notices), 'Одобренная заявка осталась в чате тренера'
+
+
+def test_resolving_one_request_keeps_other_request_alert(client, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(mainmod, "settings", replace(settings, require_event_approval=True))
+    sent = []
+    deleted = []
+
+    async def send(chat_id, text, **kwargs):
+        message_id = len(sent) + 100
+        sent.append((message_id, chat_id, text))
+        return SimpleNamespace(message_id=message_id)
+
+    async def delete(chat_id, message_id, **kwargs):
+        deleted.append((chat_id, message_id))
+        return True
+
+    monkeypatch.setattr(mainmod.app.state.bot, "send_message", send)
+    monkeypatch.setattr(mainmod.app.state.bot, "delete_message", delete)
+    client.get('/api/me', headers=COACH)
+    tid = _create_training(client, day=2, time_str='19:00')
+    assert client.post(f'/api/trainings/{tid}/book', headers=PLAYER).json()['status'] == 'pending'
+    assert client.post(f'/api/trainings/{tid}/book', headers=PLAYER2).json()['status'] == 'pending'
+    for _ in range(100):
+        notices = [(mid, chat, text) for mid, chat, text in sent if text.startswith('Новая заявка:')]
+        if len(notices) == 2:
+            break
+        time.sleep(.02)
+    assert len(notices) == 2
+    first = next((chat, mid) for mid, chat, text in notices if 'Иван' in text)
+    second = next((chat, mid) for mid, chat, text in notices if 'Мария' in text)
+    assert client.post(f'/api/coach/trainings/{tid}/participants/555/approve', headers=COACH).status_code == 200
+    for _ in range(100):
+        if first in deleted:
+            break
+        time.sleep(.02)
+    assert first in deleted
+    assert second not in deleted
+
+
+def test_training_tournament_shared_persisted_and_authorized(client, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(mainmod, "settings", replace(settings, require_event_approval=True))
+    client.get('/api/me', headers=COACH)
+    client.get('/api/me', headers=COACH2)
+    assert client.post('/api/coach/coaches', headers=COACH, json={'telegram_id': 777}).status_code == 200
+    tid = _create_training(client, day=3, time_str='19:00', capacity=3)
+    url = f'/api/trainings/{tid}/tournament'
+    assert client.get(url, headers=COACH).json()['revision'] == 0
+    assert client.get(url, headers=PLAYER).status_code == 403
+    assert client.post(f'/api/trainings/{tid}/book', headers=PLAYER).json()['status'] == 'pending'
+    assert client.get(url, headers=PLAYER).status_code == 403
+    assert client.post(f'/api/coach/trainings/{tid}/participants/555/approve', headers=COACH).status_code == 200
+    assert client.get(url, headers=PLAYER).status_code == 404
+    assert client.put(url, headers=PLAYER, json={'revision': 0, 'state': {}}).status_code == 403
+    assert client.put(url, headers=COACH, json={'revision': 0, 'state': {}}).status_code == 422
+    draft = {'players': ['Иван', 'Мария'], 'schedule': [], 'scores': {}}
+    assert client.put(url, headers=COACH, json={'revision': 0, 'state': draft}).json()['revision'] == 1
+    assert client.get(url, headers=PLAYER).status_code == 404
+    state = {'players': ['Иван', 'Мария'], 'schedule': [{'courts': [[0, 1]], 'resting': []}],
+             'scores': {'0-0': {'a': 11, 'b': 8, 'log': [['p', 'a', 11, 8]]}}, 'po': {'round': 1}}
+    assert client.put(url, headers=COACH, json={'revision': 1, 'state': state}).json()['revision'] == 2
+    received = client.get(url, headers=PLAYER).json()
+    assert received['state'] == state and received['can_manage'] is False
+    card = next(x for x in client.get('/api/trainings?days=7', headers=PLAYER).json()['trainings'] if x['id'] == tid)
+    assert card['tournament_started'] is True
+    assert client.put(url, headers=COACH, json={'revision': 1, 'state': draft}).status_code == 409
+    assert client.get(url, headers=COACH).json()['state'] == state
+    assert client.get(url, headers=COACH2).status_code == 403
+    assert client.post(f'/api/coach/trainings/{tid}/coauthors', headers=COACH, json={'telegram_id': 777}).status_code == 200
+    assert client.get(url, headers=COACH2).json()['can_manage'] is True
+    assert client.put(url, headers=COACH2, json={'revision': 2, 'state': state}).json()['revision'] == 3
+    assert client.put(url, headers=COACH, json={'revision': 3, 'state': {**state, 'padding': 'a' * 512001}}).status_code == 413
+    # Результаты остаются доступны в истории после начала занятия.
+    import sqlite3
+    from contextlib import closing
+    with closing(sqlite3.connect(settings.db_path)) as connection:
+        connection.execute("UPDATE trainings SET start_at = ? WHERE id = ?", (int(time.time()) - 60, tid))
+        connection.commit()
+    # Во время занятия турнир остаётся в расписании игрока и тренера.
+    assert any(item['id'] == tid for item in client.get('/api/trainings', headers=PLAYER).json()['trainings'])
+    assert any(item['id'] == tid for item in client.get('/api/coach/trainings', headers=COACH).json()['trainings'])
+    assert not any(item['id'] == tid for item in client.get('/api/me/tournaments', headers=PLAYER).json()['tournaments'])
+    with closing(sqlite3.connect(settings.db_path)) as connection:
+        connection.execute("UPDATE trainings SET start_at = ? WHERE id = ?", (int(time.time()) - 7200, tid))
+        connection.commit()
+    history = client.get('/api/me/tournaments', headers=PLAYER).json()['tournaments']
+    assert any(item['id'] == tid for item in history)
+    assert client.get(url, headers=PLAYER).json()['state'] == state
+    assert any(item['id'] == tid and item['tournament_started'] for item in client.get('/api/coach/history', headers=COACH).json()['trainings'])
+    invalid = mainmod.TournamentStateIn(revision=3, state={**state, 'bad': float('nan')})
+    response = client.portal.call(mainmod.api_save_training_tournament, tid, invalid, {'telegram_id': 123, 'is_coach': True})
+    assert response.status_code == 422
+    assert client.get('/api/trainings/999999/tournament', headers=COACH).status_code == 404
+    assert client.put('/api/trainings/999999/tournament', headers=COACH, json={'revision': 0, 'state': state}).status_code == 404
+    assert client.delete(f'/api/coach/trainings/{tid}', headers=COACH).status_code == 200
+    assert client.get(url, headers=COACH).status_code == 404

@@ -12,10 +12,12 @@ from __future__ import annotations
 import asyncio
 import hmac
 import html
+import json
 import logging
 import re
 import secrets
 import time
+import weakref
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -281,6 +283,7 @@ def serialize_training(
         "level": row["level"] if "level" in keys else "",
         "booked_count": row["booked_count"] if "booked_count" in keys else 0,
         "waitlist_count": row["waitlist_count"] if "waitlist_count" in keys else 0,
+        "tournament_started": bool(row["tournament_started"]) if "tournament_started" in keys else False,
         "reminder_enabled": bool(row["reminder_enabled"]),
         "reminder_offset_min": row["reminder_offset_min"],
         "deleted": bool(row["deleted_at"]) if "deleted_at" in keys else False,
@@ -535,6 +538,11 @@ class TrainingIn(BaseModel):
     reminder_enabled: bool = True
     reminder_offset_min: int = Field(default=DEFAULT_REMINDER_OFFSET_MINUTES, ge=0, le=2880)
     force: bool = False  # подтверждение при возможном дубле
+
+
+class TournamentStateIn(BaseModel):
+    revision: int = Field(ge=0)
+    state: dict[str, Any]
 
 
 class TrainingEditIn(BaseModel):
@@ -1113,6 +1121,7 @@ async def api_trainings(user: Annotated[dict, Depends(current_user)], days: int 
             )
         item = serialize_training(row, viewer_id=user["telegram_id"])
         item["coach"] = coach_cache[creator]
+        item["tournament_started"] = bool(_row_value(row, "tournament_started", False))
         participants = participants_by_training.get(row["id"], [])
         item["participants"] = [
             {**serialize_participant(p), "is_me": p["telegram_id"] == user["telegram_id"]}
@@ -1132,6 +1141,59 @@ async def api_trainings(user: Annotated[dict, Depends(current_user)], days: int 
             item["is_pending"] = True
         result.append(item)
     return {"ok": True, "trainings": result}
+
+
+@app.get("/api/me/tournaments")
+async def api_my_tournaments(user: Annotated[dict, Depends(current_user)]):
+    rows = await db.list_user_tournaments(user["telegram_id"], int(time.time()))
+    return {"ok": True, "tournaments": [serialize_training(row, viewer_id=user["telegram_id"]) for row in rows]}
+
+
+@app.get("/api/trainings/{training_id}/tournament")
+async def api_get_training_tournament(
+    training_id: int, user: Annotated[dict, Depends(current_user)]
+):
+    training = await db.get_training(training_id)
+    if training is None or training["deleted_at"]:
+        return error_json("Тренировка не найдена", 404)
+    can_manage = bool(user.get("is_coach")) and await _can_manage_training(training, user["telegram_id"])
+    if not can_manage:
+        booking = await db.get_booking(training_id, user["telegram_id"])
+        if booking is None or booking["status"] != "booked":
+            return error_json("Турнир доступен записанным участникам", 403)
+    row = await db.get_training_tournament(training_id)
+    if not can_manage and (row is None or not row["started"]):
+        return error_json("Турнир пока не создан", 404)
+    return {
+        "ok": True, "can_manage": can_manage,
+        "state": json.loads(row["state_json"]) if row else None,
+        "revision": int(row["revision"]) if row else 0,
+        "started": bool(row["started"]) if row else False,
+    }
+
+
+@app.put("/api/trainings/{training_id}/tournament")
+async def api_save_training_tournament(
+    training_id: int, payload: TournamentStateIn,
+    user: Annotated[dict, Depends(current_user)],
+):
+    training = await db.get_training(training_id)
+    if training is None or training["deleted_at"]:
+        return error_json("Тренировка не найдена", 404)
+    if not user.get("is_coach") or not await _can_manage_training(training, user["telegram_id"]):
+        return error_json("Изменять турнир может только тренер занятия", 403)
+    state = payload.state
+    if not isinstance(state.get("players"), list) or not isinstance(state.get("schedule"), list) or not isinstance(state.get("scores"), dict):
+        return error_json("Некорректные данные турнира", 422)
+    try:
+        raw = json.dumps(state, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return error_json("Некорректные данные турнира", 422)
+    if len(raw.encode("utf-8")) > 512_000:
+        return error_json("Данные турнира слишком велики", 413)
+    if not await db.save_training_tournament(training_id, raw, payload.revision, bool(state["schedule"])):
+        return error_json("Турнир уже изменён в другом окне. Обновите данные.", 409)
+    return {"ok": True, "revision": payload.revision + 1}
 
 
 @app.post("/api/trainings/{training_id}/room")
@@ -2687,7 +2749,7 @@ async def _edit_notification_row(row: aiosqlite.Row, text: str) -> None:
 async def _delete_training_status_messages(training_id: int) -> None:
     rows = await db.list_event_notifications_for_training(training_id)
     for row in rows:
-        if row["kind"] in _STATUS_NOTIFICATION_KINDS:
+        if row["kind"] in _STATUS_NOTIFICATION_KINDS or row["kind"] == "training_request":
             await _delete_notification_row(row)
 
 
@@ -2935,6 +2997,54 @@ async def _refresh_training_messages(
             await _edit_notification_row(row, text)
 
 
+_training_request_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = weakref.WeakKeyDictionary()
+
+
+def _training_request_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    if loop not in _training_request_locks:
+        _training_request_locks[loop] = asyncio.Lock()
+    return _training_request_locks[loop]
+
+
+async def _remove_training_request_alerts(training_id: int, user_id: int) -> None:
+    """Удаляет уведомления о заявке; при временном сбое удаление повторится."""
+    async with _training_request_lock():
+        await db.expire_training_request_notifications(training_id, user_id)
+        rows = await db.list_event_notifications_for_training(training_id)
+        for row in rows:
+            if row["kind"] == "training_request" and row["user_id"] == user_id:
+                await _delete_notification_row(row)
+
+
+async def _send_training_request_alert(
+    recipient: int, training_id: int, user_id: int, text: str,
+) -> None:
+    """Отдельный push, связанный с заявкой и удаляемый после её решения."""
+    try:
+        async with _training_request_lock():
+            booking = await db.get_booking(training_id, user_id)
+            if booking is None or booking["status"] != "pending":
+                return
+            existing = await db.get_event_notification(
+                "training_request", training_id, recipient, user_id
+            )
+            if existing is not None and existing["message_id"]:
+                return
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="Открыть заявки",
+                    web_app=WebAppInfo(url=bot_module._coach_training_url(training_id)),
+                )
+            ]])
+            await bot_module.send_temporary_notification(
+                app.state.bot, recipient, text, kind="training_request",
+                entity_id=training_id, user_id=user_id, reply_markup=keyboard,
+            )
+    except Exception:
+        logger.info("Не удалось отправить уведомление о заявке %s", recipient, exc_info=True)
+
+
 async def _notify_training_event(
     training: aiosqlite.Row,
     user_id: int | None = None,
@@ -2952,6 +3062,11 @@ async def _notify_training_event(
             (p["status"] for p in participants if p["telegram_id"] == user_id),
             "cancelled",
         )
+    if user_id is not None:
+        if status == "pending" and not any(p["telegram_id"] == user_id for p in pending):
+            return
+        if status != "pending":
+            await _remove_training_request_alerts(int(training["id"]), user_id)
     actor_name = (
         await _training_actor_name(actor_id, participants)
         if actor_id is not None
@@ -3002,7 +3117,7 @@ async def _notify_training_event(
             recipient,
             0,
             summary,
-            reply_markup=keyboard,
+            reply_markup=keyboard or InlineKeyboardMarkup(inline_keyboard=[]),
         )
         # Правка сообщения не даёт push в Telegram. Для заявок/очереди/отмены
         # сводка может не измениться, поэтому шлём отдельный алерт всегда.
@@ -3013,13 +3128,15 @@ async def _notify_training_event(
             "rejected",
         }
         if should_alert and actor_id is not None and recipient != actor_id:
-            await _send_user_message(
-                recipient,
-                _training_alert_text(
-                    training, coach_name, status or "booked", actor_name
-                ),
-                reply_markup=keyboard,
+            alert_text = _training_alert_text(
+                training, coach_name, status or "booked", actor_name
             )
+            if status == "pending" and user_id is not None:
+                await _send_training_request_alert(
+                    recipient, int(training["id"]), user_id, alert_text
+                )
+            else:
+                await _send_user_message(recipient, alert_text, reply_markup=keyboard)
 
 
 async def _notify_promoted(user_id: int, training: aiosqlite.Row) -> None:

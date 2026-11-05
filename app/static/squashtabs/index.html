@@ -100,6 +100,13 @@
   .paste .note{margin-top:var(--sp2)}
   .paste .note b{color:var(--text)}
   .empty{color:var(--muted);font-size:var(--fs-sm);margin:var(--sp3) 0 0}
+  .grid-search{margin:0 0 var(--sp3)}
+  .grid-search__row{display:flex;gap:var(--sp2);align-items:center}
+  .grid-search__row input{min-width:0;flex:1}
+  .grid-search__row input::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}
+  .grid-search__row button{flex:none}
+  .grid-search__status{color:var(--muted);font-size:var(--fs-sm);margin:6px 0 0;min-height:1.3em}
+
   .explain{color:var(--muted);font-size:var(--fs-xs);line-height:1.55;margin:var(--sp3) 0 0;
     padding-left:10px;border-left:2px solid var(--line)}
   .explain b{color:var(--text);font-weight:600}
@@ -549,6 +556,14 @@
     <button data-view="share">Поделиться</button>
   </nav>
 
+  <div class="grid-search no-print" id="grid-search" role="search" hidden>
+    <label for="grid-search-input">Найти игрока в сетке</label>
+    <div class="grid-search__row">
+      <input id="grid-search-input" type="search" placeholder="Имя игрока" autocomplete="off" aria-describedby="grid-search-status">
+      <button type="button" class="ghost" id="grid-search-clear" hidden>Очистить</button>
+    </div>
+    <p class="grid-search__status" id="grid-search-status" role="status" aria-live="polite"></p>
+  </div>
   <div id="panel-grid"></div>
 
   <div id="panel-judge" hidden></div>
@@ -667,7 +682,7 @@
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
       </a>
     </div>
-    <div class="foot-note">Приложение работает офлайн; данные хранятся в браузере.
+    <div class="foot-note" id="storage-note">Приложение работает офлайн; данные хранятся в браузере.
       Общий режим передаёт данные через открытый сервис — не вводите персональные данные.</div>
     <div class="foot-build" title="Дата файла, который отдал сервер. Если она старая — браузер показал
 копию из кэша: обновите страницу клавишами Ctrl+F5 (на Mac — Cmd+Shift+R).">
@@ -943,9 +958,12 @@ function buildStamp(){
   return p(d.getDate()) + '.' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
 }
 const LS = 'squash-grid-v2';
+const integratedTraining = new URLSearchParams(location.hash.slice(1)).get('sqassit') === 'training';
+const integratedId = new URLSearchParams(location.hash.slice(1)).get('training') || '';
+let integratedReady = false, integratedApplying = false;
 // SQASSIT: состояние хранится по комнате, иначе тренер, открывший
 // турнир другого занятия, увидит в нём состав прошлого.
-const lsKey = () => LS + (sync.room ? ':' + sync.room : '');
+const lsKey = () => integratedTraining ? LS + ':training:' + integratedId : LS + (sync.room ? ':' + sync.room : '');
 const state = {
   players: [], courts: 2, rounds: 7, mode: 'everyone',
   matchMin: 30, sessionMin: 120, startTime: '', competitive: true,
@@ -1055,7 +1073,7 @@ function finishTime(){ return fmtHM(parseHM(state.startTime) + totalMinutes()); 
 
 /* ================= хранение ================= */
 function save(){
-  try{ localStorage.setItem(lsKey(), JSON.stringify({
+  if(!integratedTraining) try{ localStorage.setItem(lsKey(), JSON.stringify({
     players: state.players, courts: state.courts, rounds: state.rounds, mode: state.mode,
     matchMin: state.matchMin, sessionMin: state.sessionMin, startTime: state.startTime,
     competitive: state.competitive,
@@ -1064,8 +1082,12 @@ function save(){
     schedule: state.schedule, scores: state.scores, structTs: state.structTs, scoresTs: state.scoresTs,
     room: sync.room, role: sync.role, name: sync.name, server: sync.server, view: judge.view
   })); }catch(e){}
+  if(integratedTraining && integratedReady && !integratedApplying && sync.role === 'owner'){
+    window.parent.postMessage({type:'sqassit-save', state:JSON.parse(JSON.stringify(state))}, location.origin);
+  }
 }
 function load(){
+  if(integratedTraining) return;
   try{
     const d = JSON.parse(localStorage.getItem(lsKey()) || '{}');
     if(Array.isArray(d.players)) state.players = d.players.slice(0, MAX_PLAYERS);
@@ -1319,8 +1341,8 @@ function buildSchedule(){
    250 сообщений в сутки. Поэтому: приём — один поток SSE (не опрос),
    отправка — склеенная очередь (счёт уходит одним пакетом).          */
 const DEFAULT_SERVER = 'https://ntfy.sh';
-const canEditScores = () => sync.role !== 'viewer';
-const canEditAll = () => !sync.on || sync.role === 'owner';
+const canEditScores = () => integratedTraining ? integratedReady && sync.role === 'owner' : sync.role !== 'viewer';
+const canEditAll = () => integratedTraining ? integratedReady && sync.role === 'owner' : (!sync.on || sync.role === 'owner');
 const baseUrl = () => (sync.server || DEFAULT_SERVER).replace(/\/+$/, '');
 const topicUrl = () => baseUrl() + '/squashgrid-' + encodeURIComponent(sync.room);
 
@@ -1328,7 +1350,7 @@ const topicUrl = () => baseUrl() + '/squashgrid-' + encodeURIComponent(sync.room
 let outbox = { full:null, scores:{}, other:[] }, flushTimer = null, retryTimer = null;
 
 function queueMsg(m){
-  if(!sync.on || !sync.room) return;
+  if(integratedTraining || !sync.on || !sync.room) return;
   if(m.t === 'full') outbox.full = m;
   else if(m.t === 'score') outbox.scores[m.g] = m;
   else outbox.other.push(m);
@@ -1661,12 +1683,34 @@ function cancelPick(){
   pickMove = null;
   renderGrid();
 }
+function normalizeGridSearch(value){
+  return String(value || '').trim().toLocaleLowerCase('ru-RU').replace(/ё/g, 'е');
+}
+function applyGridSearch(){
+  const input = $('grid-search-input');
+  const query = normalizeGridSearch(input.value);
+  let count = 0;
+  $('panel-grid').querySelectorAll('.round').forEach(round => {
+    let visible = 0;
+    round.querySelectorAll('.court[data-search-a]').forEach(court => {
+      const matches = !query || normalizeGridSearch(court.dataset.searchA).includes(query) ||
+        normalizeGridSearch(court.dataset.searchB).includes(query);
+      court.hidden = !matches;
+      if(matches){ visible++; count++; }
+    });
+    round.hidden = Boolean(query) && !visible;
+  });
+  $('grid-search-clear').hidden = !input.value;
+  $('grid-search-status').textContent = !query ? '' : count ? `Найдено матчей: ${count}` : 'Матчи не найдены';
+}
+
 function renderGrid(){
   const box = $('panel-grid');
   $('sessionMin').disabled = $('mode').value === 'everyone';
   updateGenBtn();
   hint();
   renderSummary();
+  $('grid-search').hidden = judge.view !== 'grid' || !state.schedule.length;
   if(!state.schedule.length){
     box.innerHTML = '<p class="empty">Введите игроков и нажмите «Построить сетку».</p>';
     return;
@@ -1690,7 +1734,7 @@ function renderGrid(){
       if(ci >= state.courts){
         const g0 = gid(ri, ci), s0 = state.scores[g0] || {};
         const done0 = s0.a != null && s0.b != null;
-        return `<div class="court history">
+        return `<div class="court history" data-search-a="${esc(nameAt(m[0], ri))}" data-search-b="${esc(nameAt(m[1], ri))}">
           <div class="court-title">Сыграно · ${esc(nameAt(m[0], ri))} — ${esc(nameAt(m[1], ri))}</div>
           <div class="hist">${done0 ? s0.a + ' : ' + s0.b : 'счёт не внесён'}</div>
         </div>`;
@@ -1702,18 +1746,18 @@ function renderGrid(){
       const ended = !!(s.end && s.end.winner);
       const onAir = isOnAir(g);
       const isSrc = pickMove && pickMove.ri === ri && pickMove.ci === ci;
-      return `<div class="court ${onAir?'on-air':''} ${isSrc?'src':''}" data-ri="${ri}" data-ci="${ci}" ${lock?'':'draggable="true"'}>
-        <div class="court-title"><span class="grip" title="Перетащите, чтобы перенести игру">⠿</span>Корт ${ci+1}
+      return `<div class="court ${onAir?'on-air':''} ${isSrc?'src':''}" data-ri="${ri}" data-ci="${ci}" data-search-a="${esc(nameAt(a, ri))}" data-search-b="${esc(nameAt(b, ri))}" ${lock?'':'draggable="true"'}>
+        <div class="court-title">${lock ? '' : '<span class="grip" title="Перетащите, чтобы перенести игру">⠿</span>'}Корт ${ci+1}
           ${onAir ? '<span class="air">в эфире</span>' : ''}
-          <button class="mv" data-mv="${ri}-${ci}" title="Перенести этот матч на другое время">⇄ перенести</button></div>
+          ${lock ? '' : `<button class="mv" data-mv="${ri}-${ci}" title="Перенести этот матч на другое время">⇄ перенести</button>`}</div>
         <div class="game">
           <div class="team ${w1?'win':''}">${esc(nameAt(a, ri))}</div>
           <div class="vs">VS</div>
           <div class="team ${w2?'win':''}">${esc(nameAt(b, ri))}</div>
         </div>
         <div class="score">
-          <input type="number" min="0" max="99" inputmode="numeric" ${lock?'disabled':''} data-game="${g}" data-team="a" value="${s.a ?? ''}" placeholder="—">
-          <input type="number" min="0" max="99" inputmode="numeric" ${lock?'disabled':''} data-game="${g}" data-team="b" value="${s.b ?? ''}" placeholder="—">
+          <input type="number" min="0" max="99" inputmode="numeric" ${lock?'readonly aria-readonly="true"':''} aria-label="Счёт ${esc(nameAt(a, ri))}" data-game="${g}" data-team="a" value="${s.a ?? ''}" placeholder="—">
+          <input type="number" min="0" max="99" inputmode="numeric" ${lock?'readonly aria-readonly="true"':''} aria-label="Счёт ${esc(nameAt(b, ri))}" data-game="${g}" data-team="b" value="${s.b ?? ''}" placeholder="—">
         </div>
         ${ended ? `<div class="fin">завершён судьёй · ${ENDREASON[s.end.reason] || ''} · победа ${esc(nameAt(winner === 'a' ? a : b, ri))}</div>` : ''}
       </div>`;
@@ -1734,6 +1778,7 @@ function renderGrid(){
       <span class="meta">${rest}</span></header>${games}${free}</section>`;
   }).join('');
   updateGames();
+  applyGridSearch();
   const cancel = $('pickCancel');
   if(cancel) cancel.onclick = cancelPick;
 }
@@ -2396,7 +2441,10 @@ function renderAll(){ renderPlayers(); renderGrid(); renderTable(); renderPlayof
 function resetSchedule(){
   state.schedule = []; state.scores = {}; state.past = {}; state.po = null;
   state.structTs = Date.now(); state.scoresTs = Date.now();
-  $('panel-grid').innerHTML = ''; staleOff(); updateGenBtn();
+  $('panel-grid').innerHTML = '';
+  $('grid-search').hidden = true; $('grid-search-input').value = '';
+  $('grid-search-clear').hidden = true; $('grid-search-status').textContent = '';
+  staleOff(); updateGenBtn();
   renderSummary(); renderJudge(); renderTable();
 }
 // подтверждение перед действием, которое стирает сетку
@@ -3150,6 +3198,7 @@ function generate(){
 }
 function switchView(v){
   judge.view = v;
+  $('grid-search').hidden = v !== 'grid' || !state.schedule.length;
   ['grid','judge','table','po','share'].forEach(k => {
     $('panel-' + k).hidden = k !== v;
   });
@@ -3239,6 +3288,14 @@ $('panel-po').addEventListener('change', e => {
   if(moved) toast('Победитель прошёл дальше');
 });
 $('competitive').onchange = () => { state.competitive = $('competitive').checked; save(); renderTable(); };
+
+// Поиск меняет только отображение, не данные турнира.
+$('grid-search-input').addEventListener('input', applyGridSearch);
+$('grid-search-clear').addEventListener('click', () => {
+  $('grid-search-input').value = '';
+  applyGridSearch();
+  $('grid-search-input').focus();
+});
 
 // счёт в сетке (делегирование)
 $('panel-grid').addEventListener('input', e => {
@@ -3402,7 +3459,8 @@ if(location.hash.length > 1){
 if(requestedRoom) sync.room = requestedRoom;
 load();
 if(requestedRoom) sync.room = requestedRoom;           // load() мог затереть пустым
-if(hashParams){
+if(integratedTraining){ sync.room = ''; sync.role = 'viewer'; sync.roleLocked = true; }
+if(hashParams && !integratedTraining){
   const hp = hashParams;
   if(hp.get('s')) sync.server = hp.get('s');           // адрес сервера из ссылки-приглашения
   // SQASSIT: role=viewer|judge фиксирует роль из ссылки, чтобы «только
@@ -3417,7 +3475,41 @@ if(hashParams){
   }
 }
 
+// Встроенный турнир получает состояние только от страницы SQASSIT.
+window.addEventListener('message', ev => {
+  if(!integratedTraining || ev.source !== window.parent || ev.origin !== location.origin) return;
+  const msg = ev.data || {};
+  if(msg.type === 'sqassit-role' && integratedReady){
+    sync.role = 'viewer'; $('setupCard').hidden = true; renderAll(); return;
+  }
+  if(msg.type !== 'sqassit-init' && msg.type !== 'sqassit-state') return;
+  if(msg.type === 'sqassit-init'){
+    sync.role = msg.role === 'owner' ? 'owner' : 'viewer';
+    $('setupCard').hidden = sync.role === 'viewer';
+    $('syncBadge').hidden = true;
+    $('storage-note').textContent = 'Общий турнир занятия. Данные сохраняются в приложении.';
+    integratedReady = true;
+  } else if(!integratedReady) return;
+  integratedApplying = true;
+  if(msg.state && Array.isArray(msg.state.players) && Array.isArray(msg.state.schedule)){
+    const keys = ['players','courts','rounds','mode','matchMin','sessionMin','startTime',
+      'competitive','past','po','schedule','scores','structTs','scoresTs'];
+    keys.forEach(key => { if(Object.prototype.hasOwnProperty.call(msg.state, key)) state[key] = msg.state[key]; });
+  } else if(msg.type === 'sqassit-init'){
+    state.players = Array.isArray(msg.names) ? [...new Set(msg.names)].slice(0, MAX_PLAYERS) : [];
+    state.schedule = []; state.scores = {}; state.past = {}; state.po = null;
+  }
+  sync.room = ''; sync.on = false;
+  save(); renderSetupValues(); renderAll();
+  integratedApplying = false;
+});
+
 (function init(){
+  if(integratedTraining){
+    const share = document.querySelector('[data-view="share"]');
+    if(share) share.hidden = true;
+    if(judge.view === 'share') judge.view = 'grid';
+  }
   if(!state.startTime){                       // по умолчанию — ближайшие 5 минут
     const d = new Date();
     d.setMinutes(Math.ceil((d.getMinutes() + 1) / 5) * 5, 0, 0);

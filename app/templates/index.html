@@ -45,6 +45,10 @@
 </div>
 
 <div id="schedule"></div>
+<details class="card" id="tournament-history" hidden>
+  <summary>Прошедшие турниры</summary>
+  <div id="tournament-history-list"></div>
+</details>
 
 <section class="quote-card" aria-label="Цитата профессионального игрока">
   <div class="quote-card__label">Цитата</div>
@@ -264,7 +268,7 @@ function trainingCard(t) {
   if (t.is_waitlisted) badges += '<span class="badge badge--warn">Лист ожидания</span>';
   if (t.is_pending) badges += '<span class="badge badge--warn">Ожидает подтверждения</span>';
   if (t.waitlist_count) badges += `<span class="badge badge--muted">В очереди: ${t.waitlist_count}</span>`;
-  if (t.is_past) badges += '<span class="badge badge--muted">Завершена</span>';
+  if (t.is_past && !trainingIsLive(Number(t.start_at), Number(t.duration_min))) badges += '<span class="badge badge--muted">Завершена</span>';
   if (!t.is_past && !t.can_self_cancel && (t.is_booked || t.is_waitlisted)) {
     badges += `<span class="badge badge--warn">Отмена недоступна — до старта ${esc(fmtDuration(t.seconds_left))}</span>`;
   }
@@ -292,12 +296,12 @@ function trainingCard(t) {
   }
   const action = buttons.length ? `<div class="t-actions">${buttons.join('')}</div>` : '';
   // Турнир доступен тем, кто в записи: состав сетки — записавшиеся.
-  const showTournament = t.is_booked || t.is_waitlisted || t.is_pending;
+  const showTournament = t.is_booked && t.tournament_started;
 
   return `
   <div class="card">
     <div class="t-top">
-      <div class="t-time">${esc(t.time)}</div>
+      <div class="t-time-line"><div class="t-time">${esc(t.time)}</div>${trainingLiveIndicator(t)}</div>
       <div class="t-occ"><b>${t.booked_count}</b> из ${t.capacity} мест</div>
     </div>
     <div class="t-title">${esc(t.type)}</div>
@@ -309,7 +313,7 @@ function trainingCard(t) {
     ${participantsLine(t.participants, t.id)}
     ${coachHtml(t.coach, t.id)}
     ${action}
-    ${showTournament ? tournamentRow(t.id) : ''}
+    ${showTournament ? `<button type="button" class="training-grid-action" data-tournament="${t.id}" aria-label="Открыть сетку турнира"><span class="training-grid-action__label">Сетка</span></button>` : ''}
   </div>`;
 }
 
@@ -438,15 +442,31 @@ document.getElementById('schedule').addEventListener('click', async (ev) => {
   }
 });
 
+async function loadTournamentHistory() {
+  try {
+    const data = await api('/api/me/tournaments');
+    const section = document.getElementById('tournament-history');
+    section.hidden = !data.tournaments.length;
+    document.getElementById('tournament-history-list').innerHTML = data.tournaments.map(t => `
+      <button type="button" class="list-action" data-history-tournament="${t.id}">
+        <span>${esc(fmtDate(t.date))} · ${esc(t.time)} · ${esc(t.type)}</span>
+        <span>Результаты</span>
+      </button>`).join('');
+  } catch (e) { /* Расписание остаётся доступным при ошибке истории. */ }
+}
+document.getElementById('tournament-history-list').addEventListener('click', async (event) => {
+  const id = event.target.closest('[data-history-tournament]')?.dataset.historyTournament;
+  if (!id) return;
+  try { await openTrainingTournamentRoom(id, []); }
+  catch (e) { toast(e.message); }
+});
+
 // ===== Турнир занятия =====
 async function openTrainingTournament(id) {
   const btn = document.querySelector(`[data-tournament="${id}"]`);
   if (btn) btn.disabled = true;
   try {
-    const d = await api(`/api/trainings/${id}/room`, 'POST');
-    const t = ITEMS[id];
-    const names = t && Array.isArray(t.participants) ? t.participants.map(p => p.first_name) : [];
-    openTournamentRoom(d.code, names);
+    await openTrainingTournamentRoom(id, []);
   } catch (e) {
     hapticNotify('error');
     toast(e.message);
@@ -743,10 +763,10 @@ document.addEventListener('visibilitychange', () => {
 
 window.PAGE_REFRESH = async () => {
   await APP.refresh();
-  await Promise.all([loadProfile(), loadSchedule()]);
+  await Promise.all([loadProfile(), loadSchedule(), loadTournamentHistory()]);
 };
 
-Promise.allSettled([loadProfile(), loadSchedule()]).then(() => {
+Promise.allSettled([loadProfile(), loadSchedule(), loadTournamentHistory()]).then(() => {
   hideAppLoader();
   setTimeout(maybeShowOnboarding, 350);
 });
