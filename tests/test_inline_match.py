@@ -174,3 +174,25 @@ def test_confirmation_updates_message_even_if_callback_expired(monkeypatch):
     callback = SimpleNamespace(data='match_confirm:1', from_user=SimpleNamespace(id=1), message=SimpleNamespace(chat=SimpleNamespace(type='private'), edit_text=edit_text), answer=answer)
     run(mod.confirm_join(callback, object()))
     assert edits == ['Вы записаны на матч.']
+
+
+def test_inline_query_for_shared_match_only_returns_owner_match(monkeypatch):
+    responses = []
+    async def answer(items, **kwargs): responses.append(items)
+    async def matches(*args):
+        base = {'title': 'Матч', 'start_at': int(time.time()) + 3600, 'location': '', 'max_players': 4, 'deleted_at': None}
+        return [{**base, 'id': 1, 'created_by': 2}, {**base, 'id': 2, 'created_by': 2}, {**base, 'id': 3, 'created_by': 3}]
+    async def drafts(*args): return []
+    async def players(*args): return []
+    monkeypatch.setattr(mod.db, 'list_upcoming_matches', matches)
+    monkeypatch.setattr(mod.db, 'list_owned_match_drafts', drafts)
+    monkeypatch.setattr(mod.db, 'get_match_players', players)
+    query = SimpleNamespace(from_user=SimpleNamespace(id=2), answer=answer, query='match_2')
+    run(mod.query_handler(query))
+    assert [item.id for item in responses[-1]] == ['match:2']
+    query.query = 'match_3'
+    run(mod.query_handler(query))
+    assert responses[-1] == []
+    query.query = 'match_999'
+    run(mod.query_handler(query))
+    assert responses[-1] == []

@@ -13,6 +13,7 @@
       <label class="field"><span class="label">Игроков</span><input class="input" name="max_players" type="number" inputmode="numeric" min="2" max="2147483647" value="4" required></label>
     </div>
     <p class="hint">Организатор входит в число игроков.</p>
+    <label class="field" style="display:flex;flex-direction:row;align-items:center;gap:10px"><input type="checkbox" name="notify_all" style="width:18px;height:18px;flex:none"><span>Уведомить игроков, подписанных на матчи</span></label>
     <button class="btn btn--primary btn--block" type="submit">Создать и выбрать чат</button>
     <p class="hint" id="inline-create-status" role="status"></p>
   </form>
@@ -47,7 +48,7 @@ form.addEventListener('submit', async ev => {
   try {
     if (!created) {
       const values = new FormData(form);
-      await api('/api/matches', 'POST', {title: values.get('title'), date: values.get('date'), time: values.get('time'), location: values.get('location'), max_players: Number(values.get('max_players')), inline_direct: true, inline_draft: true});
+      await api('/api/matches', 'POST', {title: values.get('title'), date: values.get('date'), time: values.get('time'), location: values.get('location'), max_players: Number(values.get('max_players')), inline_direct: true, inline_draft: true, notify_all: values.has('notify_all')});
       created = true;
     }
     status.textContent = 'Черновик создан. Выберите чат и карточку матча. Если закрыть выбор, найти черновик можно через @SQASSITbot.';

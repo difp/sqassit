@@ -31,6 +31,7 @@ def test_migration_backfills_onboarding_for_existing_users(tmp_path):
             ('Существующий матч', int(time.time()) + 86400, 42, 1),
         )
         con.execute("ALTER TABLE matches DROP COLUMN published")
+        con.execute("ALTER TABLE matches DROP COLUMN notify_all")
         for column in (
             "onboarding_seen",
             "notify_matches",
@@ -53,7 +54,7 @@ def test_migration_backfills_onboarding_for_existing_users(tmp_path):
             assert row["notify_messages"] == 1
             matches = await db.list_upcoming_matches(int(time.time()), int(time.time()) + 172800)
             assert len(matches) == 1 and matches[0]["title"] == 'Существующий матч'
-            assert matches[0]["published"] == 1
+            assert matches[0]["published"] == 1 and matches[0]["notify_all"] == 0
         finally:
             await db.close()
 

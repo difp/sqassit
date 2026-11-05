@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
 import time
 import weakref
 from datetime import datetime
@@ -121,8 +122,10 @@ async def query_handler(query: InlineQuery) -> None:
     drafts = await db.list_owned_match_drafts(query.from_user.id, now, now + 366 * 86400)
     matches = [*drafts, *matches]
     results: list[InlineQueryResultUnion] = []
+    search = getattr(query, 'query', '').strip()
+    target = re.fullmatch(r'match_([0-9]+)', search)
     for match in matches:
-        if match['created_by'] != query.from_user.id:
+        if match['created_by'] != query.from_user.id or (target is not None and str(match['id']) != target.group(1)):
             continue
         players = await db.get_match_players(match['id'])
         results.append(InlineQueryResultArticle(
@@ -145,7 +148,9 @@ async def publish_draft(match) -> None:
         published = await db.get_match(match['id'])
         if published is not None:
             main._spawn(main._notify_match_event(published, match['created_by'], 'joined'))
-            main._spawn(main._notify_match_feed(match['created_by']))
+            main._spawn(main._refresh_existing_match_feeds(int(time.time())))
+            if published['notify_all']:
+                main._spawn(main._notify_new_match(published))
 
 
 async def chosen_handler(result: ChosenInlineResult, bot) -> None:

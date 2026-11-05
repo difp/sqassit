@@ -654,6 +654,7 @@ class MatchIn(BaseModel):
     level: str = Field(default="", max_length=60)
     inline_direct: bool = False
     inline_draft: bool = False
+    notify_all: bool = False
 
 
 async def _notifications_allowed(telegram_id: int, category: str) -> bool:
@@ -1501,6 +1502,7 @@ async def api_create_match(
             created_by=user["telegram_id"],
             inline_direct=payload.inline_direct,
             inline_draft=payload.inline_draft,
+            notify_all=payload.notify_all,
         )
         await db.join_match(
         match_id, user["telegram_id"], payload.max_players, approved=True
@@ -1508,7 +1510,9 @@ async def api_create_match(
         created_match = await db.get_match(match_id)
         if created_match is not None and not payload.inline_draft:
             _spawn(_notify_match_event(created_match, user["telegram_id"], "joined"))
-            _spawn(_notify_match_feed(user["telegram_id"]))
+            _spawn(_refresh_existing_match_feeds(int(time.time())))
+            if payload.notify_all:
+                _spawn(_notify_new_match(created_match))
         return {"ok": True, "id": match_id}
     except HTTPException:
         raise
@@ -1664,7 +1668,7 @@ async def api_delete_match(
         deleted_match = await db.get_match(match_id)
         if deleted_match is not None:
             _spawn(_notify_match_deleted(deleted_match))
-        _spawn(_notify_match_feed(user["telegram_id"]))
+        _spawn(_refresh_existing_match_feeds(int(time.time())))
         return {"ok": True}
     except Exception:
         logger.exception("Ошибка удаления матча")
@@ -3674,6 +3678,13 @@ async def _notify_match_request(match: aiosqlite.Row, user_id: int) -> None:
         )
 
 
+async def _expire_match_announcement(match_id: int, user_id: int | None = None) -> None:
+    try:
+        await db.expire_event_notifications("match_announcement", match_id, user_id)
+    except Exception:
+        logger.exception("Не удалось удалить неактуальное уведомление матча %s", match_id)
+
+
 async def _notify_match_event(
     match: aiosqlite.Row, user_id: int | None = None, status: str = "joined"
 ) -> None:
@@ -3681,6 +3692,10 @@ async def _notify_match_event(
     players = await db.get_match_players(match["id"])
     booked = [p for p in players if _row_status(p) == "booked"]
     pending = [p for p in players if _row_status(p) == "pending"]
+    if len(booked) >= int(match["max_players"]):
+        await _expire_match_announcement(match["id"])
+    elif user_id is not None and status in {"joined", "pending", "promoted"}:
+        await _expire_match_announcement(match["id"], user_id)
     text = _match_participants_text(match, booked)
     if pending:
         text += f"\n📝 Заявок: {len(pending)}"
@@ -3795,7 +3810,42 @@ async def _notify_match_feed(exclude_user_id: int | None = None) -> None:
         )
 
 
+async def _notify_new_match(match: aiosqlite.Row) -> None:
+    """Однократно сообщает о новом матче только подписанным игрокам."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    url = urlsplit(bot_module._web_app_url())
+    match_url = urlunsplit((url.scheme, url.netloc, url.path.rstrip("/") + "/match", url.query, url.fragment))
+    markup = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Открыть матчи", web_app=WebAppInfo(url=match_url))
+    ]])
+    for recipient in await db.list_match_feed_recipients():
+        user_id = int(recipient["telegram_id"])
+        current = await db.get_match(match["id"])
+        if current is None or current["deleted_at"] or current["start_at"] <= int(time.time()) or current["players_count"] >= current["max_players"]:
+            break
+        if user_id == current["created_by"] or not await _notifications_allowed(user_id, "matches"):
+            continue
+        players = await db.get_match_players(current["id"])
+        if any(int(p["telegram_id"]) == user_id and _row_status(p) in {"booked", "pending", "waitlist"} for p in players):
+            continue
+        start = _local_time(current["start_at"])
+        text = f"Новый матч: <b>{html.escape(current['title'] or 'Матч')}</b>\n{start:%d.%m · %H:%M}"
+        if current["location"]:
+            text += f"\n{html.escape(current['location'])}"
+        await _send_event_notification("match_announcement", current["id"], user_id, user_id, text, reply_markup=markup)
+        # Состояние могло измениться, пока Telegram принимал сообщение.
+        latest = await db.get_match(current["id"])
+        if latest is None or latest["deleted_at"] or latest["start_at"] <= int(time.time()) or latest["players_count"] >= latest["max_players"]:
+            await _expire_match_announcement(current["id"])
+            break
+        latest_players = await db.get_match_players(current["id"])
+        if any(int(p["telegram_id"]) == user_id and _row_status(p) in {"booked", "pending", "waitlist"} for p in latest_players):
+            await _expire_match_announcement(current["id"], user_id)
+
+
 async def _notify_match_deleted(match: aiosqlite.Row) -> None:
+    await _expire_match_announcement(match["id"])
     await _refresh_match_inline(match["id"])
     players = await db.get_match_players(match["id"])
     if match["created_by"] and await _notifications_allowed(

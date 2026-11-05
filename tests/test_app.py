@@ -4859,8 +4859,8 @@ def test_inline_draft_is_private_until_posted_and_publishes_once(client, monkeyp
     sent = []
     async def no_notify(*args):
         sent.append(args)
-    monkeypatch.setattr(mainmod, '_notify_match_feed', no_notify)
-    response = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Черновик', 'inline_direct': True, 'inline_draft': True})
+    monkeypatch.setattr(mainmod, '_notify_new_match', no_notify)
+    response = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Черновик', 'inline_direct': True, 'inline_draft': True, 'notify_all': True})
     match_id = response.json()['id']
     assert not any(m['id'] == match_id for m in client.get('/api/matches', headers=PLAYER2).json()['matches'])
     assert client.post(f'/api/matches/{match_id}/join', headers=PLAYER2).status_code == 404
@@ -4914,13 +4914,92 @@ def test_inline_draft_publishes_when_first_player_clicks_without_feedback(client
 def test_simultaneous_draft_publication_notifies_only_once(client, monkeypatch):
     from app import inline_match
     client.get('/api/me', headers=PLAYER)
-    match_id = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Черновик', 'inline_draft': True}).json()['id']
+    match_id = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Черновик', 'inline_draft': True, 'notify_all': True}).json()['id']
     sent = []
     async def feed(*args): sent.append(args)
-    monkeypatch.setattr(mainmod, '_notify_match_feed', feed)
+    monkeypatch.setattr(mainmod, '_notify_new_match', feed)
     async def publish_together():
         draft = await mainmod.db.get_match(match_id)
         await asyncio.gather(inline_match.publish_draft(draft), inline_match.publish_draft(draft))
         await asyncio.sleep(0.05)
     client.portal.call(publish_together)
     assert len(sent) == 1
+
+
+def test_match_announcement_opt_in_and_recipient_preferences(client, monkeypatch):
+    from functools import partial
+    client.get('/api/me', headers=PLAYER)
+    client.get('/api/me', headers=PLAYER2)
+    client.get('/api/me', headers=APPLICANT)
+    client.portal.call(partial(mainmod.db.set_notification_settings, 888, matches=False))
+    client.portal.call(partial(mainmod.db.set_notification_settings, 123, enabled=False))
+    calls = []
+    async def send(kind, entity_id, chat_id, user_id, text, **kwargs):
+        if kind == 'match_announcement':
+            calls.append((entity_id, chat_id, text, kwargs))
+        return 'sent'
+    monkeypatch.setattr(mainmod, '_send_event_notification', send)
+    silent = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Тихий', 'notify_all': False}).json()['id']
+    client.portal.call(asyncio.sleep, 0.1)
+    assert calls == []
+    loud = client.post('/api/matches', headers=PLAYER, json={**_future(3), 'title': 'Открытый', 'location': 'Парк', 'notify_all': True}).json()['id']
+    client.portal.call(asyncio.sleep, 0.2)
+    assert [(mid, uid) for mid, uid, _, _ in calls] == [(loud, 556)]
+    assert 'Открытый' in calls[0][2] and 'Парк' in calls[0][2]
+    assert calls[0][3]['reply_markup'].inline_keyboard[0][0].text == 'Открыть матчи'
+    assert silent != loud
+
+
+def test_announcement_expires_when_match_fills_or_is_deleted(client):
+    client.get('/api/me', headers=PLAYER)
+    client.get('/api/me', headers=PLAYER2)
+    match_id = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Матч', 'max_players': 2}).json()['id']
+    match = client.portal.call(mainmod.db.get_match, match_id)
+    client.portal.call(mainmod.db.save_event_notification, 'match_announcement', match_id, 556, 556, 55, 'текст')
+    before = client.portal.call(mainmod.db.get_event_notification, 'match_announcement', match_id, 556, 556)
+    assert before['delete_at'] <= min(match['start_at'], int(time.time()) + 86400)
+    assert client.post(f'/api/matches/{match_id}/join', headers=PLAYER2).status_code == 200
+    client.portal.call(asyncio.sleep, 0.1)
+    expired = client.portal.call(mainmod.db.get_event_notification, 'match_announcement', match_id, 556, 556)
+    assert expired['delete_at'] <= int(time.time())
+
+
+@pytest.mark.parametrize('capacity', [2, 3])
+def test_announcement_is_removed_when_last_place_fills_during_delivery(client, monkeypatch, capacity):
+    client.get('/api/me', headers=PLAYER)
+    client.get('/api/me', headers=PLAYER2)
+    match_id = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Матч', 'max_players': capacity}).json()['id']
+    async def recipients(): return [{'telegram_id': 556}]
+    async def send(kind, entity_id, chat_id, user_id, text, **kwargs):
+        if kind != 'match_announcement':
+            return 'sent'
+        await mainmod.db.save_event_notification(kind, entity_id, chat_id, user_id, 77, text)
+        assert await mainmod.db.join_match(entity_id, user_id, capacity) == 'booked'
+        return 'sent'
+    monkeypatch.setattr(mainmod.db, 'list_match_feed_recipients', recipients)
+    monkeypatch.setattr(mainmod, '_send_event_notification', send)
+    match = client.portal.call(mainmod.db.get_match, match_id)
+    client.portal.call(mainmod._notify_new_match, match)
+    record = client.portal.call(mainmod.db.get_event_notification, 'match_announcement', match_id, 556, 556)
+    assert record['delete_at'] <= int(time.time())
+
+
+def test_announcement_skips_joined_players_and_full_match(client, monkeypatch):
+    client.get('/api/me', headers=PLAYER)
+    client.get('/api/me', headers=PLAYER2)
+    client.get('/api/me', headers=APPLICANT)
+    mid = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Матч', 'max_players': 3}).json()['id']
+    client.portal.call(mainmod.db.join_match, mid, 556, 3)
+    sent = []
+    async def recipients(): return [{'telegram_id': 556}, {'telegram_id': 888}]
+    async def send(kind, entity, chat, user, text, **kwargs):
+        if kind == 'match_announcement': sent.append(chat)
+    monkeypatch.setattr(mainmod.db, 'list_match_feed_recipients', recipients)
+    monkeypatch.setattr(mainmod, '_send_event_notification', send)
+    match = client.portal.call(mainmod.db.get_match, mid)
+    client.portal.call(mainmod._notify_new_match, match)
+    assert sent == [888]
+    client.portal.call(mainmod.db.join_match, mid, 888, 3)
+    sent.clear()
+    client.portal.call(mainmod._notify_new_match, match)
+    assert sent == []

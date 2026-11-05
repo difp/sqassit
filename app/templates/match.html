@@ -70,6 +70,14 @@
       <label class="field"><span class="label">Описание</span>
         <textarea class="input" name="description" rows="3" maxlength="450"
                   placeholder="Например: ищем ещё одного игрока на завтра"></textarea></label>
+      <label class="field" style="display:flex;flex-direction:row;align-items:center;gap:10px">
+        <input type="checkbox" name="notify_all" style="width:18px;height:18px;flex:none">
+        <span>Уведомить игроков, подписанных на матчи</span>
+      </label>
+      <label class="field" style="display:flex;flex-direction:row;align-items:center;gap:10px">
+        <input type="checkbox" name="publish_group" style="width:18px;height:18px;flex:none">
+        <span>После создания выбрать группу в Telegram</span>
+      </label>
       <button type="submit" class="btn btn--primary btn--block" style="margin-top:6px">Создать матч</button>
     </form>
   </div>
@@ -153,6 +161,11 @@ function matchCard(m) {
   // подальше от главной кнопки, чтобы не нажать случайно.
   const rows = m.is_creator ? `
     <div style="margin-top:14px">
+      <button type="button" class="list-action" data-match-share="${m.id}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V3m-4 4 4-4 4 4M4 14v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg>
+        Опубликовать в группе
+        <svg class="list-action__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>
+      </button>
       <button class="list-action" data-match-coauthors="${m.id}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>
@@ -304,11 +317,25 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeMatchSheet();
 });
 
+function shareMatch(id) {
+  if (!tg || typeof tg.switchInlineQuery !== 'function') {
+    toast('Откройте приложение в Telegram, чтобы выбрать группу.');
+    return;
+  }
+  try {
+    tg.switchInlineQuery(`match_${id}`, ['groups']);
+  } catch (e) {
+    toast('Не удалось открыть выбор группы. Попробуйте ещё раз из карточки матча.');
+  }
+}
+
 document.getElementById('matches').addEventListener('click', async (ev) => {
   const profileToken = ev.target.closest('[data-profile-token]')?.getAttribute('data-profile-token');
   if (profileToken) { openPlayerProfile(profileToken); return; }
   const tournamentId = ev.target.closest('[data-tournament]')?.getAttribute('data-tournament');
   if (tournamentId) { openMatchTournament(tournamentId); return; }
+  const share = ev.target.closest('[data-match-share]')?.getAttribute('data-match-share');
+  if (share) { shareMatch(share); return; }
   const join = ev.target.closest('[data-match-join]')?.getAttribute('data-match-join');
   const leave = ev.target.closest('[data-match-leave]')?.getAttribute('data-match-leave');
   const remove = ev.target.closest('[data-match-delete]')?.getAttribute('data-match-delete');
@@ -360,11 +387,13 @@ matchForm.addEventListener('submit', async (ev) => {
     duration_min: parseInt(form.duration_min.value, 10),
     max_players: parseInt(form.max_players.value, 10),
     level: form.level.value,
+    notify_all: form.notify_all.checked,
   };
+  const publishGroup = form.publish_group.checked;
   const btn = form.querySelector('button[type="submit"]');
   btn.disabled = true;
   try {
-    await api('/api/matches', 'POST', payload);
+    const created = await api('/api/matches', 'POST', payload);
     hapticNotify('success');
     toast('Матч создан');
     closeMatchSheet();
@@ -372,6 +401,7 @@ matchForm.addEventListener('submit', async (ev) => {
     matchTime.value = '19:00';
     cacheClear();
     loadMatches();
+    if (publishGroup && created.id) shareMatch(created.id);
   } catch (e) {
     hapticNotify('error');
     toast(e.message);

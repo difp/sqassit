@@ -170,6 +170,7 @@ CREATE TABLE IF NOT EXISTS matches (
     level         TEXT NOT NULL DEFAULT '',
     inline_direct INTEGER NOT NULL DEFAULT 0,
     published     INTEGER NOT NULL DEFAULT 1,
+    notify_all    INTEGER NOT NULL DEFAULT 0,
     created_by    INTEGER NOT NULL,
     created_at    INTEGER NOT NULL,
     room_code     TEXT,                       -- код комнаты турнира (squashtabs)
@@ -282,6 +283,7 @@ async def _migrate() -> None:
         ("matches", "room_code"): "ALTER TABLE matches ADD COLUMN room_code TEXT",
         ("matches", "inline_direct"): "ALTER TABLE matches ADD COLUMN inline_direct INTEGER NOT NULL DEFAULT 0",
         ("matches", "published"): "ALTER TABLE matches ADD COLUMN published INTEGER NOT NULL DEFAULT 1",
+        ("matches", "notify_all"): "ALTER TABLE matches ADD COLUMN notify_all INTEGER NOT NULL DEFAULT 0",
         ("users", "bio"): "ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''",
         ("users", "links"): "ALTER TABLE users ADD COLUMN links TEXT NOT NULL DEFAULT '[]'",
         ("users", "about"): "ALTER TABLE users ADD COLUMN about TEXT NOT NULL DEFAULT ''",
@@ -1756,16 +1758,17 @@ async def create_match(
     created_by: int,
     inline_direct: bool = False,
     inline_draft: bool = False,
+    notify_all: bool = False,
 ) -> int:
     return await _execute(
         """
         INSERT INTO matches (title, description, location, start_at, duration_min,
-                             max_players, level, created_by, created_at, inline_direct, published)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             max_players, level, created_by, created_at, inline_direct, published, notify_all)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             title, description, location, start_at, duration_min,
-            max_players, level, created_by, int(time.time()), int(inline_direct), int(not inline_draft),
+            max_players, level, created_by, int(time.time()), int(inline_direct), int(not inline_draft), int(notify_all),
         ),
     )
 
@@ -2069,6 +2072,10 @@ async def save_event_notification(
     now = int(time.time())
     if delete_at is None and kind != "rules":
         delete_at = now + 86400
+        if kind == "match_announcement":
+            event = await _fetchone("SELECT start_at FROM matches WHERE id = ?", (entity_id,))
+            if event is not None:
+                delete_at = min(int(event["start_at"]), delete_at)
         if kind in {"training", "match"}:
             query = (
                 "SELECT start_at, duration_min, deleted_at FROM trainings WHERE id = ?"
