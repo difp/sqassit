@@ -2747,7 +2747,7 @@ def test_training_notification_texts_and_targets(monkeypatch):
     assert booked_text.startswith("Вы записаны.")
     assert mainmod._training_personal_text(
         training, people, "waitlist", "ilka"
-    ).startswith("Заявка на занятие одобрена, но пока нет мест,")
+    ).startswith("Вы в листе ожидания.")
     assert mainmod._training_personal_text(
         training, people, "rejected", "ilka"
     ).startswith("Заявка на занятие отклонена — к сожалению, мест нет.")
@@ -2761,7 +2761,7 @@ def test_training_notification_texts_and_targets(monkeypatch):
     assert "Актуальную информацию пришлём за день до занятия" in booked_prelim
     assert mainmod._training_waitlist_text(
         training, "ilka"
-    ).startswith("Заявка на занятие одобрена, но пока нет мест,")
+    ).startswith("Вы в листе ожидания.")
     assert "очищено" in mainmod._training_rejected_text(training, "ilka")
     for status in ("promoted", "cancelled", "deleted", "waitlist", "pending",
                    "rejected", "booked"):
@@ -2896,6 +2896,7 @@ def test_training_notification_alert_only_on_edit(monkeypatch):
     assert keyboard is not None
 
     # Обычная запись без правки уже даёт push — второй алерт не нужен.
+    people[0]["status"] = "booked"
     alerts.clear()
     asyncio.run(mainmod._notify_training_event(training, 555, "booked", actor_id=555))
     assert alerts == []
@@ -3642,26 +3643,20 @@ def test_training_and_match_approval_flow(client, monkeypatch):
     assert approved.status_code == 200
     assert approved.json()["status"] == "booked"
 
-    # Второй игрок при отсутствии места после одобрения попадает в очередь.
-    assert client.post(f"/api/trainings/{training}/book", headers=PLAYER2).json()["status"] == "pending"
-    waitlisted = client.post(
-        f"/api/coach/trainings/{training}/participants/556/approve", headers=COACH
-    )
-    assert waitlisted.json()["status"] == "waitlist"
-
+    # Новая заявка на заполненную тренировку сразу попадает в очередь.
+    assert client.post(f"/api/trainings/{training}/book", headers=PLAYER2).json()["status"] == "waitlist"
     third = {"X-Init-Data": _init({"id": 559, "first_name": "Третий"})}
-    assert client.get("/api/me", headers=third).status_code == 200
-    assert client.post(f"/api/trainings/{training}/book", headers=third).json()["status"] == "pending"
-    rejected = client.post(
-        f"/api/coach/trainings/{training}/participants/559/reject", headers=COACH
-    )
+    assert client.post(f"/api/trainings/{training}/book", headers=third).json()["status"] == "waitlist"
+    # Освободившееся место сначала предлагается тренеру для решения.
+    assert client.post(f"/api/trainings/{training}/cancel", headers=PLAYER).status_code == 200
+    participants = client.get(f"/api/coach/trainings/{training}/participants", headers=COACH).json()["participants"]
+    assert next(p for p in participants if p["telegram_id"] == 556)["status"] == "pending"
+    assert next(p for p in participants if p["telegram_id"] == 559)["status"] == "waitlist"
+    rejected = client.post(f"/api/coach/trainings/{training}/participants/556/reject", headers=COACH)
     assert rejected.status_code == 200
-    assert client.post(
-        f"/api/coach/trainings/{training}/participants/559/reject", headers=COACH
-    ).status_code == 404
-    assert client.post(
-        f"/api/coach/trainings/{training}/participants/559/approve", headers=COACH
-    ).json()["status"] == "rejected"
+    participants = client.get(f"/api/coach/trainings/{training}/participants", headers=COACH).json()["participants"]
+    assert next(p for p in participants if p["telegram_id"] == 559)["status"] == "pending"
+    assert client.post(f"/api/coach/trainings/{training}/participants/559/approve", headers=COACH).json()["status"] == "booked"
 
     # Матч: создатель подтверждён сразу, остальные — заявки.
     match_id = client.post(
@@ -4432,3 +4427,159 @@ def test_training_tournament_shared_persisted_and_authorized(client, monkeypatch
     assert client.put('/api/trainings/999999/tournament', headers=COACH, json={'revision': 0, 'state': state}).status_code == 404
     assert client.delete(f'/api/coach/trainings/{tid}', headers=COACH).status_code == 200
     assert client.get(url, headers=COACH).status_code == 404
+
+
+def test_full_group_moves_pending_and_requires_coach_again(client, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(mainmod, "settings", replace(settings, require_event_approval=True))
+    training = client.post(
+        "/api/coach/trainings", headers=COACH,
+        json={**_future(10), "capacity": 1},
+    ).json()["id"]
+    for player in (PLAYER, PLAYER2):
+        assert client.post(f"/api/trainings/{training}/book", headers=player).json()["status"] == "pending"
+    assert client.post(f"/api/coach/trainings/{training}/participants/555/approve", headers=COACH).json()["status"] == "booked"
+    rows = client.get(f"/api/coach/trainings/{training}/participants", headers=COACH).json()["participants"]
+    second = next(p for p in rows if p["telegram_id"] == 556)
+    assert second["status"] == "waitlist" and second["needs_approval"]
+    assert client.post(f"/api/trainings/{training}/cancel", headers=PLAYER).status_code == 200
+    rows = client.get(f"/api/coach/trainings/{training}/participants", headers=COACH).json()["participants"]
+    assert next(p for p in rows if p["telegram_id"] == 556)["status"] == "pending"
+    assert client.post(f"/api/coach/trainings/{training}/participants/556/approve", headers=COACH).json()["status"] == "booked"
+
+
+def test_level_privacy_and_vacancy_recipients(client):
+    level = TRAINING_LEVELS[0]
+    for player in (PLAYER, PLAYER2):
+        assert client.put('/api/me/profile', headers=player, json={"skill_level": level, "show_level": False}).status_code == 200
+    token = issue_scoped_token(settings.bot_token, "profile", 0, 555)
+    assert client.get(f"/api/players/{token}", headers=PLAYER2).json()["profile"]["skill_level"] == ""
+    assert client.get(f"/api/players/{token}", headers=COACH).json()["profile"]["skill_level"] == level
+    assert client.put('/api/me/profile', headers=PLAYER, json={"skill_level": level, "show_level": True}).status_code == 200
+    assert client.get(f"/api/players/{token}", headers=PLAYER2).json()["profile"]["skill_level"] == level
+    assert client.put('/api/me/profile', headers=PLAYER, json={"skill_level": "неверный"}).status_code == 422
+    training = client.post('/api/coach/trainings', headers=COACH, json={**_future(10), "capacity": 1, "level": level}).json()["id"]
+    recipients = client.portal.call(mainmod.db.training_vacancy_recipients, training, 555)
+    assert {row["telegram_id"] for row in recipients} == {556}
+    assert client.post(f'/api/trainings/{training}/book', headers=PLAYER2).status_code == 200
+    assert client.portal.call(mainmod.db.training_vacancy_recipients, training, 555) == []
+
+
+def test_vacancy_notifications_require_empty_queue_and_matching_level(client, monkeypatch):
+    level = TRAINING_LEVELS[0]
+    third = {"X-Init-Data": _init({"id": 559, "first_name": "Третий"})}
+    for player in (PLAYER, PLAYER2, third):
+        client.put("/api/me/profile", headers=player, json={"skill_level": level})
+    client.put("/api/me/profile", headers=third, json={"skill_level": TRAINING_LEVELS[1]})
+    training_id = client.post(
+        "/api/coach/trainings", headers=COACH,
+        json={**_future(10), "capacity": 1, "level": level},
+    ).json()["id"]
+    training = client.portal.call(mainmod.db.get_training, training_id)
+    sent = []
+
+    async def send(kind, tid, recipient, text, **kwargs):
+        sent.append((kind, tid, recipient, text))
+        return 1
+
+    monkeypatch.setattr(mainmod, "_send_new_event_message", send)
+    client.portal.call(mainmod._notify_training_vacancy, training, 555)
+    assert [notice[2] for notice in sent] == [556]
+    assert "Освободилось место" in sent[0][3]
+    client.post(f"/api/trainings/{training_id}/book", headers=third)
+    sent.clear()
+    client.portal.call(mainmod._notify_training_vacancy, training, 555)
+    assert sent == []
+
+
+def test_reconcile_existing_full_group(client, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(mainmod, "settings", replace(settings, require_event_approval=True))
+    training = client.post(
+        "/api/coach/trainings", headers=COACH,
+        json={**_future(10), "capacity": 1},
+    ).json()["id"]
+    client.post(f"/api/trainings/{training}/book", headers=PLAYER)
+    client.post(f"/api/coach/trainings/{training}/participants/555/approve", headers=COACH)
+    client.get("/api/me", headers=PLAYER2)
+    # Имитируем существующую заявку, оставшуюся в заполненной группе до обновления.
+    client.portal.call(mainmod.db._execute, "INSERT INTO bookings (training_id, user_id, status, created_at) VALUES (?, ?, 'pending', ?)", (training, 556, int(time.time())))
+    assert client.portal.call(mainmod.db.reconcile_full_training_waitlists) == [(training, 556)]
+    row = client.portal.call(mainmod.db.get_booking, training, 556)
+    assert row["status"] == "waitlist" and row["needs_approval"] == 1
+
+
+@pytest.mark.parametrize("action", ["book", "add", "restore", "cancel", "coach_cancel", "delete"])
+def test_queue_movement_notifies_players_for_all_entry_points(client, monkeypatch, action):
+    from dataclasses import replace
+
+    monkeypatch.setattr(mainmod, "settings", replace(settings, require_event_approval=False))
+    third = {"X-Init-Data": _init({"id": 559, "first_name": "Третий"})}
+    for player in (PLAYER, PLAYER2, third):
+        client.get("/api/me", headers=player)
+    tid = client.post("/api/coach/trainings", headers=COACH, json={**_future(10), "capacity": 1}).json()["id"]
+    queued = action in {"cancel", "coach_cancel", "delete"}
+    records = [(556, "pending", 0, 1)]
+    if queued:
+        records = [(555, "booked", 0, 0), (556, "waitlist", 1, 0), (559, "pending", 0, 1)]
+    elif action == "restore":
+        records.append((555, "cancelled", 0, 0))
+    for user_id, status, position, needs in records:
+        client.portal.call(mainmod.db._execute,
+            "INSERT INTO bookings (training_id,user_id,status,position,needs_approval,created_at) VALUES (?,?,?,?,?,?)",
+            (tid, user_id, status, position, needs, int(time.time())))
+    calls = []
+
+    async def notify(training, user_id=None, status="", actor_id=None):
+        calls.append((user_id, status))
+
+    monkeypatch.setattr(mainmod, "_notify_training_event", notify)
+    if action == "book":
+        response = client.post(f"/api/trainings/{tid}/book", headers=PLAYER)
+    elif action == "add":
+        response = client.post(f"/api/coach/trainings/{tid}/participants", headers=COACH, json={"user_id": 555})
+    elif action == "restore":
+        response = client.post(f"/api/coach/trainings/{tid}/participants/555/restore", headers=COACH)
+    elif action == "cancel":
+        response = client.post(f"/api/trainings/{tid}/cancel", headers=PLAYER)
+    elif action == "coach_cancel":
+        response = client.post(f"/api/coach/trainings/{tid}/participants/555/cancel", headers=COACH)
+    else:
+        response = client.delete("/api/me?confirm=true", headers=PLAYER)
+    assert response.status_code == 200
+    client.portal.call(asyncio.sleep, 0.03)
+    moved_id = 559 if queued else 556
+    assert (moved_id, "waitlist") in calls
+    assert client.portal.call(mainmod.db.get_booking, tid, moved_id)["status"] == "waitlist"
+
+
+def test_unaccepted_queue_vacancy_announced_after_rejection_and_cancellation(client, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(mainmod, "settings", replace(settings, require_event_approval=True))
+    notices = []
+
+    async def vacancy(training, user_id):
+        notices.append((training["id"], user_id))
+
+    monkeypatch.setattr(mainmod, "_notify_training_vacancy", vacancy)
+    for reject in (True, False):
+        tid = client.post("/api/coach/trainings", headers=COACH, json={**_future(10 if reject else 11), "capacity": 1}).json()["id"]
+        client.post(f"/api/trainings/{tid}/book", headers=PLAYER)
+        client.post(f"/api/coach/trainings/{tid}/participants/555/approve", headers=COACH)
+        client.post(f"/api/trainings/{tid}/book", headers=PLAYER2)
+        client.post(f"/api/trainings/{tid}/cancel", headers=PLAYER)
+        if reject:
+            response = client.post(f"/api/coach/trainings/{tid}/participants/556/reject", headers=COACH)
+        else:
+            response = client.post(f"/api/trainings/{tid}/cancel", headers=PLAYER2)
+        assert response.status_code == 200
+        client.portal.call(asyncio.sleep, 0.03)
+        assert (tid, 556) in notices
+    tid = client.post("/api/coach/trainings", headers=COACH, json={**_future(12), "capacity": 1}).json()["id"]
+    client.post(f"/api/coach/trainings/{tid}/participants", headers=COACH, json={"user_id": 555})
+    assert client.post(f"/api/coach/trainings/{tid}/participants/555/cancel", headers=COACH).status_code == 200
+    client.portal.call(asyncio.sleep, 0.03)
+    assert (tid, 555) in notices

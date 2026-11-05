@@ -79,6 +79,8 @@ CREATE TABLE IF NOT EXISTS users (
     about                 TEXT NOT NULL DEFAULT '',   -- «о себе» игрока (видит тренер)
     display_mode          TEXT NOT NULL DEFAULT 'name', -- name | animal
     show_username         INTEGER NOT NULL DEFAULT 0, -- согласие показывать @username
+    skill_level           TEXT NOT NULL DEFAULT '',
+    show_level            INTEGER NOT NULL DEFAULT 0,
     onboarding_seen       INTEGER NOT NULL DEFAULT 0, -- памятка при первом запуске
     created_at            INTEGER NOT NULL
 );
@@ -107,6 +109,7 @@ CREATE TABLE IF NOT EXISTS bookings (
     user_id      INTEGER NOT NULL,
     status       TEXT NOT NULL DEFAULT 'booked',   -- booked | waitlist | cancelled
     position     INTEGER NOT NULL DEFAULT 0,       -- порядок в очереди ожидания (FIFO)
+    needs_approval INTEGER NOT NULL DEFAULT 0,    -- очередь без подтверждения тренера
     created_at   INTEGER NOT NULL,
     UNIQUE (training_id, user_id)
 );
@@ -253,10 +256,14 @@ async def _migrate() -> None:
     coaches_cols = await columns_of("coaches")
     matches_cols = await columns_of("matches")
     match_players_cols = await columns_of("match_players")
+    bookings_cols = await columns_of("bookings")
     event_notifications_cols = await columns_of("event_notifications")
     onboarding_was_present = "onboarding_seen" in users_cols
 
     additions = {
+        ("users", "skill_level"): "ALTER TABLE users ADD COLUMN skill_level TEXT NOT NULL DEFAULT ''",
+        ("users", "show_level"): "ALTER TABLE users ADD COLUMN show_level INTEGER NOT NULL DEFAULT 0",
+        ("bookings", "needs_approval"): "ALTER TABLE bookings ADD COLUMN needs_approval INTEGER NOT NULL DEFAULT 0",
         ("trainings", "deleted_at"): "ALTER TABLE trainings ADD COLUMN deleted_at INTEGER",
         ("trainings", "deleted_by"): "ALTER TABLE trainings ADD COLUMN deleted_by INTEGER",
         ("trainings", "level"): "ALTER TABLE trainings ADD COLUMN level TEXT NOT NULL DEFAULT ''",
@@ -313,6 +320,7 @@ async def _migrate() -> None:
         "coaches": coaches_cols,
         "matches": matches_cols,
         "match_players": match_players_cols,
+        "bookings": bookings_cols,
         "event_notifications": event_notifications_cols,
     }
     for (table, column), ddl in additions.items():
@@ -464,6 +472,8 @@ async def set_player_profile(
     notify_trainings: bool | None = None,
     notify_messages: bool | None = None,
     phone: str | None = None,
+    skill_level: str | None = None,
+    show_level: bool | None = None,
 ) -> None:
     """Сохраняет профиль, приватность, телефон и настройки уведомлений."""
     def flag(value: bool | None) -> int | None:
@@ -479,7 +489,9 @@ async def set_player_profile(
                notify_matches = COALESCE(?, notify_matches),
                notify_trainings = COALESCE(?, notify_trainings),
                notify_messages = COALESCE(?, notify_messages),
-               phone = COALESCE(?, phone)
+               phone = COALESCE(?, phone),
+               skill_level = COALESCE(?, skill_level),
+               show_level = COALESCE(?, show_level)
          WHERE telegram_id = ?
         """,
         (
@@ -491,6 +503,8 @@ async def set_player_profile(
             flag(notify_trainings),
             flag(notify_messages),
             phone,
+            skill_level,
+            flag(show_level),
             telegram_id,
         ),
     )
@@ -1234,7 +1248,7 @@ async def get_participants(training_id: int) -> list[aiosqlite.Row]:
     """Записавшиеся + лист ожидания с данными профиля (для аватарок)."""
     return await _fetchall(
         """
-        SELECT b.status, b.position, b.created_at,
+        SELECT b.status, b.position, b.created_at, b.needs_approval,
                u.telegram_id, u.first_name, u.username, u.phone,
                u.avatar_file_id, u.display_mode
           FROM bookings b
@@ -1255,7 +1269,7 @@ async def get_participants_for_trainings(
     # JSON-массив передаётся bind-параметром; SQL остаётся статическим.
     rows = await _fetchall(
         """
-        SELECT b.training_id, b.status, b.position, b.created_at,
+        SELECT b.training_id, b.status, b.position, b.created_at, b.needs_approval,
                u.telegram_id, u.first_name, u.username, u.phone,
                u.avatar_file_id, u.display_mode
           FROM bookings b
@@ -1298,9 +1312,9 @@ async def get_participants_full(training_id: int) -> list[aiosqlite.Row]:
     """
     return await _fetchall(
         """
-        SELECT b.status, b.position, b.created_at,
+        SELECT b.status, b.position, b.created_at, b.needs_approval,
                u.telegram_id, u.first_name, u.username, u.show_username, u.phone,
-               u.avatar_file_id, u.about, u.display_mode
+               u.avatar_file_id, u.about, u.display_mode, u.skill_level
           FROM bookings b
           JOIN users u ON u.telegram_id = b.user_id
          WHERE b.training_id = ?
@@ -1312,244 +1326,276 @@ async def get_participants_full(training_id: int) -> list[aiosqlite.Row]:
     )
 
 
-async def book_training(
-    training_id: int,
-    user_id: int,
-    capacity: int,
-    *,
-    requires_approval: bool = False,
-    respect_waitlist: bool = False,
-) -> str:
-    """
-    Записывает игрока. С подтверждением — создаёт pending, без него —
-    сразу booked/waitlist (FIFO).
+async def training_vacancy_recipients(training_id: int, excluded_user: int) -> list[aiosqlite.Row]:
+    """Подходящие игроки, только пока есть место и очередь полностью пуста."""
+    return await _fetchall(
+        """
+        SELECT u.telegram_id FROM users u JOIN trainings t ON t.id = ?
+         WHERE t.deleted_at IS NULL AND t.start_at > ? AND t.level <> ''
+           AND u.skill_level = t.level AND u.notifications_enabled = 1 AND u.notify_trainings = 1
+           AND u.telegram_id != ? AND u.telegram_id != COALESCE(t.created_by, 0)
+           AND NOT EXISTS (SELECT 1 FROM bookings b WHERE b.training_id = t.id AND b.user_id = u.telegram_id
+                           AND b.status IN ('booked', 'pending', 'waitlist'))
+           AND NOT EXISTS (SELECT 1 FROM bookings b WHERE b.training_id = t.id
+                           AND (b.status = 'waitlist' OR (b.status = 'pending' AND b.position > 0 AND b.needs_approval = 1)))
+           AND (SELECT COUNT(*) FROM bookings b WHERE b.training_id = t.id AND b.status = 'booked') < t.capacity
+        """, (training_id, int(time.time()), excluded_user),
+    )
 
-    `respect_waitlist` — для записи тренером: новый игрок не обгоняет
-    существующую очередь, даже если место формально свободно.
-    """
+
+async def _queue_pending_if_full(db: aiosqlite.Connection, training_id: int) -> list[int]:
+    """Переводит неподтверждённые заявки в конец очереди в той же транзакции."""
+    async with db.execute(
+        "SELECT capacity, (SELECT COUNT(*) FROM bookings b WHERE b.training_id = t.id AND b.status = 'booked') "
+        "FROM trainings t WHERE id = ? AND deleted_at IS NULL AND start_at > ?",
+        (training_id, int(time.time())),
+    ) as cur:
+        training = await cur.fetchone()
+    if training is None or int(training[1]) < int(training[0]):
+        return []
+    async with db.execute(
+        "SELECT COALESCE(MAX(position), 0) FROM bookings WHERE training_id = ? AND status IN ('pending', 'waitlist')",
+        (training_id,),
+    ) as cur:
+        result = await cur.fetchone()
+        assert result is not None
+        max_position = int(result[0])
+    async with db.execute(
+        "SELECT user_id, position FROM bookings WHERE training_id = ? AND status = 'pending' "
+        "ORDER BY CASE WHEN position > 0 THEN 0 ELSE 1 END, position, created_at, id",
+        (training_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+    moved = []
+    for row in rows:
+        position = int(row["position"])
+        if not position:
+            max_position += 1
+            position = max_position
+        await db.execute(
+            "UPDATE bookings SET status = 'waitlist', position = ?, needs_approval = 1 "
+            "WHERE training_id = ? AND user_id = ? AND status = 'pending'",
+            (position, training_id, row["user_id"]),
+        )
+        moved.append(int(row["user_id"]))
+    return moved
+
+
+async def _advance_training_waitlist(db: aiosqlite.Connection, training_id: int) -> int | None:
+    """Выдаёт место одобренному либо отправляет первого неОдобренного на решение."""
+    async with db.execute(
+        "SELECT capacity, (SELECT COUNT(*) FROM bookings b WHERE b.training_id = t.id AND b.status = 'booked'), "
+        "(SELECT COUNT(*) FROM bookings b WHERE b.training_id = t.id AND b.status = 'pending' "
+        "AND b.position > 0 AND b.needs_approval = 1) FROM trainings t WHERE id = ? AND deleted_at IS NULL AND start_at > ?",
+        (training_id, int(time.time())),
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None or int(row[1]) + int(row[2]) >= int(row[0]):
+        return None
+    async with db.execute(
+        "SELECT user_id, needs_approval FROM bookings WHERE training_id = ? AND status = 'waitlist' "
+        "ORDER BY position ASC, created_at ASC, id ASC LIMIT 1", (training_id,),
+    ) as cur:
+        player = await cur.fetchone()
+    if player is None:
+        return None
+    user_id = int(player["user_id"])
+    if player["needs_approval"]:
+        await db.execute(
+            "UPDATE bookings SET status = 'pending' WHERE training_id = ? AND user_id = ?",
+            (training_id, user_id),
+        )
+    else:
+        await db.execute(
+            "UPDATE bookings SET status = 'booked', position = 0 WHERE training_id = ? AND user_id = ?",
+            (training_id, user_id),
+        )
+    return user_id
+
+
+async def reconcile_full_training_waitlists() -> list[tuple[int, int]]:
+    """Находит ранее заполненные будущие группы, где ещё остались заявки."""
+    db = _db()
+    async with _lock:
+        try:
+            async with db.execute(
+                "SELECT DISTINCT t.id FROM trainings t JOIN bookings b ON b.training_id = t.id "
+                "WHERE t.deleted_at IS NULL AND t.start_at > ? AND b.status = 'pending' "
+                "AND (SELECT COUNT(*) FROM bookings p WHERE p.training_id = t.id AND p.status = 'booked') >= t.capacity",
+                (int(time.time()),),
+            ) as cur:
+                trainings = await cur.fetchall()
+            moved: list[tuple[int, int]] = []
+            for row in trainings:
+                tid = int(row[0])
+                moved.extend((tid, uid) for uid in await _queue_pending_if_full(db, tid))
+            await db.commit()
+            return moved
+        except BaseException:
+            await db.rollback()
+            raise
+
+
+async def book_training(
+    training_id: int, user_id: int, capacity: int, *,
+    requires_approval: bool = False, respect_waitlist: bool = False,
+    moved_to_waitlist: list[int] | None = None,
+) -> str:
+    """Создаёт заявку или запись, сохраняя порядок очереди."""
     db = _db()
     now = int(time.time())
     async with _lock:
-        # Идемпотентность: повторный запрос (двойной тап, retry) не должен
-        # менять статус уже записанного игрока. Иначе на заполненной тренировке
-        # booked-участник превращается в waitlist и теряет место.
-        async with db.execute(
-            "SELECT status FROM bookings WHERE training_id = ? AND user_id = ?",
-            (training_id, user_id),
-        ) as cur:
-            existing = await cur.fetchone()
-        if existing is not None and existing["status"] in {
-            "pending", "booked", "waitlist"
-        }:
-            return existing["status"]
-
-        if requires_approval:
-            # Заявка не занимает место до решения тренера/соавтора.
-            status = "pending"
-            position = 0
-        else:
+        try:
             async with db.execute(
-                "SELECT COUNT(*) FROM bookings WHERE training_id = ? AND status = 'booked'",
-                (training_id,),
+                "SELECT status FROM bookings WHERE training_id = ? AND user_id = ?", (training_id, user_id),
+            ) as cur:
+                existing = await cur.fetchone()
+            if existing is not None and existing["status"] in {"pending", "booked", "waitlist"}:
+                return existing["status"]
+            async with db.execute(
+                "SELECT COUNT(*) FROM bookings WHERE training_id = ? AND (status = 'booked' "
+                "OR (status = 'pending' AND position > 0 AND needs_approval = 1))", (training_id,),
+            ) as cur:
+                result = await cur.fetchone()
+                assert result is not None
+                booked = int(result[0])
+            async with db.execute(
+                "SELECT 1 FROM bookings WHERE training_id = ? AND status = 'waitlist' LIMIT 1", (training_id,),
+            ) as cur:
+                has_waitlist = await cur.fetchone() is not None
+            needs_approval = 0
+            if requires_approval and booked < capacity:
+                status, position = 'pending', 0
+            elif booked < capacity and not (respect_waitlist and has_waitlist):
+                status, position = 'booked', 0
+            else:
+                status = 'waitlist'
+                needs_approval = int(requires_approval)
+                async with db.execute(
+                    "SELECT COALESCE(MAX(position), 0) + 1 FROM bookings WHERE training_id = ? "
+                    "AND status IN ('waitlist', 'pending')", (training_id,),
+                ) as cur:
+                    result = await cur.fetchone()
+                    assert result is not None
+                    position = int(result[0])
+            await db.execute(
+                "INSERT INTO bookings (training_id, user_id, status, position, needs_approval, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(training_id, user_id) DO UPDATE SET "
+                "status = excluded.status, position = excluded.position, needs_approval = excluded.needs_approval, "
+                "created_at = excluded.created_at",
+                (training_id, user_id, status, position, needs_approval, now),
+            )
+            moved = await _queue_pending_if_full(db, training_id) if status == 'booked' else []
+            await db.commit()
+            if moved_to_waitlist is not None:
+                moved_to_waitlist.extend(moved)
+            return status
+        except BaseException:
+            await db.rollback()
+            raise
+
+
+async def approve_booking(
+    training_id: int, user_id: int, *, moved_to_waitlist: list[int] | None = None,
+) -> str:
+    """Одобряет заявку и выдаёт место либо ставит в одобренную очередь."""
+    db = _db()
+    async with _lock:
+        try:
+            async with db.execute(
+                "SELECT status, position FROM bookings WHERE training_id = ? AND user_id = ?", (training_id, user_id),
             ) as cur:
                 row = await cur.fetchone()
-            booked = int(row[0]) if row is not None else 0
-            has_waitlist = False
-            if respect_waitlist:
-                async with db.execute(
-                    "SELECT 1 FROM bookings WHERE training_id = ? "
-                    "AND status = 'waitlist' LIMIT 1",
-                    (training_id,),
-                ) as cur:
-                    has_waitlist = await cur.fetchone() is not None
-            if booked < capacity and not has_waitlist:
-                status = "booked"
-                position = 0
+            if row is None or row['status'] != 'pending':
+                return row['status'] if row is not None else ''
+            async with db.execute(
+                "SELECT capacity, (SELECT COUNT(*) FROM bookings b WHERE b.training_id = t.id AND "
+                "(b.status = 'booked' OR (b.status = 'pending' AND b.position > 0 AND b.needs_approval = 1 "
+                "AND b.user_id != ?))) FROM trainings t WHERE id = ?", (user_id, training_id),
+            ) as cur:
+                capacity_row = await cur.fetchone()
+            capacity = int(capacity_row[0]) if capacity_row else 0
+            booked = int(capacity_row[1]) if capacity_row else 0
+            if booked < capacity:
+                status, position = 'booked', 0
             else:
-                status = "waitlist"
-                async with db.execute(
-                    "SELECT COALESCE(MAX(position), 0) + 1 FROM bookings "
-                    "WHERE training_id = ? AND status = 'waitlist'",
-                    (training_id,),
-                ) as cur:
-                    position_row = await cur.fetchone()
-                position = int(position_row[0]) if position_row is not None else 1
-
-        await db.execute(
-            """
-            INSERT INTO bookings (training_id, user_id, status, position, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(training_id, user_id) DO UPDATE SET
-                status = excluded.status,
-                position = excluded.position,
-                created_at = excluded.created_at
-            """,
-            (training_id, user_id, status, position, now),
-        )
-        await db.commit()
-    return status
-
-
-async def approve_booking(training_id: int, user_id: int) -> str:
-    """Одобряет заявку и выдаёт место либо ставит в очередь."""
-    db = _db()
-    async with _lock:
-        async with db.execute(
-            "SELECT status FROM bookings WHERE training_id = ? AND user_id = ?",
-            (training_id, user_id),
-        ) as cur:
-            row = await cur.fetchone()
-        if row is None or row["status"] != "pending":
-            return row["status"] if row is not None else ""
-        async with db.execute(
-            "SELECT capacity FROM trainings WHERE id = ?", (training_id,)
-        ) as cur:
-            capacity_row = await cur.fetchone()
-        capacity = int(capacity_row[0]) if capacity_row is not None else 0
-        async with db.execute(
-            "SELECT COUNT(*) FROM bookings WHERE training_id = ? AND status = 'booked'",
-            (training_id,),
-        ) as cur:
-            booked_row = await cur.fetchone()
-        booked = int(booked_row[0]) if booked_row is not None else 0
-        if booked < capacity:
-            status = "booked"
-            position = 0
-        else:
-            status = "waitlist"
-            async with db.execute(
-                "SELECT COALESCE(MAX(position), 0) + 1 FROM bookings "
-                "WHERE training_id = ? AND status = 'waitlist'",
-                (training_id,),
-            ) as cur:
-                position_row = await cur.fetchone()
-            position = int(position_row[0]) if position_row is not None else 1
-        await db.execute(
-            "UPDATE bookings SET status = ?, position = ? "
-            "WHERE training_id = ? AND user_id = ?",
-            (status, position, training_id, user_id),
-        )
-        await db.commit()
-    return status
-
-
-async def reject_booking(training_id: int, user_id: int) -> bool:
-    """Отклоняет заявку (не удаляя историю)."""
-    changed = await _execute_rowcount(
-        "UPDATE bookings SET status = 'rejected', position = 0 "
-        "WHERE training_id = ? AND user_id = ? AND status = 'pending'",
-        (training_id, user_id),
-    )
-    return bool(changed)
-
-
-async def cancel_booking(training_id: int, user_id: int) -> str:
-    """
-    Отменяет запись игрока и продвигает первого из листа ожидания (FIFO).
-    Возвращает статус продвинутого пользователя или пустую строку.
-    """
-    db = _db()
-    promoted_user: int | None = None
-    async with _lock:
-        cursor = await db.execute(
-            "UPDATE bookings SET status = 'cancelled', position = 0 "
-            "WHERE training_id = ? AND user_id = ? "
-            "AND status IN ('pending', 'booked', 'waitlist')",
-            (training_id, user_id),
-        )
-        if cursor.rowcount == 0:
-            # Игрок не записан (или уже отменён) — не трогаем очередь.
+                status = 'waitlist'
+                position = int(row['position'])
+                if not position:
+                    async with db.execute(
+                        "SELECT COALESCE(MAX(position), 0) + 1 FROM bookings WHERE training_id = ? "
+                        "AND status IN ('waitlist', 'pending')", (training_id,),
+                    ) as cur:
+                        result = await cur.fetchone()
+                    assert result is not None
+                    position = int(result[0])
+            await db.execute(
+                "UPDATE bookings SET status = ?, position = ?, needs_approval = 0 WHERE training_id = ? AND user_id = ?",
+                (status, position, training_id, user_id),
+            )
+            moved = await _queue_pending_if_full(db, training_id) if status == 'booked' else []
             await db.commit()
-            return ""
-
-        # Продвигаем первого в очереди, если есть свободное место.
-        async with db.execute(
-            "SELECT capacity FROM trainings WHERE id = ?", (training_id,)
-        ) as cur:
-            row = await cur.fetchone()
-            capacity = row[0] if row else 0
-        async with db.execute(
-            "SELECT COUNT(*) FROM bookings WHERE training_id = ? AND status = 'booked'",
-            (training_id,),
-        ) as cur:
-            row = await cur.fetchone()
-            booked = int(row[0]) if row is not None else 0
-
-        if booked < capacity:
-            async with db.execute(
-                "SELECT user_id FROM bookings WHERE training_id = ? AND status = 'waitlist' "
-                "ORDER BY position ASC LIMIT 1",
-                (training_id,),
-            ) as cur:
-                wl = await cur.fetchone()
-            if wl:
-                promoted_user = wl[0]
-                await db.execute(
-                    "UPDATE bookings SET status = 'booked', position = 0 "
-                    "WHERE training_id = ? AND user_id = ?",
-                    (training_id, promoted_user),
-                )
-        await db.commit()
-    return str(promoted_user) if promoted_user is not None else ""
+            if moved_to_waitlist is not None:
+                moved_to_waitlist.extend(moved)
+            return status
+        except BaseException:
+            await db.rollback()
+            raise
 
 
-async def restore_booking(training_id: int, user_id: int, capacity: int) -> str:
-    """
-    Возвращает снятого игрока.
-
-    Если есть лист ожидания — игрок встаёт в его конец (FIFO), даже когда
-    формально есть свободное место: нельзя обгонять очередь при восстановлении.
-    """
+async def reject_booking(training_id: int, user_id: int, *, advanced: list[int] | None = None) -> bool:
+    """Отклоняет заявку и при свободном месте обращается к следующему в очереди."""
     db = _db()
-    now = int(time.time())
     async with _lock:
-        async with db.execute(
-            "SELECT status FROM bookings WHERE training_id = ? AND user_id = ?",
-            (training_id, user_id),
-        ) as cur:
-            existing = await cur.fetchone()
-        if existing is not None and existing["status"] in {"booked", "waitlist"}:
-            return existing["status"]
+        try:
+            cursor = await db.execute(
+                "UPDATE bookings SET status = 'rejected', position = 0, needs_approval = 0 "
+                "WHERE training_id = ? AND user_id = ? AND status = 'pending'", (training_id, user_id),
+            )
+            changed = bool(cursor.rowcount)
+            promoted = await _advance_training_waitlist(db, training_id) if changed else None
+            await db.commit()
+            if promoted is not None and advanced is not None:
+                advanced.append(promoted)
+            return changed
+        except BaseException:
+            await db.rollback()
+            raise
 
-        async with db.execute(
-            "SELECT 1 FROM bookings WHERE training_id = ? AND status = 'waitlist' LIMIT 1",
-            (training_id,),
-        ) as cur:
-            has_waitlist = await cur.fetchone() is not None
 
-        async with db.execute(
-            "SELECT COUNT(*) FROM bookings WHERE training_id = ? AND status = 'booked'",
-            (training_id,),
-        ) as cur:
-            row = await cur.fetchone()
-            booked = int(row[0]) if row is not None else 0
+async def cancel_booking(
+    training_id: int, user_id: int, *, moved_to_waitlist: list[int] | None = None,
+) -> str:
+    """Отменяет запись и предлагает свободное место первому в очереди."""
+    db = _db()
+    async with _lock:
+        try:
+            cursor = await db.execute(
+                "UPDATE bookings SET status = 'cancelled', position = 0, needs_approval = 0 "
+                "WHERE training_id = ? AND user_id = ? AND status IN ('pending', 'booked', 'waitlist')",
+                (training_id, user_id),
+            )
+            if cursor.rowcount == 0:
+                await db.commit()
+                return ''
+            promoted = await _advance_training_waitlist(db, training_id)
+            moved = await _queue_pending_if_full(db, training_id) if promoted is not None else []
+            await db.commit()
+            if moved_to_waitlist is not None:
+                moved_to_waitlist.extend(moved)
+            return str(promoted) if promoted is not None else ''
+        except BaseException:
+            await db.rollback()
+            raise
 
-        if booked < capacity and not has_waitlist:
-            status = "booked"
-            position = 0
-        else:
-            status = "waitlist"
-            async with db.execute(
-                "SELECT COALESCE(MAX(position), 0) + 1 FROM bookings "
-                "WHERE training_id = ? AND status = 'waitlist'",
-                (training_id,),
-            ) as cur:
-                position_row = await cur.fetchone()
-                position = int(position_row[0]) if position_row is not None else 1
 
-        await db.execute(
-            """
-            INSERT INTO bookings (training_id, user_id, status, position, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(training_id, user_id) DO UPDATE SET
-                status = excluded.status,
-                position = excluded.position,
-                created_at = excluded.created_at
-            """,
-            (training_id, user_id, status, position, now),
-        )
-        await db.commit()
-    return status
+async def restore_booking(
+    training_id: int, user_id: int, capacity: int, *, moved_to_waitlist: list[int] | None = None,
+) -> str:
+    """Возвращает снятого тренером игрока, не обходя очередь."""
+    return await book_training(
+        training_id, user_id, capacity, respect_waitlist=True, moved_to_waitlist=moved_to_waitlist,
+    )
 
 
 # --------------------------------------------------------------------------- #

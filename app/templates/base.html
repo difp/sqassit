@@ -286,6 +286,8 @@
     }
     .badge--success { background: var(--success-soft); color: var(--success); }
     .badge--warn { background: var(--warning-soft); color: var(--warning); }
+    .pending-notice { max-width: 100%; white-space: normal; align-items: flex-start; }
+    .pending-notice::before { margin-top: .35em; }
     .badge--muted { background: var(--surface-2); color: var(--text-3); }
     .badge--level { background: var(--accent-soft); color: var(--accent-ink); }
 
@@ -1595,6 +1597,7 @@
             <div class="public-profile__text">
               <div class="public-profile__name">${esc(p.first_name)}</div>
               ${username}
+              ${p.skill_level ? `<div class="hint">Уровень: ${esc(p.skill_level)}</div>` : ''}
               <div class="public-profile__about">${esc(p.about || 'Описание пока не заполнено.')}</div>
             </div>
           </div>`;

@@ -935,3 +935,80 @@ def test_stale_pending_event_does_not_send_notification(monkeypatch):
     monkeypatch.setattr(db, "get_participants", participants)
     monkeypatch.setattr(mainmod, "_training_coach_name", name)
     asyncio.run(mainmod._notify_training_event(_training(), 555, "pending", actor_id=555))
+
+
+def test_vacancy_notifications_handle_booking_races_and_existing_alerts(monkeypatch):
+    sent = []
+    expired = []
+    results = iter([
+        [{"telegram_id": 1}, {"telegram_id": 2}, {"telegram_id": 3}],
+        [{"telegram_id": 2}, {"telegram_id": 3}],
+        [{"telegram_id": 2}, {"telegram_id": 3}],
+        [{"telegram_id": 3}],
+        [],
+    ])
+
+    async def recipients(*args):
+        return next(results)
+
+    async def existing(kind, tid, chat, user):
+        return {"message_id": 77} if chat == 2 else None
+
+    async def send(kind, tid, chat, text, **kwargs):
+        sent.append((chat, text))
+
+    async def expire(kind, tid):
+        expired.append((kind, tid))
+
+    async def coach_name(training):
+        return "Тренер"
+
+    monkeypatch.setattr(db, "training_vacancy_recipients", recipients)
+    monkeypatch.setattr(db, "get_event_notification", existing)
+    monkeypatch.setattr(db, "expire_event_notifications", expire)
+    monkeypatch.setattr(mainmod, "_send_new_event_message", send)
+    monkeypatch.setattr(mainmod, "_training_coach_name", coach_name)
+    asyncio.run(mainmod._notify_training_vacancy(_training(), 555))
+    assert [chat for chat, _ in sent] == [3]
+    assert expired == [("training_vacancy", 1)]
+
+
+def test_promotion_disappeared_before_notification(monkeypatch):
+    async def missing(*args):
+        return None
+
+    monkeypatch.setattr(db, "get_booking", missing)
+    asyncio.run(mainmod._notify_promoted(555, _training()))
+
+
+def test_notification_scheduler_reconciles_existing_pending(monkeypatch):
+    async def scenario():
+        notified = []
+        done = asyncio.Event()
+
+        async def noop(*args):
+            pass
+
+        async def reconcile():
+            return [(1, 555), (2, 556)]
+
+        async def get_training(tid):
+            return _training(id=tid) if tid == 1 else None
+
+        async def notify(training, user_id, status):
+            notified.append((training["id"], user_id, status))
+            done.set()
+
+        for name in ("_process_due_deletions", "_process_due_final_enrollments", "_cleanup_stale_preliminary", "_refresh_existing_match_feeds"):
+            monkeypatch.setattr(mainmod, name, noop)
+        monkeypatch.setattr(db, "reconcile_full_training_waitlists", reconcile)
+        monkeypatch.setattr(db, "get_training", get_training)
+        monkeypatch.setattr(mainmod, "_notify_training_event", notify)
+        task = asyncio.create_task(mainmod._training_notifications_loop(0))
+        await done.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert notified == [(1, 555, "waitlist")]
+
+    asyncio.run(scenario())

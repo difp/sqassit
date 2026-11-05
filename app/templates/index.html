@@ -79,6 +79,18 @@
     <h2 class="sheet__title" id="profile-sheet-title" tabindex="-1">Настройки профиля</h2>
     <div class="sheet__body">
 
+    <section class="settings-block" aria-labelledby="profile-level-title">
+      <h3 class="settings-block__title" id="profile-level-title">Уровень игры</h3>
+      <p class="hint">Выберите уровень, чтобы получать уведомления о свободных местах в подходящих группах.</p>
+      <label class="field"><span class="label">Мой уровень</span>
+        <select class="input" id="profile-level">
+          <option value="">Не указан</option>
+          <option>Новичок (Into)</option><option>Начинающий (Beginner)</option><option>Уверенный любитель (С)</option>
+        </select></label>
+      <label class="field"><span class="label">Кому виден уровень</span>
+        <select class="input" id="profile-level-privacy"><option value="private">Только тренеру</option><option value="public">Всем игрокам</option></select></label>
+    </section>
+
     <section class="settings-block" aria-labelledby="profile-about-title">
       <h3 class="settings-block__title" id="profile-about-title">О себе</h3>
       <label class="field"><span class="label">Коротко о вас</span>
@@ -181,7 +193,7 @@
       <p class="hint" style="margin:-8px 0 16px">Коротко о главном — это займёт полминуты.</p>
       <ul class="onboarding-list">
         <li><b>Расписание.</b> Выберите тренировку на 7 дней вперёд и нажмите «Записаться».</li>
-        <li><b>Лист ожидания.</b> Если мест нет — встаньте в очередь: при освобождении места запись произойдёт автоматически.</li>
+        <li><b>Лист ожидания.</b> Если мест нет — встаньте в очередь: когда место освободится, тренер рассмотрит неподтверждённую заявку.</li>
         <li><b>Отмена.</b> Отменить запись можно не позже чем за 4,5 часа до начала.</li>
         <li><b>Тренер.</b> Напишите ему из карточки тренировки или кнопкой «Написать тренеру».</li>
       </ul>
@@ -429,7 +441,7 @@ document.getElementById('schedule').addEventListener('click', async (ev) => {
     } else {
       const r = await api(`/api/trainings/${cancelId}/cancel`, 'POST');
       hapticNotify('success');
-      toast(r.promoted ? 'Отменено. Следующий из очереди повышен.' : 'Заявка отменена');
+      toast(r.promoted ? 'Отменено. Очередь обновлена.' : 'Заявка отменена');
     }
     cacheClear();
     await loadSchedule();
@@ -629,10 +641,12 @@ function closeOnboarding() {
   if (!onboardingSheet.classList.contains('is-open')) return;
   onboardingSheet.classList.remove('is-open');
   markOnboardingSeen();
+  if (APP.me && !APP.me.skill_level) setTimeout(openProfile, 200);
 }
 
 function maybeShowOnboarding() {
   if (APP.me && !APP.me.onboarding_seen) showOnboarding();
+  else if (APP.me && !APP.me.skill_level) openProfile();
 }
 
 document.getElementById('onboarding-next').addEventListener('click', showOnboardingPrivacy);
@@ -669,6 +683,8 @@ function updateProfilePreview() {
 
 function openProfile() {
   if (!APP.me) return;
+  document.getElementById('profile-level').value = APP.me.skill_level || '';
+  document.getElementById('profile-level-privacy').value = APP.me.show_level ? 'public' : 'private';
   profileAbout.value = APP.me.about || '';
   updateProfileAboutCount();
   profileDisplay.value = APP.me.display_mode || 'name';
@@ -695,6 +711,8 @@ document.getElementById('profile-save').addEventListener('click', async () => {
   btn.disabled = true;
   try {
     const data = await api('/api/me/profile', 'PUT', {
+      skill_level: document.getElementById('profile-level').value,
+      show_level: document.getElementById('profile-level-privacy').value === 'public',
       about: profileAbout.value.trim(),
       display_mode: profileDisplay.value,
       show_username: profileUsername.checked,

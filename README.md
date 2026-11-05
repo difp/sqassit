@@ -72,6 +72,7 @@ Telegram Web App работает только по HTTPS. Продакшен:
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — компоненты, заявки и приватность чата.
 - [`docs/DEPLOY.md`](docs/DEPLOY.md) — VPS, systemd, HTTPS, бэкапы.
+- [Инструкция для тренера](docs/COACH-GUIDE.md) — работа с занятиями, заявками и турнирами.
 - [`docs/COACHES.md`](docs/COACHES.md) — роли, заявки, передача занятий.
 - [`docs/PRIVACY.md`](docs/PRIVACY.md) — данные, приватность, экспорт и удаление.
 - [`SECURITY.md`](SECURITY.md) — как сообщить об уязвимости.

@@ -591,6 +591,8 @@ class TrainerProfileIn(BaseModel):
 
 
 class PlayerProfileIn(BaseModel):
+    skill_level: str | None = None
+    show_level: bool | None = None
     about: str = Field(default="", max_length=450)
     display_mode: Literal["name", "animal"] = "name"
     show_username: bool = False
@@ -896,6 +898,8 @@ async def api_me(user: Annotated[dict, Depends(current_user)]):
             "display_mode": user["display_mode"] or "name",
             "show_username": bool(user["show_username"]),
             "onboarding_seen": bool(user["onboarding_seen"]),
+            "skill_level": user["skill_level"] or "",
+            "show_level": bool(user["show_level"]),
             "animal": animal_identity(user["telegram_id"]),
         },
     }
@@ -920,6 +924,7 @@ async def api_player_profile(
             "about": row["about"] or "",
             "username": username_for_viewer(row, coach_view=bool(user["is_coach"])),
             "username_visible": bool(row["show_username"]),
+            "skill_level": row["skill_level"] if row["show_level"] or user["is_coach"] or user["telegram_id"] == target_id else "",
         },
     }
 
@@ -938,6 +943,8 @@ async def api_set_player_profile(
 ):
     """Сохраняет «о себе» и настройки показа в списке участников."""
     try:
+        if payload.skill_level is not None and payload.skill_level not in ("", *TRAINING_LEVELS):
+            return error_json("Выберите допустимый уровень", 422)
         phone = None
         if payload.phone is not None:
             phone = normalize_phone(payload.phone) if payload.phone.strip() else ""
@@ -947,6 +954,8 @@ async def api_set_player_profile(
             display_mode=payload.display_mode,
             show_username=payload.show_username,
             phone=phone,
+            skill_level=payload.skill_level,
+            show_level=payload.show_level,
             notifications_enabled=payload.notifications_enabled,
             notify_matches=payload.notify_matches,
             notify_trainings=payload.notify_trainings,
@@ -961,6 +970,8 @@ async def api_set_player_profile(
                 "about": updated["about"] or "",
                 "display_mode": updated["display_mode"] or "name",
                 "show_username": bool(updated["show_username"]),
+                "skill_level": updated["skill_level"] or "",
+                "show_level": bool(updated["show_level"]),
                 "phone": updated["phone"] or "",
                 "notifications_enabled": bool(updated["notifications_enabled"]),
                 "notify_matches": bool(updated["notify_matches"]),
@@ -1041,6 +1052,8 @@ async def api_export_me(user: Annotated[dict, Depends(current_user)]):
             "about": user["about"] or "",
             "display_mode": user["display_mode"] or "name",
             "show_username": bool(user["show_username"]),
+            "skill_level": user["skill_level"] or "",
+            "show_level": bool(user["show_level"]),
             "onboarding_seen": bool(user["onboarding_seen"]),
         },
         "bookings": [dict(row) for row in await db.list_user_bookings(user["telegram_id"])],
@@ -1079,16 +1092,22 @@ async def api_delete_me(
 
     # Сначала отменяем активные записи, чтобы освободить места и продвинуть очередь.
     for booking in await db.list_user_bookings(user["telegram_id"]):
-        if booking["status"] not in {"booked", "waitlist"}:
+        if booking["status"] not in {"booked", "waitlist", "pending"}:
             continue
         if booking["deleted_at"]:
             continue
         training = await db.get_training(booking["training_id"])
+        moved: list[int] = []
         promoted_training = await db.cancel_booking(
-            booking["training_id"], user["telegram_id"]
+            booking["training_id"], user["telegram_id"], moved_to_waitlist=moved
         )
+        if training is not None:
+            for moved_user in moved:
+                _spawn(_notify_training_event(training, moved_user, "waitlist"))
         if training is not None and promoted_training:
             _spawn(_notify_promoted(int(promoted_training), training))
+        elif training is not None and (booking["status"] == "booked" or (booking["status"] == "pending" and booking["position"] > 0)):
+            _spawn(_notify_training_vacancy(training, user["telegram_id"]))
 
     await db.delete_user_data(user["telegram_id"])
     await _avatar_store().delete_user(user["telegram_id"])
@@ -1244,12 +1263,16 @@ async def api_book(training_id: int, user: Annotated[dict, Depends(current_user)
         if _phone_required_for_new_events() and not user["phone"]:
             return error_json("Укажите телефон в настройках профиля, чтобы записаться.", 403)
 
+        moved: list[int] = []
         status = await db.book_training(
             training_id,
             user["telegram_id"],
             training["capacity"],
             requires_approval=settings.require_event_approval,
+            moved_to_waitlist=moved,
         )
+        for moved_user in moved:
+            _spawn(_notify_training_event(training, moved_user, "waitlist"))
         _spawn(
             _notify_training_event(
                 training,
@@ -1293,7 +1316,10 @@ async def api_cancel(training_id: int, user: Annotated[dict, Depends(current_use
                 "Отмена недоступна: до старта меньше 4.5 часов. Свяжитесь с тренером.", 403
             )
 
-        promoted = await db.cancel_booking(training_id, user["telegram_id"])
+        moved: list[int] = []
+        promoted = await db.cancel_booking(training_id, user["telegram_id"], moved_to_waitlist=moved)
+        for moved_user in moved:
+            _spawn(_notify_training_event(training, moved_user, "waitlist"))
         _spawn(
             _notify_training_event(
                 training,
@@ -1304,6 +1330,8 @@ async def api_cancel(training_id: int, user: Annotated[dict, Depends(current_use
         )
         if promoted:
             _spawn(_notify_promoted(int(promoted), training))
+        elif booking["status"] == "booked" or (booking["status"] == "pending" and booking["position"] > 0):
+            _spawn(_notify_training_vacancy(training, user["telegram_id"]))
         return {"ok": True, "promoted": promoted or None}
     except Exception:
         logger.exception("Ошибка отмены записи")
@@ -1903,6 +1931,8 @@ async def api_coach_participants(training_id: int, coach: Annotated[dict, Depend
                     "username_visible": bool(r["show_username"]),
                     "about": r["about"] or "",
                     "status": r["status"],
+                    "needs_approval": bool(r["needs_approval"]),
+                    "skill_level": r["skill_level"] or "",
                 }
                 for r in rows
             ],
@@ -1944,12 +1974,16 @@ async def api_coach_add_participant(
         }:
             return {"ok": True, "status": booking["status"], "already": True}
 
+        moved: list[int] = []
         status = await db.book_training(
             training_id,
             payload.user_id,
             training["capacity"],
             respect_waitlist=True,
+            moved_to_waitlist=moved,
         )
+        for moved_user in moved:
+            _spawn(_notify_training_event(training, moved_user, "waitlist"))
         _spawn(
             _notify_training_event(
                 training, payload.user_id, status, actor_id=coach["telegram_id"]
@@ -1974,7 +2008,10 @@ async def api_coach_approve_participant(
             or not await _can_manage_training(training, coach["telegram_id"])
         ):
             return error_json("Тренировка не найдена", 404)
-        status = await db.approve_booking(training_id, user_id)
+        moved: list[int] = []
+        status = await db.approve_booking(training_id, user_id, moved_to_waitlist=moved)
+        for moved_user in moved:
+            _spawn(_notify_training_event(training, moved_user, "waitlist"))
         if not status:
             return error_json("Заявка не найдена", 404)
         _spawn(
@@ -2004,7 +2041,9 @@ async def api_coach_reject_participant(
             or not await _can_manage_training(training, coach["telegram_id"])
         ):
             return error_json("Тренировка не найдена", 404)
-        if not await db.reject_booking(training_id, user_id):
+        booking = await db.get_booking(training_id, user_id)
+        advanced: list[int] = []
+        if not await db.reject_booking(training_id, user_id, advanced=advanced):
             return error_json("Заявка не найдена", 404)
         _spawn(
             _notify_training_event(
@@ -2014,6 +2053,10 @@ async def api_coach_reject_participant(
                 actor_id=coach["telegram_id"],
             )
         )
+        for next_user in advanced:
+            _spawn(_notify_promoted(next_user, training))
+        if not advanced and booking is not None and booking["position"] > 0:
+            _spawn(_notify_training_vacancy(training, user_id))
         return {"ok": True}
     except Exception:
         logger.exception("Ошибка отклонения заявки")
@@ -2036,7 +2079,10 @@ async def api_coach_cancel_participant(
         booking = await db.get_booking(training_id, user_id)
         if booking is None or booking["status"] not in {"booked", "waitlist"}:
             return error_json("Записи не существует", 404)
-        promoted = await db.cancel_booking(training_id, user_id)
+        moved: list[int] = []
+        promoted = await db.cancel_booking(training_id, user_id, moved_to_waitlist=moved)
+        for moved_user in moved:
+            _spawn(_notify_training_event(training, moved_user, "waitlist"))
         _spawn(
             _notify_participant_removed(
                 user_id, training, actor_id=coach["telegram_id"]
@@ -2044,6 +2090,8 @@ async def api_coach_cancel_participant(
         )
         if promoted:
             _spawn(_notify_promoted(int(promoted), training))
+        elif booking["status"] == "booked":
+            _spawn(_notify_training_vacancy(training, user_id))
         return {"ok": True, "promoted": promoted or None}
     except Exception:
         logger.exception("Ошибка снятия игрока")
@@ -2068,7 +2116,10 @@ async def api_coach_restore_participant(
         booking = await db.get_booking(training_id, user_id)
         if booking is None or booking["status"] != "cancelled":
             return error_json("Можно вернуть только снятого игрока", 400)
-        status = await db.restore_booking(training_id, user_id, training["capacity"])
+        moved: list[int] = []
+        status = await db.restore_booking(training_id, user_id, training["capacity"], moved_to_waitlist=moved)
+        for moved_user in moved:
+            _spawn(_notify_training_event(training, moved_user, "waitlist"))
         _spawn(
             _notify_participant_restored(
                 user_id, training, status, actor_id=coach["telegram_id"]
@@ -2569,8 +2620,8 @@ def _training_player_status(status: str) -> str:
         return "Вы записаны."
     if status == "waitlist":
         return (
-            "Заявка на занятие одобрена, но пока нет мест,\n"
-            "записали вас в лист ожидания."
+            "Вы в листе ожидания. Когда появится место,\n"
+            "статус записи обновится."
         )
     if status == "rejected":
         return "Заявка на занятие отклонена — к сожалению, мест нет."
@@ -2700,6 +2751,7 @@ _STATUS_NOTIFICATION_KINDS = (
     "training_waitlist",
     "training_rejected",
     "training_reminder",
+    "training_vacancy",
 )
 
 
@@ -3052,6 +3104,11 @@ async def _notify_training_event(
     actor_id: int | None = None,
 ) -> None:
     participants = await db.get_participants(training["id"])
+    if sum(_row_status(p) == "booked" for p in participants) >= int(training["capacity"]) or any(
+        _row_status(p) == "waitlist" or (_row_status(p) == "pending" and _row_value(p, "position", 0) > 0)
+        for p in participants
+    ):
+        await db.expire_event_notifications("training_vacancy", int(training["id"]))
     pending = [p for p in participants if _row_status(p) == "pending"]
     coach_name = await _training_coach_name(training)
     now = int(time.time())
@@ -3063,7 +3120,8 @@ async def _notify_training_event(
             "cancelled",
         )
     if user_id is not None:
-        if status == "pending" and not any(p["telegram_id"] == user_id for p in pending):
+        actual = next((p["status"] for p in participants if p["telegram_id"] == user_id), None)
+        if status in {"pending", "waitlist", "booked", "promoted"} and actual != ("booked" if status == "promoted" else status):
             return
         if status != "pending":
             await _remove_training_request_alerts(int(training["id"]), user_id)
@@ -3139,8 +3197,38 @@ async def _notify_training_event(
                 await _send_user_message(recipient, alert_text, reply_markup=keyboard)
 
 
+async def _notify_training_vacancy(training: aiosqlite.Row, excluded_user: int) -> None:
+    """Сообщает о месте игрокам того же уровня, когда очередь пуста."""
+    training_id = int(training["id"])
+    candidates = await db.training_vacancy_recipients(training_id, excluded_user)
+    coach_name = await _training_coach_name(training)
+    for candidate in candidates:
+        recipient = int(candidate["telegram_id"])
+        # Состояние могло измениться во время отправки предыдущего сообщения.
+        current = await db.training_vacancy_recipients(training_id, excluded_user)
+        if not any(int(row["telegram_id"]) == recipient for row in current):
+            continue
+        existing = await db.get_event_notification("training_vacancy", training_id, recipient, recipient)
+        if existing is not None and existing["message_id"]:
+            continue
+        now = int(time.time())
+        await _send_new_event_message(
+            "training_vacancy", training_id, recipient,
+            "Освободилось место на занятии. Откройте расписание, чтобы подать заявку.\n\n"
+            + _training_player_header(training, coach_name) + "\n" + _training_datetime(training),
+            delete_at=min(int(training["start_at"]), now + 86400), phase="vacancy", sent_at=now,
+        )
+        if not await db.training_vacancy_recipients(training_id, excluded_user):
+            await db.expire_event_notifications("training_vacancy", training_id)
+            break
+
+
 async def _notify_promoted(user_id: int, training: aiosqlite.Row) -> None:
-    await _notify_training_event(training, user_id, "promoted")
+    booking = await db.get_booking(training["id"], user_id)
+    if booking is None:
+        return
+    status = "pending" if booking["status"] == "pending" else "promoted"
+    await _notify_training_event(training, user_id, status, actor_id=user_id)
 
 
 async def _notify_participant_removed(
@@ -3300,6 +3388,10 @@ async def _training_notifications_loop(interval_seconds: int = 60) -> None:
             await _process_due_final_enrollments(now)
             await _cleanup_stale_preliminary(now)
             await _refresh_existing_match_feeds(now)
+            for training_id, user_id in await db.reconcile_full_training_waitlists():
+                training = await db.get_training(training_id)
+                if training is not None:
+                    await _notify_training_event(training, user_id, "waitlist")
         except asyncio.CancelledError:
             logger.info("Планировщик уведомлений остановлен.")
             raise

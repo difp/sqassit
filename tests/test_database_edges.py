@@ -313,3 +313,66 @@ def test_training_and_coach_updates_roll_back_on_failure(tmp_path):
             await db.close()
 
     asyncio.run(scenario())
+
+
+def test_queue_priority_and_transaction_rollback(tmp_path, monkeypatch):
+    async def scenario():
+        await db.connect(str(tmp_path / "rollback.db"))
+        try:
+            tid = await db.create_training(
+                title="Группа", training_type="Группа", start_at=int(time.time()) + 86400,
+                capacity=1, duration_min=60, reminder_offset_min=60,
+                reminder_enabled=False, created_by=1, level="",
+            )
+            assert await db.book_training(tid, 10, 1) == "booked"
+            assert await db.book_training(tid, 11, 1, requires_approval=True) == "waitlist"
+            # Заявка, сохранившаяся в старой заполненной группе.
+            await db._execute("INSERT INTO bookings (training_id,user_id,status,created_at) VALUES (?,?,'pending',?)", (tid, 12, int(time.time())))
+            # Одобрение переполненной заявки не должно превышать вместимость.
+            assert await db.approve_booking(tid, 12) == "waitlist"
+            row = await db.get_booking(tid, 12)
+            assert row["position"] == 2 and not row["needs_approval"]
+            # Отмена ожидающего не должна передвинуть очередь, пока мест нет.
+            assert await db.cancel_booking(tid, 12) == ""
+            assert (await db.get_booking(tid, 11))["status"] == "waitlist"
+
+            async def failure(*args, **kwargs):
+                raise RuntimeError("simulated failure")
+
+            # При ошибке после обновления записи изменения откатываются целиком.
+            with monkeypatch.context() as patch:
+                patch.setattr(db, "_advance_training_waitlist", failure)
+                with pytest.raises(RuntimeError, match="simulated"):
+                    await db.cancel_booking(tid, 10)
+                assert (await db.get_booking(tid, 10))["status"] == "booked"
+
+            await db._execute("UPDATE bookings SET status='pending',position=0 WHERE training_id=? AND user_id=12", (tid,))
+            with monkeypatch.context() as patch:
+                patch.setattr(db, "_advance_training_waitlist", failure)
+                with pytest.raises(RuntimeError, match="simulated"):
+                    await db.reject_booking(tid, 12)
+                assert (await db.get_booking(tid, 12))["status"] == "pending"
+
+            with monkeypatch.context() as patch:
+                patch.setattr(db, "_queue_pending_if_full", failure)
+                with pytest.raises(RuntimeError, match="simulated"):
+                    await db.reconcile_full_training_waitlists()
+                assert (await db.get_booking(tid, 12))["status"] == "pending"
+
+            await db.cancel_booking(tid, 10)
+            # Место зарезервировано для 11, пока тренер принимает решение.
+            with monkeypatch.context() as patch:
+                patch.setattr(db, "_queue_pending_if_full", failure)
+                with pytest.raises(RuntimeError, match="simulated"):
+                    await db.approve_booking(tid, 11)
+                assert (await db.get_booking(tid, 11))["status"] == "pending"
+            await db.reject_booking(tid, 11)
+            with monkeypatch.context() as patch:
+                patch.setattr(db, "_queue_pending_if_full", failure)
+                with pytest.raises(RuntimeError, match="simulated"):
+                    await db.book_training(tid, 20, 1)
+                assert await db.get_booking(tid, 20) is None
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
