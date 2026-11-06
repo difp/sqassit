@@ -12,7 +12,8 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.methods import EditMessageText, PinChatMessage
 
 from app import bot as botmod
 from app import database as db
@@ -620,349 +621,24 @@ def _callback_with_message(user_id, data):
     return callback, answers, chat_answers, edits
 
 
-def _training(start_at=None, capacity=2):
-    return {
-        "id": 1,
-        "training_type": "Тренировка",
-        "start_at": start_at if start_at is not None else int(time.time()) + 3600,
-        "capacity": capacity,
-        "booked_count": 1,
-        "deleted_at": None,
-    }
-
-
-def test_bot_main_keyboard_slot_label_and_names(monkeypatch):
-    monkeypatch.setattr(
-        botmod,
-        "settings",
-        replace(settings, webhook_base_url="https://example.test"),
-    )
-    keyboard = botmod._main_keyboard()
-    assert keyboard.inline_keyboard[0][0].web_app.url.endswith(f"?v={botmod.WEB_APP_VERSION}")
-    assert keyboard.inline_keyboard[1][0].callback_data == "slots:list"
-    assert keyboard.inline_keyboard[1][1].callback_data == "attendees:list"
-    label = botmod._slot_label(_training())
-    assert "Тренировка" in label and "1/2" in label
-    assert botmod._player_name({
-        "display_mode": "animal", "telegram_id": 555, "first_name": "Иван"
-    }) == animal_identity(555)["name"]
-    assert botmod._player_name({
-        "display_mode": "name", "telegram_id": 555, "first_name": ""
-    }) == "Игрок"
-    assert botmod._callback_message(SimpleNamespace(message=None)) is None
-
-
-def test_slot_details_variants(monkeypatch):
-    training = _training(capacity=1)
-    participants = [
-        {"status": "booked", "telegram_id": 555, "first_name": "Иван", "display_mode": "name"},
-        {"status": "waitlist", "telegram_id": 556, "first_name": "Мария", "display_mode": "name"},
-    ]
-
-    async def get_training(_id):
-        return training
-
-    async def get_participants(_id):
-        return participants
-
-    async def no_booking(_id, _uid):
-        return None
-
-    monkeypatch.setattr(db, "get_training", get_training)
-    monkeypatch.setattr(db, "get_participants", get_participants)
-    monkeypatch.setattr(db, "get_booking", no_booking)
-
-    details = asyncio.run(botmod._slot_details(1, 555))
-    assert details and "Свободно: 0" in details[0]
-    assert details[1].inline_keyboard[0][0].callback_data == "slots:book:1"
-
-    async def booked(_id, _uid):
-        return {"status": "booked"}
-
-    monkeypatch.setattr(db, "get_booking", booked)
-    details = asyncio.run(botmod._slot_details(1, 555))
-    assert details and "Вы записаны" in details[0]
-    assert details[1].inline_keyboard[0][0].callback_data == "slots:cancel:1"
-
-    async def waitlist(_id, _uid):
-        return {"status": "waitlist"}
-
-    monkeypatch.setattr(db, "get_booking", waitlist)
-    details = asyncio.run(botmod._slot_details(1, 555))
-    assert details and "листе ожидания" in details[0]
-
-    past = _training(start_at=0)
-    async def past_training(_id):
-        return past
-
-    async def no_participants(_id):
-        return []
-
-    monkeypatch.setattr(db, "get_training", past_training)
-    monkeypatch.setattr(db, "get_participants", no_participants)
-    monkeypatch.setattr(db, "get_booking", no_booking)
-    details = asyncio.run(botmod._slot_details(1, 555))
-    assert details and details[1].inline_keyboard[0][0].callback_data.startswith("attendees:")
-
-    async def missing(_id):
-        return None
-
-    monkeypatch.setattr(db, "get_training", missing)
-    assert asyncio.run(botmod._slot_details(1, 555)) is None
-
-
-def test_send_slots_and_cmd_slots(monkeypatch):
-    async def no_rows(*args, **kwargs):
-        return []
-
-    async def rows(*args, **kwargs):
-        return [_training()]
-
-    monkeypatch.setattr(db, "list_upcoming_trainings", no_rows)
-    message, answers, _ = _message(555)
-    asyncio.run(botmod._send_slots(message, 555))
-    assert "тренировок нет" in answers[0][0]
 
-    monkeypatch.setattr(db, "list_upcoming_trainings", rows)
-    message, answers, _ = _message(555)
-    asyncio.run(botmod._send_slots(message, 555))
-    assert answers[0][1].inline_keyboard[0][0].callback_data == "slots:show:1"
 
-    message, answers, _ = _message(555)
-    message.from_user = None
-    asyncio.run(botmod.cmd_slots(message))
-    assert answers == []
 
-    async def broken(*args, **kwargs):
-        raise RuntimeError("db")
 
-    monkeypatch.setattr(botmod, "_send_slots", broken)
-    message, answers, _ = _message(555)
-    asyncio.run(botmod.cmd_slots(message))
-    assert answers == []
 
 
-def test_cb_slots_and_show_edges(monkeypatch):
-    async def rows(*args, **kwargs):
-        return [_training()]
 
-    monkeypatch.setattr(db, "list_upcoming_trainings", rows)
-    callback, answers, chat_answers, _ = _callback_with_message(555, "slots:list")
-    asyncio.run(botmod.cb_slots(callback))
-    assert answers == [(None, None)]
-    assert chat_answers and "Выберите слот" in chat_answers[0]
 
-    callback, _, _, _ = _callback_with_message(555, "slots:list")
-    callback.message = None
-    asyncio.run(botmod.cb_slots(callback))
 
-    async def broken(*args, **kwargs):
-        raise RuntimeError("db")
 
-    monkeypatch.setattr(botmod, "_send_slots", broken)
-    callback, _, _, _ = _callback_with_message(555, "slots:list")
-    asyncio.run(botmod.cb_slots(callback))
 
-    async def details(_id, _uid):
-        return "text", InlineKeyboardMarkup(inline_keyboard=[])
 
-    monkeypatch.setattr(botmod, "_slot_details", details)
-    callback, answers, chat_answers, _ = _callback_with_message(555, "slots:show:1")
-    asyncio.run(botmod.cb_slot_show(callback))
-    assert chat_answers == ["text"]
 
-    async def none_details(_id, _uid):
-        return None
 
-    monkeypatch.setattr(botmod, "_slot_details", none_details)
-    callback, answers, chat_answers, _ = _callback_with_message(555, "slots:show:1")
-    asyncio.run(botmod.cb_slot_show(callback))
-    assert "не найдена" in chat_answers[0]
 
-    callback, _, _, _ = _callback_with_message(555, "slots:show:bad")
-    asyncio.run(botmod.cb_slot_show(callback))
 
-    callback, _, _, _ = _callback_with_message(555, "slots:show:1")
-    callback.message = None
-    asyncio.run(botmod.cb_slot_show(callback))
 
 
-def test_cb_slot_book_edges(monkeypatch):
-    async def no_training(_id):
-        return None
-
-    monkeypatch.setattr(db, "get_training", no_training)
-    callback, answers, _, _ = _callback_with_message(555, "slots:book:1")
-    asyncio.run(botmod.cb_slot_book(callback))
-    assert answers == [("Тренировка не найдена", True)]
-
-    async def past(_id):
-        return _training(start_at=0)
-
-    monkeypatch.setattr(db, "get_training", past)
-    callback, answers, _, _ = _callback_with_message(555, "slots:book:1")
-    asyncio.run(botmod.cb_slot_book(callback))
-    assert answers == [("Тренировка уже началась", True)]
-
-    async def training(_id):
-        return _training()
-
-    async def book(*args, **kwargs):
-        return "booked"
-
-    async def details(_id, _uid):
-        return "text", InlineKeyboardMarkup(inline_keyboard=[])
-
-    monkeypatch.setattr(db, "get_training", training)
-    monkeypatch.setattr(db, "book_training", book)
-    monkeypatch.setattr(botmod, "_slot_details", details)
-    callback, answers, _, edits = _callback_with_message(555, "slots:book:1")
-    asyncio.run(botmod.cb_slot_book(callback))
-    assert answers == [("Вы записаны", None)]
-    assert edits and edits[0][0] == "text"
-
-    async def waitlist(*args, **kwargs):
-        return "waitlist"
-
-    monkeypatch.setattr(db, "book_training", waitlist)
-    callback, answers, _, _ = _callback_with_message(555, "slots:book:1")
-    callback.message = None
-    asyncio.run(botmod.cb_slot_book(callback))
-    assert answers == [("Вы в листе ожидания", None)]
-
-    callback, _, _, _ = _callback_with_message(555, "slots:book:bad")
-    asyncio.run(botmod.cb_slot_book(callback))
-
-
-def test_cb_slot_cancel_edges(monkeypatch):
-    async def no_training(_id):
-        return None
-
-    monkeypatch.setattr(db, "get_training", no_training)
-    callback, answers, _, _ = _callback_with_message(555, "slots:cancel:1")
-    asyncio.run(botmod.cb_slot_cancel(callback))
-    assert answers == [("Тренировка не найдена", True)]
-
-    async def soon(_id):
-        return _training(start_at=int(time.time()) + 60)
-
-    monkeypatch.setattr(db, "get_training", soon)
-    callback, answers, _, _ = _callback_with_message(555, "slots:cancel:1")
-    asyncio.run(botmod.cb_slot_cancel(callback))
-    assert "4.5" in answers[0][0]
-
-    async def training(_id):
-        return _training(start_at=int(time.time()) + 6 * 3600)
-
-    async def cancel(*args, **kwargs):
-        return ""
-
-    async def details(_id, _uid):
-        return "text", InlineKeyboardMarkup(inline_keyboard=[])
-
-    async def booking(*args):
-        return {"status": "booked"}
-
-    monkeypatch.setattr(db, "get_training", training)
-    monkeypatch.setattr(db, "get_booking", booking)
-    monkeypatch.setattr(db, "cancel_booking", cancel)
-    monkeypatch.setattr(botmod, "_slot_details", details)
-    callback, answers, _, edits = _callback_with_message(555, "slots:cancel:1")
-    asyncio.run(botmod.cb_slot_cancel(callback))
-    assert answers == [("Запись отменена", None)]
-    assert edits
-
-    callback, _, _, _ = _callback_with_message(555, "slots:cancel:bad")
-    asyncio.run(botmod.cb_slot_cancel(callback))
-
-
-def test_cb_attendees_edges(monkeypatch):
-    async def no_rows(*args, **kwargs):
-        return []
-
-    async def is_coach(_id):
-        return False
-
-    monkeypatch.setattr(db, "is_coach_id", is_coach)
-    monkeypatch.setattr(db, "list_upcoming_trainings", no_rows)
-    callback, _answers, chat_answers, _ = _callback_with_message(555, "attendees:list")
-    asyncio.run(botmod.cb_attendees(callback))
-    assert "тренировок нет" in chat_answers[0]
-
-    async def coach(_id):
-        return True
-
-    async def active(*args, **kwargs):
-        return [_training()]
-
-    monkeypatch.setattr(db, "is_coach_id", coach)
-    monkeypatch.setattr(db, "list_active_trainings", active)
-    callback, _, chat_answers, _ = _callback_with_message(123, "attendees:list")
-    asyncio.run(botmod.cb_attendees(callback))
-    assert "выберите занятие" in chat_answers[0]
-
-    callback, _, _, _ = _callback_with_message(555, "attendees:list")
-    callback.message = None
-    asyncio.run(botmod.cb_attendees(callback))
-
-    async def broken(*args, **kwargs):
-        raise RuntimeError("db")
-
-    monkeypatch.setattr(db, "is_coach_id", broken)
-    callback, _, _, _ = _callback_with_message(555, "attendees:list")
-    asyncio.run(botmod.cb_attendees(callback))
-
-
-def test_cb_attendees_show_edges(monkeypatch):
-    async def no_training(_id):
-        return None
-
-    monkeypatch.setattr(db, "get_training", no_training)
-    callback, _answers, chat_answers, _ = _callback_with_message(555, "attendees:show:1")
-    asyncio.run(botmod.cb_attendees_show(callback))
-    assert "не найдена" in chat_answers[0]
-
-    async def training(_id):
-        return _training()
-
-    async def participants(_id):
-        return [
-            {"status": "booked", "telegram_id": 555, "first_name": "Иван", "display_mode": "name"},
-            {"status": "waitlist", "telegram_id": 556, "first_name": "Мария", "display_mode": "animal"},
-        ]
-
-    monkeypatch.setattr(db, "get_training", training)
-    monkeypatch.setattr(db, "get_participants", participants)
-
-    async def not_coach(_id):
-        return False
-
-    monkeypatch.setattr(db, "is_coach_id", not_coach)
-    callback, _, chat_answers, _ = _callback_with_message(555, "attendees:show:1")
-    asyncio.run(botmod.cb_attendees_show(callback))
-    assert "Иван" in chat_answers[0] and "Мария" not in chat_answers[0]
-
-    callback, _, _, _ = _callback_with_message(555, "attendees:show:bad")
-    asyncio.run(botmod.cb_attendees_show(callback))
-
-
-def test_slot_callbacks_without_user_or_message(monkeypatch):
-    async def no_training(_id):
-        return None
-
-    monkeypatch.setattr(botmod.db, "get_training", no_training)
-    for handler, data in (
-        (botmod.cb_slot_show, "slots:show:1"),
-        (botmod.cb_slot_book, "slots:book:1"),
-        (botmod.cb_slot_cancel, "slots:cancel:1"),
-    ):
-        callback, _, _, _ = _callback_with_message(555, data)
-        callback.from_user = None
-        asyncio.run(handler(callback))
-
-    callback, _, _, _ = _callback_with_message(555, "attendees:show:1")
-    callback.message = None
-    asyncio.run(botmod.cb_attendees_show(callback))
 
 
 
@@ -1050,14 +726,14 @@ def test_ensure_rules_message_recovers_from_missing_message(monkeypatch):
 
         async def edit_message_text(self, **kwargs):
             state["edited"] += 1
-            raise RuntimeError("message not found")
+            raise TelegramBadRequest(method=EditMessageText(chat_id=123, message_id=55, text="x"), message="message to edit not found")
 
         async def pin_chat_message(self, **kwargs):
             return None
 
     monkeypatch.setattr(db, "get_event_notification", fake_get)
     monkeypatch.setattr(db, "save_event_notification", fake_save)
-    asyncio.run(botmod.ensure_rules_message(RulesBot(), 123))
+    asyncio.run(botmod.ensure_rules_message(RulesBot(), 123, create_if_missing=False))
     assert state["edited"] == 1
     assert state["sent"] == 1
 
@@ -1074,6 +750,92 @@ def test_ensure_rules_message_recovers_from_missing_message(monkeypatch):
 
     monkeypatch.setattr(db, "get_event_notification", broken_get)
     asyncio.run(botmod.ensure_rules_message(RulesBot(), 123))
+
+
+@pytest.mark.parametrize("create_if_missing", [True, False])
+def test_rules_recover_missing_pinned_message(monkeypatch, create_if_missing):
+    state = {"record": {"message_id": 55, "text": botmod.RULES_TEXT}, "sent": 0, "pins": []}
+
+    async def get(*args):
+        return state["record"]
+
+    async def save(*args):
+        state["record"] = {"message_id": args[4], "text": args[5]}
+
+    class Bot:
+        async def send_message(self, chat_id, text):
+            state["sent"] += 1
+            return SimpleNamespace(message_id=88)
+
+        async def pin_chat_message(self, **kwargs):
+            state["pins"].append(kwargs["message_id"])
+            if kwargs["message_id"] == 55:
+                raise TelegramBadRequest(method=PinChatMessage(chat_id=123, message_id=55), message="message to pin not found")
+
+    monkeypatch.setattr(db, "get_event_notification", get)
+    monkeypatch.setattr(db, "save_event_notification", save)
+    asyncio.run(botmod.ensure_rules_message(Bot(), 123, create_if_missing=create_if_missing))
+    assert state["sent"] == 1
+    assert state["pins"] == [55, 88]
+    assert state["record"]["message_id"] == 88
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("timeout"), TelegramBadRequest(method=PinChatMessage(chat_id=123, message_id=55), message="not enough rights")])
+def test_rules_edit_failure_does_not_create_duplicate(monkeypatch, failure):
+    saved = []
+    async def get(*args):
+        return {"message_id": 55, "text": "old"}
+    async def save(*args):
+        saved.append(args)
+    class Bot:
+        async def edit_message_text(self, **kwargs):
+            raise failure
+        async def send_message(self, *args):
+            pytest.fail("must not send duplicate")
+    monkeypatch.setattr(db, "get_event_notification", get)
+    monkeypatch.setattr(db, "save_event_notification", save)
+    asyncio.run(botmod.ensure_rules_message(Bot(), 123))
+    assert saved == []
+
+
+@pytest.mark.parametrize("replacement_id", [0, 88])
+def test_rules_replacement_failure_is_bounded(monkeypatch, replacement_id):
+    state = {"saved": [], "sent": 0, "pins": []}
+    async def get(*args):
+        return {"message_id": 55, "text": botmod.RULES_TEXT}
+    async def save(*args):
+        state["saved"].append(args[4])
+    class Bot:
+        async def send_message(self, *args):
+            state["sent"] += 1
+            return SimpleNamespace(message_id=replacement_id)
+        async def pin_chat_message(self, **kwargs):
+            state["pins"].append(kwargs["message_id"])
+            raise TelegramBadRequest(method=PinChatMessage(chat_id=123, message_id=kwargs["message_id"]), message="message to pin not found")
+    monkeypatch.setattr(db, "get_event_notification", get)
+    monkeypatch.setattr(db, "save_event_notification", save)
+    asyncio.run(botmod.ensure_rules_message(Bot(), 123))
+    assert state["sent"] == 1
+    assert state["pins"] == ([55, 88] if replacement_id else [55])
+    assert state["saved"] == ([55, 88] if replacement_id else [55])
+
+
+def test_rules_new_message_pin_failure_does_not_send_twice(monkeypatch):
+    sent = []
+    async def get(*args):
+        return None
+    async def save(*args):
+        pass
+    class Bot:
+        async def send_message(self, *args):
+            sent.append(args)
+            return SimpleNamespace(message_id=88)
+        async def pin_chat_message(self, **kwargs):
+            raise TelegramBadRequest(method=PinChatMessage(chat_id=123, message_id=88), message="message to pin not found")
+    monkeypatch.setattr(db, "get_event_notification", get)
+    monkeypatch.setattr(db, "save_event_notification", save)
+    asyncio.run(botmod.ensure_rules_message(Bot(), 123))
+    assert len(sent) == 1
 
 
 def test_ensure_rules_for_all_iterates_users(monkeypatch):
@@ -1232,32 +994,6 @@ def test_cmd_start_prompts_for_phone(monkeypatch):
     assert any("Телефон нужен" in text for text, _ in answers)
 
 
-def test_attendees_coach_sees_username_and_phone(monkeypatch):
-    async def training(_id):
-        return _training()
-
-    async def participants(_id):
-        return [
-            {
-                "status": "booked",
-                "telegram_id": 555,
-                "first_name": "Иван",
-                "username": "ivan",
-                "phone": "+79991234567",
-                "display_mode": "name",
-            }
-        ]
-
-    async def is_coach(_id):
-        return True
-
-    monkeypatch.setattr(db, "get_training", training)
-    monkeypatch.setattr(db, "get_participants", participants)
-    monkeypatch.setattr(db, "is_coach_id", is_coach)
-    callback, _, chat_answers, _ = _callback_with_message(123, "attendees:show:1")
-    asyncio.run(botmod.cb_attendees_show(callback))
-    assert "@ivan" in chat_answers[0]
-    assert "+79991234567" in chat_answers[0]
 
 
 def test_temporary_notification_is_scheduled_for_deletion(monkeypatch):
@@ -1277,150 +1013,74 @@ def test_temporary_notification_is_scheduled_for_deletion(monkeypatch):
     assert before + 86400 <= recorded[0][1]["delete_at"] <= int(time.time()) + 86400
 
 
-def test_attendee_usernames_are_safe_links(monkeypatch):
-    async def training(_id):
-        return _training()
-
-    async def participants(_id):
-        return [
-            {"status": "booked", "telegram_id": 555, "first_name": "Иван", "display_mode": "name", "username": "player_1", "phone": ""},
-            {"status": "waitlist", "telegram_id": 556, "first_name": "Мария", "display_mode": "name", "username": '<bad>', "phone": ""},
-        ]
-
-    monkeypatch.setattr(db, "get_training", training)
-    monkeypatch.setattr(db, "get_participants", participants)
-    callback, _, chat_answers, _ = _callback_with_message(settings.coach_telegram_id, "attendees:show:1")
-    asyncio.run(botmod.cb_attendees_show(callback))
-    assert 'href="https://t.me/player_1"' in chat_answers[0]
-    assert '&lt;bad&gt;' in chat_answers[0]
-    assert '<bad>' not in chat_answers[0]
 
 
-def test_slot_booking_respects_approval_and_notifies_coach(monkeypatch):
-    import app.main as mainmod
 
-    async def training(_id):
-        return _training()
 
+
+
+
+
+
+
+
+
+@pytest.mark.parametrize("data", ["slots:list", "slots:show:15", "slots:book:15",
+                                  "slots:cancel:15", "attendees:list", "attendees:show:15"])
+def test_legacy_schedule_buttons_only_open_app(monkeypatch, data):
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("Старая кнопка не должна менять записи")
+
+    monkeypatch.setattr(db, "book_training", forbidden)
+    monkeypatch.setattr(db, "cancel_booking", forbidden)
+    callback, answers, _, edits = _callback_with_message(555, data)
+    dispatcher = botmod.create_dispatcher()
+    router = dispatcher.sub_routers[0]
+    async def run():
+        for handler in router.callback_query.handlers:
+            matched, _ = await handler.check(callback)
+            if matched:
+                await handler.callback(callback)
+                return
+        raise AssertionError("Кнопка не обработана")
+    asyncio.run(run())
+    assert "приложении" in answers[0][0]
+    assert "приложении" in edits[0][0]
+    assert edits[0][1].inline_keyboard[0][0].web_app is not None
+
+
+def test_main_keyboard_and_legacy_command_open_app():
+    keyboard = botmod._main_keyboard()
+    assert len(keyboard.inline_keyboard) == 1
+    assert keyboard.inline_keyboard[0][0].web_app is not None
+    message, answers, _ = _message(555)
+    asyncio.run(botmod.cmd_slots(message))
+    assert "приложении" in answers[0][0]
+    assert answers[0][1].inline_keyboard[0][0].web_app is not None
+
+
+def test_legacy_button_handles_uneditable_message():
+    callback, answers, _, _ = _callback_with_message(555, "slots:book:15")
+
+    async def fail_edit(*args, **kwargs):
+        raise RuntimeError("message cannot be edited")
+
+    callback.message.edit_text = fail_edit
+    asyncio.run(botmod.cb_legacy_schedule(callback))
+    assert "приложении" in answers[0][0]
+
+
+def test_start_match_deep_link_opens_creation(monkeypatch):
+    from app import inline_match
+    async def no_op(*args, **kwargs): pass
+    async def user(*args): return {'phone': '123'}
     calls = []
-
-    async def book(*args, **kwargs):
-        calls.append(kwargs.get("requires_approval"))
-        return "pending"
-
-    async def details(*args):
-        return "text", InlineKeyboardMarkup(inline_keyboard=[])
-
-    async def notify(*args, **kwargs):
-        calls.append("notify")
-
-    monkeypatch.setattr(botmod, "settings", replace(settings, require_event_approval=True))
-    monkeypatch.setattr(db, "get_training", training)
-    monkeypatch.setattr(db, "book_training", book)
-    monkeypatch.setattr(botmod, "_slot_details", details)
-    monkeypatch.setattr(mainmod, "_notify_training_event", notify)
-
-    async def scenario():
-        callback, answers, _, _ = _callback_with_message(555, "slots:book:1")
-        await botmod.cb_slot_book(callback)
-        await asyncio.sleep(0)
-        assert "заявк" in answers[0][0].lower()
-
-    asyncio.run(scenario())
-    assert calls == [True, "notify"]
-
-
-def test_slot_booking_requires_phone_when_policy_is_active(monkeypatch):
-    from datetime import datetime, timedelta
-
-    async def training(_id):
-        return _training()
-
-    async def user(_id):
-        return {"phone": ""}
-
-    async def must_not_book(*args, **kwargs):
-        raise AssertionError("Must not book without a phone")
-
-    monkeypatch.setattr(botmod, "settings", replace(
-        settings, phone_required_from=datetime.now(settings.timezone) - timedelta(days=1)
-    ))
-    monkeypatch.setattr(db, "get_training", training)
-    monkeypatch.setattr(db, "get_user", user)
-    monkeypatch.setattr(db, "book_training", must_not_book)
-    callback, answers, _, _ = _callback_with_message(555, "slots:book:1")
-    asyncio.run(botmod.cb_slot_book(callback))
-    assert "телефон" in answers[0][0].lower()
-
-
-def test_slot_cancel_notifies_coach_and_promoted_player(monkeypatch):
-    import app.main as mainmod
-
-    async def training(_id):
-        return _training(start_at=int(time.time()) + 6 * 3600)
-
-    async def booking(*args):
-        return {"status": "booked"}
-
-    async def cancel(*args):
-        return "556"
-
-    async def details(*args):
-        return "text", InlineKeyboardMarkup(inline_keyboard=[])
-
-    calls = []
-
-    async def event(*args, **kwargs):
-        calls.append(("event", args[1], args[2]))
-
-    async def promoted(uid, training):
-        calls.append(("promoted", uid))
-
-    monkeypatch.setattr(db, "get_training", training)
-    monkeypatch.setattr(db, "get_booking", booking)
-    monkeypatch.setattr(db, "cancel_booking", cancel)
-    monkeypatch.setattr(botmod, "_slot_details", details)
-    monkeypatch.setattr(mainmod, "_notify_training_event", event)
-    monkeypatch.setattr(mainmod, "_notify_promoted", promoted)
-
-    async def scenario():
-        callback, answers, _, _ = _callback_with_message(555, "slots:cancel:1")
-        await botmod.cb_slot_cancel(callback)
-        await asyncio.sleep(0)
-        assert answers[0][0] == "Запись отменена"
-
-    asyncio.run(scenario())
-    assert ("event", 555, "cancelled") in calls
-    assert ("promoted", 556) in calls
-
-
-def test_slot_details_shows_pending_and_offers_cancel(monkeypatch):
-    async def training(_id):
-        return _training()
-
-    async def participants(_id):
-        return []
-
-    async def booking(*args):
-        return {"status": "pending"}
-
-    monkeypatch.setattr(db, "get_training", training)
-    monkeypatch.setattr(db, "get_participants", participants)
-    monkeypatch.setattr(db, "get_booking", booking)
-    text, keyboard = asyncio.run(botmod._slot_details(1, 555))
-    assert "ожидает подтверждения" in text
-    assert any(button.callback_data == "slots:cancel:1" for row in keyboard.inline_keyboard for button in row)
-
-
-def test_slot_cancel_requires_existing_booking(monkeypatch):
-    async def training(_id):
-        return _training(start_at=int(time.time()) + 6 * 3600)
-
-    async def no_booking(*args):
-        return None
-
-    monkeypatch.setattr(db, "get_training", training)
-    monkeypatch.setattr(db, "get_booking", no_booking)
-    callback, answers, _, _ = _callback_with_message(555, "slots:cancel:1")
-    asyncio.run(botmod.cb_slot_cancel(callback))
-    assert "не записаны" in answers[0][0]
+    async def show_form(message): calls.append(message)
+    monkeypatch.setattr(db, 'is_coach_id', no_op)
+    monkeypatch.setattr(db, 'upsert_user', no_op)
+    monkeypatch.setattr(db, 'get_user', user)
+    monkeypatch.setattr(inline_match, 'command', show_form)
+    message, _, _ = _message(1001, text='/start match')
+    message.bot = None
+    asyncio.run(botmod.cmd_start(message))
+    assert calls == [message]

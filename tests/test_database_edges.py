@@ -5,10 +5,68 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import time
+from contextlib import closing
 
 import pytest
 
 from app import database as db
+
+
+def test_tournament_outbox_survives_database_restart(tmp_path):
+    async def scenario():
+        path = str(tmp_path / 'outbox.db')
+        await db.connect(path)
+        assert await db.save_training_tournament(7, '{}', 0, True)
+        await db.close()
+        await db.connect(path)
+        try:
+            jobs = await db.list_tournament_notification_jobs()
+            assert [(row['training_id'], row['revision']) for row in jobs] == [(7, 1)]
+        finally:
+            await db.close()
+    asyncio.run(scenario())
+
+
+def test_training_outbox_survives_restart_and_rolls_back_with_booking(tmp_path):
+    async def scenario():
+        path = str(tmp_path / 'training-outbox.db')
+        await db.connect(path)
+        await db._execute("CREATE TRIGGER fail_training_job BEFORE INSERT ON training_notification_jobs BEGIN SELECT RAISE(ABORT, 'queue failure'); END")
+        with pytest.raises(sqlite3.IntegrityError, match='queue failure'):
+            await db.book_training(5, 555, 2, requires_approval=True)
+        assert await db.get_booking(5, 555) is None
+        await db._execute('DROP TRIGGER fail_training_job')
+        assert await db.book_training(5, 555, 2, requires_approval=True) == 'pending'
+        await db.close()
+        await db.connect(path)
+        try:
+            jobs = await db.list_training_notification_jobs()
+            assert [(row['kind'], row['training_id'], row['user_id']) for row in jobs] == [('request', 5, 555)]
+        finally:
+            await db.close()
+    asyncio.run(scenario())
+
+
+def test_training_outbox_migrates_legacy_booking_schema(tmp_path):
+    path = tmp_path / 'legacy-training.db'
+    with closing(sqlite3.connect(path)) as con, con:
+        con.executescript(db.SCHEMA)
+        for name in ('enqueue_training_request_insert', 'enqueue_training_request_update',
+                     'enqueue_training_vacancy_update', 'enqueue_training_vacancy_delete'):
+            con.execute(f'DROP TRIGGER {name}')
+        con.execute('DROP TABLE training_notification_jobs')
+        con.execute('ALTER TABLE bookings DROP COLUMN needs_approval')
+        con.execute("INSERT INTO bookings(training_id,user_id,status,position,created_at) VALUES (5,555,'booked',0,1)")
+    async def scenario():
+        await db.connect(str(path))
+        try:
+            assert (await db.get_booking(5, 555))['status'] == 'booked'
+            await db.cancel_booking(5, 555)
+            jobs = await db.list_training_notification_jobs()
+            assert [(row['kind'], row['user_id']) for row in jobs] == [('vacancy', 555)]
+        finally:
+            await db.close()
+    asyncio.run(scenario())
 
 
 def test_db_requires_initialization():
@@ -26,6 +84,12 @@ def test_migration_backfills_onboarding_for_existing_users(tmp_path):
             "INSERT INTO users (telegram_id, username, first_name, created_at) "
             "VALUES (42, 'old', 'Old', 1)"
         )
+        con.execute(
+            "INSERT INTO matches (title, start_at, created_by, created_at) VALUES (?, ?, ?, ?)",
+            ('Существующий матч', int(time.time()) + 86400, 42, 1),
+        )
+        con.execute("ALTER TABLE matches DROP COLUMN published")
+        con.execute("ALTER TABLE matches DROP COLUMN notify_all")
         for column in (
             "onboarding_seen",
             "notify_matches",
@@ -46,6 +110,9 @@ def test_migration_backfills_onboarding_for_existing_users(tmp_path):
             assert row["notify_matches"] == 1
             assert row["notify_trainings"] == 1
             assert row["notify_messages"] == 1
+            matches = await db.list_upcoming_matches(int(time.time()), int(time.time()) + 172800)
+            assert len(matches) == 1 and matches[0]["title"] == 'Существующий матч'
+            assert matches[0]["published"] == 1 and matches[0]["notify_all"] == 0
         finally:
             await db.close()
 
@@ -309,6 +376,69 @@ def test_training_and_coach_updates_roll_back_on_failure(tmp_path):
             with pytest.raises(sqlite3.IntegrityError):
                 await db.update_training_details(tid, "После", 2000)
             assert (await db.get_training(tid))["training_type"] == "До"
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_queue_priority_and_transaction_rollback(tmp_path, monkeypatch):
+    async def scenario():
+        await db.connect(str(tmp_path / "rollback.db"))
+        try:
+            tid = await db.create_training(
+                title="Группа", training_type="Группа", start_at=int(time.time()) + 86400,
+                capacity=1, duration_min=60, reminder_offset_min=60,
+                reminder_enabled=False, created_by=1, level="",
+            )
+            assert await db.book_training(tid, 10, 1) == "booked"
+            assert await db.book_training(tid, 11, 1, requires_approval=True) == "waitlist"
+            # Заявка, сохранившаяся в старой заполненной группе.
+            await db._execute("INSERT INTO bookings (training_id,user_id,status,created_at) VALUES (?,?,'pending',?)", (tid, 12, int(time.time())))
+            # Одобрение переполненной заявки не должно превышать вместимость.
+            assert await db.approve_booking(tid, 12) == "waitlist"
+            row = await db.get_booking(tid, 12)
+            assert row["position"] == 2 and not row["needs_approval"]
+            # Отмена ожидающего не должна передвинуть очередь, пока мест нет.
+            assert await db.cancel_booking(tid, 12) == ""
+            assert (await db.get_booking(tid, 11))["status"] == "waitlist"
+
+            async def failure(*args, **kwargs):
+                raise RuntimeError("simulated failure")
+
+            # При ошибке после обновления записи изменения откатываются целиком.
+            with monkeypatch.context() as patch:
+                patch.setattr(db, "_advance_training_waitlist", failure)
+                with pytest.raises(RuntimeError, match="simulated"):
+                    await db.cancel_booking(tid, 10)
+                assert (await db.get_booking(tid, 10))["status"] == "booked"
+
+            await db._execute("UPDATE bookings SET status='pending',position=0 WHERE training_id=? AND user_id=12", (tid,))
+            with monkeypatch.context() as patch:
+                patch.setattr(db, "_advance_training_waitlist", failure)
+                with pytest.raises(RuntimeError, match="simulated"):
+                    await db.reject_booking(tid, 12)
+                assert (await db.get_booking(tid, 12))["status"] == "pending"
+
+            with monkeypatch.context() as patch:
+                patch.setattr(db, "_queue_pending_if_full", failure)
+                with pytest.raises(RuntimeError, match="simulated"):
+                    await db.reconcile_full_training_waitlists()
+                assert (await db.get_booking(tid, 12))["status"] == "pending"
+
+            await db.cancel_booking(tid, 10)
+            # Место зарезервировано для 11, пока тренер принимает решение.
+            with monkeypatch.context() as patch:
+                patch.setattr(db, "_queue_pending_if_full", failure)
+                with pytest.raises(RuntimeError, match="simulated"):
+                    await db.approve_booking(tid, 11)
+                assert (await db.get_booking(tid, 11))["status"] == "pending"
+            await db.reject_booking(tid, 11)
+            with monkeypatch.context() as patch:
+                patch.setattr(db, "_queue_pending_if_full", failure)
+                with pytest.raises(RuntimeError, match="simulated"):
+                    await db.book_training(tid, 20, 1)
+                assert await db.get_booking(tid, 20) is None
         finally:
             await db.close()
 

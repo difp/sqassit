@@ -28,7 +28,6 @@
     <button type="button" data-view="active" class="is-active">Активные</button>
     <button type="button" data-view="history">История</button>
     <button type="button" data-view="deleted">Корзина</button>
-    <button type="button" data-view="club">Око</button>
   </div>
 
   <div id="list">
@@ -107,7 +106,7 @@
         <input class="input" id="coach-input" placeholder="telegram_id или @username" autocomplete="off">
       </label>
       <button class="btn btn--primary btn--block" id="coach-add">Добавить тренера</button>
-      <p class="hint hint--tight">Добавить можно только после /start. Администратора снять нельзя; чужие занятия видны в режиме «Око».</p>
+      <p class="hint hint--tight">Добавить можно только после /start. Администратора снять нельзя.</p>
     </div>
   </section>
 </div>
@@ -693,8 +692,7 @@ async function loadView() {
   }
   const url = VIEW === 'active' ? '/api/coach/trainings'
     : VIEW === 'history' ? '/api/coach/history'
-      : VIEW === 'deleted' ? '/api/coach/deleted'
-        : '/api/coach/club/trainings';
+      : '/api/coach/deleted';
   try {
     const data = await api(url);
     cacheWrite(cacheName, data.trainings);
@@ -750,14 +748,13 @@ function renderList() {
     list.innerHTML = emptyState(
       VIEW === 'active' ? 'Предстоящих тренировок нет. Создайте кнопкой «＋».'
         : VIEW === 'history' ? 'История пуста.'
-          : VIEW === 'deleted' ? 'Корзина пуста.'
-            : 'У других тренеров занятий нет.');
+          : 'Корзина пуста.');
     hideAppLoader();
     return;
   }
   const render = VIEW === 'active' ? activeRow
     : VIEW === 'history' ? historyRow
-      : VIEW === 'deleted' ? deletedRow : clubRow;
+      : deletedRow;
   list.innerHTML = TRAININGS.map(render).join('');
   HYDRATION = hydrateParticipants();
   hideAppLoader();
@@ -822,7 +819,7 @@ function activeRow(t) {
   return `
   <div class="card">
     <div class="t-top">
-      <div class="t-time">${esc(t.time)}</div>
+      <div class="t-time-line"><div class="t-time">${esc(t.time)}</div>${trainingLiveIndicator(t)}</div>
       <div class="t-occ"><b>${t.booked_count}</b> из ${t.capacity} мест</div>
     </div>
     <div class="training-title-row">
@@ -830,6 +827,7 @@ function activeRow(t) {
       ${t.can_manage ? `<button type="button" class="training-edit-btn" data-edit-training="${t.id}" aria-label="Изменить тренировку" title="Изменить тренировку"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg></button>` : ''}
     </div>
     <div class="t-meta">${dateAndLevel(t.date, t.level)}</div>
+    ${pending ? `<p class="badge badge--warn pending-notice" role="status">Ожидают подтверждения: ${pending}. Заявки — в списке участников ниже.</p>` : ''}
     <div class="bar"><div class="bar__fill" style="width:${pct}%"></div></div>
     <div class="inline-row bar-legend">
       <span>Записано ${t.booked_count} из ${t.capacity}</span>
@@ -858,6 +856,7 @@ function historyRow(t) {
       <span>Посещаемость: <b style="color:var(--text)">${t.booked_count}</b> из ${t.capacity}</span>
       <span class="badge badge--muted">Завершена</span>
     </div>
+    ${t.tournament_started ? tournamentRow(t.id) : ''}
     <div class="t-actions">
       <button class="btn" data-cal="${t.id}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_CAL}</svg>
@@ -885,31 +884,6 @@ function deletedRow(t) {
   </div>`;
 }
 
-// ---------- Око (чужое, только чтение) ----------
-function clubRow(t) {
-  const coach = t.coach ? esc(t.coach.first_name) : 'Тренер';
-  const avatar = t.coach ? avatarHtml(t.coach.first_name, t.coach.avatar_url, true) : '';
-  const pending = t.pending_count || 0;
-  return `
-  <div class="card">
-    <div class="t-top">
-      <div class="t-time">${esc(t.time)}</div>
-      <div class="t-occ"><b>${t.booked_count}</b> из ${t.capacity} мест</div>
-    </div>
-    <div class="t-title">${esc(t.type)}${pending ? ` <span class="badge badge--warn">Заявки: ${pending}</span>` : ''}</div>
-    <div class="t-meta">${dateAndLevel(t.date, t.level)}</div>
-    <div class="t-coach" style="cursor:default">
-      ${avatar}
-      <div class="t-coach__text"><div class="t-coach__name">Тренер · ${coach}</div></div>
-      <span class="badge badge--muted">Только чтение</span>
-    </div>
-    <details class="disclosure" data-pid="${t.id}" open>
-      <summary>Участники${pending ? ` · заявок ${pending}` : ''}</summary>
-      <div data-plist="${t.id}"><div class="hint" style="padding:10px 0">Загрузка…</div></div>
-    </details>
-  </div>`;
-}
-
 // ===== Участники =====
 async function refreshParticipants(id) {
   const box = document.querySelector(`[data-plist="${id}"]`);
@@ -918,7 +892,7 @@ async function refreshParticipants(id) {
     const data = await api(`/api/coach/trainings/${id}/participants`);
     const own = VIEW === 'active';
     const rows = data.participants.length
-      ? data.participants.map(p => participantRow(id, p, own)).join('')
+      ? [...data.participants].sort((a, b) => Number(b.status === 'pending') - Number(a.status === 'pending')).map(p => participantRow(id, p, own)).join('')
       : '<div class="hint" style="padding:10px 0">Пока никто не записан</div>';
     // Тренер может записать игрока сам: тот передал просьбу устно.
     box.innerHTML = rows + bookButton(id);
@@ -942,7 +916,7 @@ function bookButton(id) {
 }
 function participantRow(tid, p, own) {
   const badge = p.status === 'booked' ? '<span class="badge badge--success">Записан</span>'
-    : p.status === 'waitlist' ? '<span class="badge badge--warn">Очередь</span>'
+    : p.status === 'waitlist' ? (p.needs_approval ? '<span class="badge badge--warn">Очередь · без подтверждения</span>' : '<span class="badge badge--warn">Очередь · одобрен</span>')
       : p.status === 'pending' ? '<span class="badge badge--warn">Заявка</span>'
         : p.status === 'rejected' ? '<span class="badge badge--muted">Отклонён</span>'
           : '<span class="badge badge--muted">Снят</span>';
@@ -961,8 +935,9 @@ function participantRow(tid, p, own) {
     <button type="button" class="participant-open" data-profile-token="${esc(p.profile_token || '')}">
       ${avatarHtml(p.first_name, p.avatar_url, true, p.avatar_emoji)}
       <div style="flex:1;min-width:0">
-        <div style="font-weight:600;font-size:14px">${esc(p.first_name)}</div>
+        <div class="participant-name" style="font-weight:600;font-size:14px">${esc(p.first_name)}</div>
         ${badge}
+        ${p.skill_level ? `<div class="hint">${esc(p.skill_level)}</div>` : ''}
       </div>
     </button>
     ${action}
@@ -1034,13 +1009,16 @@ document.getElementById('list').addEventListener('click', async (ev) => {
       await refreshKeepingPlace();
     } else if (premove && row) {
       const uid = premove, tid = row.dataset.ptid;
+      const name = row.querySelector('.participant-name')?.textContent || 'Игрок';
+      if (!confirm(`Снять игрока «${name}» с тренировки?`)) return;
       haptic('medium');
       await api(`/api/coach/trainings/${tid}/participants/${uid}/cancel`, 'POST');
       hapticNotify('success');
-      toast('Игрок снят', { label: 'Вернуть', onClick: () => restoreParticipant(tid, uid) });
+      toast('Игрок снят', { label: 'Вернуть', onClick: () => restoreParticipant(tid, uid, name) });
       await refreshKeepingPlace();
     } else if (prestore && row) {
-      await restoreParticipant(row.dataset.ptid, prestore);
+      const name = row.querySelector('.participant-name')?.textContent || 'Игрок';
+      await restoreParticipant(row.dataset.ptid, prestore, name);
     }
   } catch (e) {
     hapticNotify('error');
@@ -1057,7 +1035,8 @@ async function restoreTraining(id) {
     setView('active');
   } catch (e) { hapticNotify('error'); toast(e.message); }
 }
-async function restoreParticipant(tid, uid) {
+async function restoreParticipant(tid, uid, name) {
+  if (!confirm(`Вернуть игрока «${name}» на тренировку? Если мест нет, игрок попадёт в очередь.`)) return;
   try {
     const r = await api(`/api/coach/trainings/${tid}/participants/${uid}/restore`, 'POST');
     hapticNotify('success');
@@ -1296,13 +1275,13 @@ async function openTournament(id) {
     // В карточке тренера нет массива участников: имена берём отдельным
     // запросом, иначе openTournamentRoom получает undefined.
     const [d, roster] = await Promise.all([
-      api(`/api/trainings/${id}/room`, 'POST'),
+      api(`/api/trainings/${id}/tournament`),
       api(`/api/coach/trainings/${id}/participants`),
     ]);
     const names = (roster.participants || [])
       .filter(p => p.status === 'booked')
       .map(p => p.first_name);
-    openTournamentRoom(d.code, names);
+    await openTrainingTournamentRoom(id, names, d);
   } catch (e) {
     hapticNotify('error');
     toast(e.message);
@@ -2117,6 +2096,23 @@ window.PAGE_REFRESH = async () => {
   await Promise.all(jobs);
 };
 
+// Ссылка из уведомления открывает заявку конкретного занятия после загрузки.
+async function openRequestedTraining() {
+  const value = new URLSearchParams(location.search).get('training');
+  if (!value || !/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) return;
+  await HYDRATION;
+  window.setTimeout(() => {
+    const details = document.querySelector(`#list details[data-pid="${value}"]`);
+    if (!details) {
+      toast('Тренировка недоступна или уже завершилась.');
+      return;
+    }
+    details.open = true;
+    const pending = details.querySelector('[data-papprove]');
+    (pending ? pending.closest('.p-row') : details).scrollIntoView({block: 'center'});
+  }, 400);
+}
+
 // ===== Инициализация по роли =====
 (async () => {
   await APP.ready;
@@ -2133,6 +2129,7 @@ window.PAGE_REFRESH = async () => {
       // догружаем в фоне, не задерживая открытие вкладки.
       await loadView();
       hideAppLoader();
+      await openRequestedTraining();
       const background = [loadPlayersCount(), loadProfile(), loadMessages()];
       if (IS_MANAGER) {
         document.getElementById('coaches-section').hidden = false;

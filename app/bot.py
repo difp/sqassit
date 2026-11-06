@@ -12,13 +12,15 @@ import html
 import logging
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import cast
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import BaseFilter, Command, CommandStart
 from aiogram.types import (
     CallbackQuery,
@@ -32,7 +34,7 @@ from aiogram.types import (
 )
 
 from . import database as db
-from .config import BOOKING_CANCEL_LOCK_MINUTES, settings
+from .config import settings
 from .identity import animal_identity
 
 logger = logging.getLogger(__name__)
@@ -58,7 +60,7 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-WEB_APP_VERSION = "46"
+WEB_APP_VERSION = "56"
 
 
 def _web_app_url() -> str:
@@ -70,6 +72,25 @@ def _web_app_url() -> str:
     # заметных обновлений интерфейса. Меняйте при крупных релизах.
     separator = "&" if "?" in base else "?"
     return f"{base}{separator}v={WEB_APP_VERSION}"
+
+
+def _training_tournament_url(training_id: int) -> str:
+    """Открывает сетку занятия в мини-приложении участника."""
+    parts = urlsplit(_web_app_url())
+    query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)
+             if key != "tournament"]
+    query.append(("tournament", str(training_id)))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
+def _coach_training_url(training_id: int) -> str:
+    """Открывает в мини-приложении конкретную тренировку тренера."""
+    parts = urlsplit(_web_app_url())
+    query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)
+             if key != "training"]
+    query.append(("training", str(training_id)))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/") + "/coach",
+                       urlencode(query), parts.fragment))
 
 
 RULES_TEXT = (
@@ -85,7 +106,8 @@ RULES_TEXT = (
 
 async def send_temporary_notification(
     bot: Bot, chat_id: int, text: str, *, kind: str = "notice",
-    entity_id: int | None = None, delete_at: int | None = None, **kwargs,
+    entity_id: int | None = None, user_id: int | None = None,
+    delete_at: int | None = None, **kwargs,
 ):
     """Отправляет уведомление и планирует удаление через сутки."""
     sent = await bot.send_message(chat_id, text, **kwargs)
@@ -93,7 +115,7 @@ async def send_temporary_notification(
     if message_id:
         await db.save_event_notification(
             kind, message_id if entity_id is None else entity_id,
-            chat_id, chat_id, message_id, text,
+            chat_id, chat_id if user_id is None else user_id, message_id, text,
             delete_at=delete_at or int(time.time()) + 86400,
         )
     return sent
@@ -112,6 +134,7 @@ async def ensure_rules_message(
     try:
         record = await db.get_event_notification("rules", 0, chat_id, 0)
         message_id = int(record["message_id"] or 0) if record is not None else 0
+        missing_message = False
         if message_id and record is not None and record["text"] != RULES_TEXT:
             try:
                 await bot.edit_message_text(
@@ -120,9 +143,14 @@ async def ensure_rules_message(
             except Exception as exc:
                 if "message is not modified" not in str(exc).lower():
                     logger.info("Не удалось обновить правила %s", chat_id, exc_info=True)
-                    message_id = 0
+                    if isinstance(exc, TelegramBadRequest) and "message to edit not found" in str(exc).lower():
+                        message_id = 0
+                        missing_message = True
+                    else:
+                        return
+        existing_message = bool(message_id)
         if not message_id:
-            if not create_if_missing:
+            if not create_if_missing and not missing_message:
                 return
             sent = await bot.send_message(chat_id, RULES_TEXT)
             message_id = int(getattr(sent, "message_id", 0) or 0)
@@ -137,8 +165,20 @@ async def ensure_rules_message(
                 message_id=message_id,
                 disable_notification=True,
             )
-        except Exception:
+        except Exception as exc:
             logger.info("Не удалось закрепить правила %s", chat_id, exc_info=True)
+            if existing_message and isinstance(exc, TelegramBadRequest) and "message to pin not found" in str(exc).lower():
+                sent = await bot.send_message(chat_id, RULES_TEXT)
+                new_id = int(getattr(sent, "message_id", 0) or 0)
+                if not new_id:
+                    return
+                await db.save_event_notification("rules", 0, chat_id, 0, new_id, RULES_TEXT)
+                try:
+                    await bot.pin_chat_message(
+                        chat_id=chat_id, message_id=new_id, disable_notification=True
+                    )
+                except Exception:
+                    logger.info("Не удалось закрепить новые правила %s", chat_id, exc_info=True)
     except Exception:
         logger.info("Не удалось отправить правила %s", chat_id, exc_info=True)
 
@@ -160,13 +200,9 @@ def _main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(
-                text="🏸 Открыть тренировки",
+                text="Открыть расписание",
                 web_app=WebAppInfo(url=_web_app_url()),
             )],
-            [
-                InlineKeyboardButton(text="🗓 Выбрать слот", callback_data="slots:list"),
-                InlineKeyboardButton(text="👥 Кто записался", callback_data="attendees:list"),
-            ],
         ]
     )
 
@@ -227,263 +263,25 @@ async def handle_contact(message: Message) -> None:
         logger.exception("Ошибка сохранения телефона")
 
 
-def _slot_label(training) -> str:
-    start = datetime.fromtimestamp(training["start_at"], tz=settings.timezone)
-    summary = (training["training_type"] or "Тренировка")[:18]
-    return f"{start.strftime('%d.%m %H:%M')} · {summary} · {training['booked_count']}/{training['capacity']}"
-
-
-def _callback_message(callback: CallbackQuery) -> Message | None:
-    message = callback.message
-    return cast(Message, message) if message is not None else None
-
-
-def _player_name(row) -> str:
-    if row["display_mode"] == "animal":
-        return animal_identity(row["telegram_id"])["name"]
-    return row["first_name"] or "Игрок"
-
-
-async def _slot_details(training_id: int, user_id: int) -> tuple[str, InlineKeyboardMarkup] | None:
-    training = await db.get_training(training_id)
-    if training is None or training["deleted_at"]:
-        return None
-    participants = await db.get_participants(training_id)
-    booked = [p for p in participants if p["status"] == "booked"]
-    waitlist = [p for p in participants if p["status"] == "waitlist"]
-    booking = await db.get_booking(training_id, user_id)
-    start = datetime.fromtimestamp(training["start_at"], tz=settings.timezone)
-    free = max(0, training["capacity"] - len(booked))
-    status = ""
-    if booking is not None and booking["status"] == "booked":
-        status = "\n✅ Вы записаны"
-    elif booking is not None and booking["status"] == "waitlist":
-        status = "\n⏳ Вы в листе ожидания"
-    elif booking is not None and booking["status"] == "pending":
-        status = "\n📝 Заявка ожидает подтверждения"
-    text = (
-        f"🏸 <b>{html.escape(training['training_type'] or 'Тренировка')}</b>\n"
-        f"📅 {start.strftime('%d.%m.%Y в %H:%M')}\n"
-        f"👥 Свободно: {free} из {training['capacity']}\n"
-        f"⌛ В очереди: {len(waitlist)}"
-        f"{status}"
-    )
-    buttons = []
-    if booking is not None and booking["status"] in {"booked", "waitlist", "pending"}:
-        buttons.append([InlineKeyboardButton(
-            text="🗑 Отменить запись", callback_data=f"slots:cancel:{training_id}"
-        )])
-    elif training["start_at"] > int(time.time()):
-        buttons.append([InlineKeyboardButton(
-            text="✅ Записаться" if free else "⏳ В лист ожидания",
-            callback_data=f"slots:book:{training_id}",
-        )])
-    buttons.append([InlineKeyboardButton(
-        text="👥 Кто записался", callback_data=f"attendees:show:{training_id}"
-    )])
-    buttons.append([InlineKeyboardButton(text="⬅️ К слотам", callback_data="slots:list")])
-    return text, InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-async def _send_slots(message: Message, user_id: int) -> None:
-    now = int(time.time())
-    until = int((datetime.now(settings.timezone) + timedelta(days=7)).timestamp())
-    rows = await db.list_upcoming_trainings(now, until)
-    if not rows:
-        await message.answer("На ближайшие 7 дней тренировок нет.")
-        return
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text=_slot_label(row), callback_data=f"slots:show:{row['id']}"
-        )]
-        for row in rows[:20]
-    ])
-    await message.answer("Выберите слот:", reply_markup=keyboard)
-
-
 async def cmd_slots(message: Message) -> None:
-    try:
-        if message.from_user is None:
-            return
-        await _send_slots(message, message.from_user.id)
-    except Exception:
-        logger.exception("Ошибка выбора слота")
+    """Старую команду направляем в актуальное расписание приложения."""
+    await message.answer(
+        "Расписание и запись доступны в приложении.", reply_markup=_main_keyboard()
+    )
 
 
-async def cb_slots(callback: CallbackQuery) -> None:
-    await callback.answer()
-    message = _callback_message(callback)
-    if message is None or callback.from_user is None:
-        return
-    try:
-        await _send_slots(message, callback.from_user.id)
-    except Exception:
-        logger.exception("Ошибка списка слотов")
-
-
-async def cb_slot_show(callback: CallbackQuery) -> None:
-    try:
-        if callback.from_user is None:
-            return
-        training_id = int((callback.data or "").split(":")[-1])
-        details = await _slot_details(training_id, callback.from_user.id)
-        await callback.answer()
-        message = _callback_message(callback)
-        if message is None:
-            return
-        if details is None:
-            await message.answer("Тренировка не найдена.")
-            return
-        text, keyboard = details
-        await message.answer(text, reply_markup=keyboard)
-    except Exception:
-        logger.exception("Ошибка показа слота")
-
-
-async def cb_slot_book(callback: CallbackQuery) -> None:
-    try:
-        if callback.from_user is None:
-            return
-        training_id = int((callback.data or "").split(":")[-1])
-        training = await db.get_training(training_id)
-        if training is None or training["deleted_at"]:
-            await callback.answer("Тренировка не найдена", show_alert=True)
-            return
-        if training["start_at"] <= int(time.time()):
-            await callback.answer("Тренировка уже началась", show_alert=True)
-            return
-        required_from = settings.phone_required_from
-        if required_from is not None and datetime.now(tz=settings.timezone) >= required_from:
-            user = await db.get_user(callback.from_user.id)
-            if user is None or not user["phone"]:
-                await callback.answer("Укажите телефон в настройках профиля.", show_alert=True)
-                return
-        status = await db.book_training(
-            training_id, callback.from_user.id, training["capacity"],
-            requires_approval=settings.require_event_approval,
-        )
-        # Используем тот же механизм уведомлений, что и мини-приложение.
-        from .main import _notify_training_event, _spawn
-        _spawn(_notify_training_event(
-            training, callback.from_user.id, status, actor_id=callback.from_user.id
-        ))
-        details = await _slot_details(training_id, callback.from_user.id)
-        await callback.answer(
-            "Заявка отправлена тренеру" if status == "pending"
-            else "Вы записаны" if status == "booked" else "Вы в листе ожидания"
-        )
-        message = _callback_message(callback)
-        if message is not None and details is not None:
-            text, keyboard = details
-            await message.edit_text(text, reply_markup=keyboard)
-    except Exception:
-        logger.exception("Ошибка записи через слот")
-
-
-async def cb_slot_cancel(callback: CallbackQuery) -> None:
-    try:
-        if callback.from_user is None:
-            return
-        training_id = int((callback.data or "").split(":")[-1])
-        training = await db.get_training(training_id)
-        if training is None or training["deleted_at"]:
-            await callback.answer("Тренировка не найдена", show_alert=True)
-            return
-        seconds_left = training["start_at"] - int(time.time())
-        if seconds_left < BOOKING_CANCEL_LOCK_MINUTES * 60:
-            await callback.answer(
-                "Отмена недоступна: до старта меньше 4.5 часов",
-                show_alert=True,
+async def cb_legacy_schedule(callback: CallbackQuery) -> None:
+    """Обезвреживает кнопки в ранее отправленных сообщениях бота."""
+    await callback.answer("Откройте расписание в приложении.", show_alert=True)
+    message = callback.message
+    if message is not None:
+        try:
+            await cast(Message, message).edit_text(
+                "Расписание и запись доступны в приложении.",
+                reply_markup=_main_keyboard(),
             )
-            return
-        booking = await db.get_booking(training_id, callback.from_user.id)
-        if booking is None or booking["status"] not in {"pending", "booked", "waitlist"}:
-            await callback.answer("Вы не записаны на эту тренировку", show_alert=True)
-            return
-        promoted = await db.cancel_booking(training_id, callback.from_user.id)
-        from .main import _notify_promoted, _notify_training_event, _spawn
-        _spawn(_notify_training_event(
-            training, callback.from_user.id, "cancelled", actor_id=callback.from_user.id
-        ))
-        if promoted:
-            _spawn(_notify_promoted(int(promoted), training))
-        details = await _slot_details(training_id, callback.from_user.id)
-        await callback.answer("Запись отменена")
-        message = _callback_message(callback)
-        if message is not None and details is not None:
-            text, keyboard = details
-            await message.edit_text(text, reply_markup=keyboard)
-    except Exception:
-        logger.exception("Ошибка отмены через слот")
-
-
-async def cb_attendees(callback: CallbackQuery) -> None:
-    await callback.answer()
-    message = _callback_message(callback)
-    if message is None or callback.from_user is None:
-        return
-    try:
-        now = int(time.time())
-        user_id = callback.from_user.id
-        if await db.is_coach_id(user_id):
-            rows = await db.list_active_trainings(now, user_id)
-        else:
-            until = int((datetime.now(settings.timezone) + timedelta(days=7)).timestamp())
-            rows = await db.list_upcoming_trainings(now, until)
-        if not rows:
-            await message.answer("Ближайших тренировок нет.")
-            return
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text=_slot_label(row), callback_data=f"attendees:show:{row['id']}"
-            )]
-            for row in rows[:20]
-        ])
-        await message.answer("Кто записался — выберите занятие:", reply_markup=keyboard)
-    except Exception:
-        logger.exception("Ошибка списка участников")
-
-
-async def cb_attendees_show(callback: CallbackQuery) -> None:
-    try:
-        training_id = int((callback.data or "").split(":")[-1])
-        training = await db.get_training(training_id)
-        await callback.answer()
-        message = _callback_message(callback)
-        if message is None:
-            return
-        if training is None or training["deleted_at"]:
-            await message.answer("Тренировка не найдена.")
-            return
-        participants = await db.get_participants(training_id)
-        booked = [p for p in participants if p["status"] == "booked"]
-        waitlist = [p for p in participants if p["status"] == "waitlist"]
-        user_id = callback.from_user.id
-        is_coach = user_id == settings.coach_telegram_id or await db.is_coach_id(user_id)
-        lines = [f"👥 <b>Кто записался</b> · {html.escape(training['training_type'] or 'Тренировка')}"]
-
-        def person(p) -> str:
-            name = html.escape(_player_name(p))
-            if not is_coach:
-                return name
-            username = p["username"] or ""
-            if re.fullmatch(r"[A-Za-z0-9_]{1,32}", username):
-                handle = f'<a href="https://t.me/{username}">@{username}</a>'
-            else:
-                handle = html.escape(f"@{username}" if username else "без username")
-            phone = p["phone"] or "телефон не указан"
-            return f"{name} · {handle} · {html.escape(phone)}"
-
-        lines.append("Записаны: " + (", ".join(
-            person(p) for p in booked[:40]
-        ) if booked else "пока никого"))
-        if waitlist:
-            lines.append("В очереди: " + ", ".join(
-                person(p) for p in waitlist[:20]
-            ))
-        await message.answer("\n".join(lines))
-    except Exception:
-        logger.exception("Ошибка показа участников")
+        except Exception:
+            logger.info("Не удалось обновить старое сообщение расписания", exc_info=True)
 
 
 async def _cache_avatar(bot: Bot, user_id: int) -> None:
@@ -532,6 +330,9 @@ async def cmd_start(message: Message) -> None:
                 "Поделитесь контактом кнопкой ниже или введите номер в профиле.",
                 reply_markup=_phone_keyboard(),
             )
+        if (message.text or '').split(maxsplit=1)[1:] == ['match']:
+            from .inline_match import command
+            await command(message)
     except Exception:
         # Один сбойный апдейт не должен ронять бота.
         logger.exception("Ошибка в обработчике /start")
@@ -712,6 +513,8 @@ def create_dispatcher() -> Dispatcher:
     """
     dp = Dispatcher()
     router = Router()
+    from . import inline_match
+    inline_match.register(router)
 
     # Порядок важен: команды/кнопки должны проверяться раньше fallback.
     router.message.register(cmd_start, CommandStart())
@@ -719,12 +522,8 @@ def create_dispatcher() -> Dispatcher:
     router.message.register(cmd_phone, Command("phone"))
     router.message.register(handle_contact, F.contact)
     router.callback_query.register(cb_apply, F.data.startswith("apply:"))
-    router.callback_query.register(cb_slots, F.data == "slots:list")
-    router.callback_query.register(cb_slot_show, F.data.startswith("slots:show:"))
-    router.callback_query.register(cb_slot_book, F.data.startswith("slots:book:"))
-    router.callback_query.register(cb_slot_cancel, F.data.startswith("slots:cancel:"))
-    router.callback_query.register(cb_attendees, F.data == "attendees:list")
-    router.callback_query.register(cb_attendees_show, F.data.startswith("attendees:show:"))
+    router.callback_query.register(cb_legacy_schedule, F.data.startswith("slots:"))
+    router.callback_query.register(cb_legacy_schedule, F.data.startswith("attendees:"))
     router.message.register(fallback, F.text)
 
     dp.include_router(router)

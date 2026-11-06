@@ -868,3 +868,155 @@ def test_training_change_notifies_only_active_participants(bot, monkeypatch):
     assert ("event", 555) in calls and ("event", 556) in calls
     assert ("event", 557) not in calls
     assert ("alert", 555) in calls and ("alert", 556) not in calls
+
+
+def test_pending_training_button_opens_coach_and_specific_training(monkeypatch):
+    from dataclasses import replace
+    from urllib.parse import parse_qs, urlsplit
+
+    monkeypatch.setattr(
+        mainmod.bot_module, "settings",
+        replace(mainmod.bot_module.settings, webhook_base_url="https://example.test/app?source=bot"),
+    )
+    keyboard = mainmod._pending_booking_keyboard([_person(status="pending")], 42)
+    button = keyboard.inline_keyboard[0][0]
+    url = urlsplit(button.web_app.url)
+    assert button.text == "Открыть заявки · 1"
+    assert url.path == "/app/coach"
+    assert parse_qs(url.query) == {
+        "source": ["bot"], "v": [mainmod.bot_module.WEB_APP_VERSION], "training": ["42"]
+    }
+    assert urlsplit(mainmod.bot_module._web_app_url()).path == "/app"
+
+
+def test_request_alert_checks_status_and_deduplicates(bot, monkeypatch):
+    sent = []
+    state = {"status": "pending", "existing": None}
+
+    async def booking(*args):
+        return {"status": state["status"]} if state["status"] else None
+
+    async def existing(*args):
+        return state["existing"]
+
+    async def send(*args, **kwargs):
+        sent.append((args, kwargs))
+
+    monkeypatch.setattr(db, "get_booking", booking)
+    monkeypatch.setattr(db, "get_event_notification", existing)
+    monkeypatch.setattr(mainmod.bot_module, "send_temporary_notification", send)
+
+    async def run():
+        await mainmod._send_training_request_alert(123, 1, 555, "Заявка")
+        assert len(sent) == 1
+        assert sent[0][1]["user_id"] == 555
+        state["existing"] = {"message_id": 101}
+        await mainmod._send_training_request_alert(123, 1, 555, "Заявка")
+        state["status"] = "booked"
+        await mainmod._send_training_request_alert(123, 1, 555, "Заявка")
+        state["status"] = None
+        await mainmod._send_training_request_alert(123, 1, 555, "Заявка")
+        assert len(sent) == 1
+
+        async def fail(*args):
+            raise RuntimeError("database unavailable")
+        monkeypatch.setattr(db, "get_booking", fail)
+        await mainmod._send_training_request_alert(123, 1, 555, "Заявка")
+    asyncio.run(run())
+
+
+def test_stale_pending_event_does_not_send_notification(monkeypatch):
+    async def participants(_id):
+        return [_person(status="booked")]
+
+    async def name(_training):
+        return "Тренер"
+
+    monkeypatch.setattr(db, "get_participants", participants)
+    monkeypatch.setattr(mainmod, "_training_coach_name", name)
+    asyncio.run(mainmod._notify_training_event(_training(), 555, "pending", actor_id=555))
+
+
+def test_vacancy_notifications_handle_booking_races_and_existing_alerts(monkeypatch):
+    sent = []
+    expired = []
+    results = iter([
+        [{"telegram_id": 1}, {"telegram_id": 2}, {"telegram_id": 3}],
+        [{"telegram_id": 2}, {"telegram_id": 3}],
+        [{"telegram_id": 2}, {"telegram_id": 3}],
+        [{"telegram_id": 3}],
+        [],
+    ])
+
+    async def recipients(*args):
+        return next(results)
+
+    async def existing(kind, tid, chat, user):
+        return {"message_id": 77} if chat == 2 else None
+
+    async def send(kind, tid, chat, text, **kwargs):
+        sent.append((chat, text))
+
+    async def expire(kind, tid):
+        expired.append((kind, tid))
+
+    async def coach_name(training):
+        return "Тренер"
+
+    monkeypatch.setattr(db, "training_vacancy_recipients", recipients)
+    monkeypatch.setattr(db, "get_event_notification", existing)
+    monkeypatch.setattr(db, "expire_event_notifications", expire)
+    monkeypatch.setattr(mainmod, "_send_new_event_message", send)
+    monkeypatch.setattr(mainmod, "_training_coach_name", coach_name)
+    asyncio.run(mainmod._notify_training_vacancy(_training(), 555))
+    assert [chat for chat, _ in sent] == [3]
+    assert expired == [("training_vacancy", 1)]
+
+
+def test_promotion_disappeared_before_notification(monkeypatch):
+    async def missing(*args):
+        return None
+
+    monkeypatch.setattr(db, "get_booking", missing)
+    asyncio.run(mainmod._notify_promoted(555, _training()))
+
+
+def test_notification_scheduler_reconciles_existing_pending(monkeypatch):
+    async def scenario():
+        notified = []
+        done = asyncio.Event()
+
+        async def noop(*args):
+            pass
+
+        async def reconcile():
+            return [(1, 555), (2, 556)]
+
+        async def inline_matches(now):
+            return [{"id": 42}]
+
+        async def refresh_inline(match_id):
+            assert match_id == 42
+
+        async def get_training(tid):
+            return _training(id=tid) if tid == 1 else None
+
+        async def notify(training, user_id, status):
+            notified.append((training["id"], user_id, status))
+            done.set()
+
+        for name in ("_process_due_deletions", "_process_due_final_enrollments", "_cleanup_stale_preliminary", "_refresh_existing_match_feeds", "_drain_tournament_notification_jobs", "_drain_training_notification_jobs"):
+            monkeypatch.setattr(mainmod, name, noop)
+        monkeypatch.setattr(db, "list_recent_inline_match_ids", inline_matches)
+        monkeypatch.setattr(mainmod, "_refresh_match_inline", refresh_inline)
+        monkeypatch.setattr(db, "reconcile_full_training_waitlists", reconcile)
+        monkeypatch.setattr(db, "get_training", get_training)
+        monkeypatch.setattr(mainmod, "_notify_training_event", notify)
+        task = asyncio.create_task(mainmod._training_notifications_loop(0))
+        await done.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert notified == [(1, 555, "waitlist")]
+
+    asyncio.run(scenario())

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block header %}Новый матч{% endblock %}
+{% block content %}
+<div class="card">
+  <form id="inline-match-form">
+    <label class="field"><span class="label">Название</span><input class="input" name="title" value="Матч" maxlength="100" required></label>
+    <div class="row2">
+      <label class="field"><span class="label">Дата · ДД.ММ</span><span style="display:flex;gap:6px"><input class="input" id="date-text" type="text" inputmode="numeric" pattern="[0-9]{2}\.[0-9]{2}" maxlength="5" required><span style="position:relative;display:grid;place-items:center;width:45px;flex:none;border:1px solid var(--border);border-radius:10px"><span aria-hidden="true">▦</span><input id="date-calendar" aria-label="Выбрать дату в календаре" type="date" style="position:absolute;inset:0;width:100%;opacity:0"></span></span><input name="date" type="hidden"></label>
+      <label class="field"><span class="label">Время · 24 ч</span><input class="input" name="time" type="text" inputmode="numeric" pattern="(?:[01][0-9]|2[0-3]):[0-5][0-9]" value="19:00" maxlength="5" required></label>
+    </div>
+    <div class="row2">
+      <label class="field"><span class="label">Место</span><select class="input" name="location"><option value="">Не указано</option><option>Парк</option><option>Авакс</option></select></label>
+      <label class="field"><span class="label">Игроков</span><input class="input" name="max_players" type="number" inputmode="numeric" min="2" max="2147483647" value="4" required></label>
+    </div>
+    <p class="hint">Организатор входит в число игроков.</p>
+    <label class="field" style="display:flex;flex-direction:row;align-items:center;gap:10px"><input type="checkbox" name="notify_all" style="width:18px;height:18px;flex:none"><span>Уведомить игроков, подписанных на матчи</span></label>
+    <button class="btn btn--primary btn--block" type="submit">Создать и выбрать чат</button>
+    <p class="hint" id="inline-create-status" role="status"></p>
+  </form>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const form = document.getElementById('inline-match-form');
+const dateInput = form.elements.date;
+const dateText = document.getElementById('date-text');
+const calendar = document.getElementById('date-calendar');
+const today = new Date();
+const localDate = d => [d.getFullYear(), String(d.getMonth()+1).padStart(2,'0'), String(d.getDate()).padStart(2,'0')].join('-');
+calendar.min = localDate(today);
+calendar.max = `${today.getFullYear()}-12-31`;
+calendar.value = localDate(today);
+dateText.value = `${String(today.getDate()).padStart(2,'0')}.${String(today.getMonth()+1).padStart(2,'0')}`;
+calendar.addEventListener('click', () => { if (calendar.showPicker) calendar.showPicker(); });
+calendar.addEventListener('change', () => { const [,month,day] = calendar.value.split('-'); if (day && month) dateText.value = `${day}.${month}`; });
+let created = false;
+form.addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const status = document.getElementById('inline-create-status');
+  const [day, month] = dateText.value.split('.');
+  const iso = `${today.getFullYear()}-${month}-${day}`;
+  const parsed = new Date(`${iso}T12:00:00`);
+  if (Number.isNaN(parsed.getTime()) || localDate(parsed) !== iso || iso < localDate(today)) { status.textContent = 'Укажите существующую будущую дату текущего года.'; return; }
+  dateInput.value = iso;
+  if (!window.Telegram?.WebApp?.switchInlineQuery) { status.textContent = 'Откройте форму в Telegram, чтобы выбрать чат.'; return; }
+  const button = form.querySelector('button[type=submit]');
+  button.disabled = true;
+  try {
+    if (!created) {
+      const values = new FormData(form);
+      await api('/api/matches', 'POST', {title: values.get('title'), date: values.get('date'), time: values.get('time'), location: values.get('location'), max_players: Number(values.get('max_players')), inline_direct: true, inline_draft: true, notify_all: values.has('notify_all')});
+      created = true;
+    }
+    status.textContent = 'Черновик создан. Выберите чат и карточку матча. Если закрыть выбор, найти черновик можно через @SQASSITbot.';
+    Telegram.WebApp.switchInlineQuery('', ['users', 'groups']);
+    button.textContent = 'Выбрать чат';
+  } catch (e) { status.textContent = e.message || 'Не удалось создать матч.'; }
+  finally { button.disabled = false; }
+});
+</script>
+{% endblock %}

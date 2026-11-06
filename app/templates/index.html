@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block header %}Тренировки{% endblock %}
+{% block header %}Расписание{% endblock %}
 
 {% block content %}
 <!-- Профиль игрока + общий тумблер уведомлений -->
@@ -45,6 +45,10 @@
 </div>
 
 <div id="schedule"></div>
+<details class="card" id="tournament-history" hidden>
+  <summary>Прошедшие турниры</summary>
+  <div id="tournament-history-list"></div>
+</details>
 
 <section class="quote-card" aria-label="Цитата профессионального игрока">
   <div class="quote-card__label">Цитата</div>
@@ -74,6 +78,18 @@
     <div class="sheet__handle"></div>
     <h2 class="sheet__title" id="profile-sheet-title" tabindex="-1">Настройки профиля</h2>
     <div class="sheet__body">
+
+    <section class="settings-block" aria-labelledby="profile-level-title">
+      <h3 class="settings-block__title" id="profile-level-title">Уровень игры</h3>
+      <p class="hint">Выберите уровень, чтобы получать уведомления о свободных местах в подходящих группах.</p>
+      <label class="field"><span class="label">Мой уровень</span>
+        <select class="input" id="profile-level">
+          <option value="">Не указан</option>
+          <option>Новичок (Into)</option><option>Начинающий (Beginner)</option><option>Уверенный любитель (С)</option>
+        </select></label>
+      <label class="field"><span class="label">Кому виден уровень</span>
+        <select class="input" id="profile-level-privacy"><option value="private">Только тренеру</option><option value="public">Всем игрокам</option></select></label>
+    </section>
 
     <section class="settings-block" aria-labelledby="profile-about-title">
       <h3 class="settings-block__title" id="profile-about-title">О себе</h3>
@@ -177,7 +193,7 @@
       <p class="hint" style="margin:-8px 0 16px">Коротко о главном — это займёт полминуты.</p>
       <ul class="onboarding-list">
         <li><b>Расписание.</b> Выберите тренировку на 7 дней вперёд и нажмите «Записаться».</li>
-        <li><b>Лист ожидания.</b> Если мест нет — встаньте в очередь: при освобождении места запись произойдёт автоматически.</li>
+        <li><b>Лист ожидания.</b> Если мест нет — встаньте в очередь: когда место освободится, тренер рассмотрит неподтверждённую заявку.</li>
         <li><b>Отмена.</b> Отменить запись можно не позже чем за 4,5 часа до начала.</li>
         <li><b>Тренер.</b> Напишите ему из карточки тренировки или кнопкой «Написать тренеру».</li>
       </ul>
@@ -264,7 +280,7 @@ function trainingCard(t) {
   if (t.is_waitlisted) badges += '<span class="badge badge--warn">Лист ожидания</span>';
   if (t.is_pending) badges += '<span class="badge badge--warn">Ожидает подтверждения</span>';
   if (t.waitlist_count) badges += `<span class="badge badge--muted">В очереди: ${t.waitlist_count}</span>`;
-  if (t.is_past) badges += '<span class="badge badge--muted">Завершена</span>';
+  if (t.is_past && !trainingIsLive(Number(t.start_at), Number(t.duration_min))) badges += '<span class="badge badge--muted">Завершена</span>';
   if (!t.is_past && !t.can_self_cancel && (t.is_booked || t.is_waitlisted)) {
     badges += `<span class="badge badge--warn">Отмена недоступна — до старта ${esc(fmtDuration(t.seconds_left))}</span>`;
   }
@@ -292,12 +308,12 @@ function trainingCard(t) {
   }
   const action = buttons.length ? `<div class="t-actions">${buttons.join('')}</div>` : '';
   // Турнир доступен тем, кто в записи: состав сетки — записавшиеся.
-  const showTournament = t.is_booked || t.is_waitlisted || t.is_pending;
+  const showTournament = t.is_booked && t.tournament_started;
 
   return `
   <div class="card">
     <div class="t-top">
-      <div class="t-time">${esc(t.time)}</div>
+      <div class="t-time-line"><div class="t-time">${esc(t.time)}</div>${trainingLiveIndicator(t)}</div>
       <div class="t-occ"><b>${t.booked_count}</b> из ${t.capacity} мест</div>
     </div>
     <div class="t-title">${esc(t.type)}</div>
@@ -309,7 +325,7 @@ function trainingCard(t) {
     ${participantsLine(t.participants, t.id)}
     ${coachHtml(t.coach, t.id)}
     ${action}
-    ${showTournament ? tournamentRow(t.id) : ''}
+    ${showTournament ? `<button type="button" class="training-grid-action" data-tournament="${t.id}" aria-label="Открыть сетку турнира"><span class="training-grid-action__label">Сетка</span></button>` : ''}
   </div>`;
 }
 
@@ -344,19 +360,23 @@ function renderSchedule(trainings) {
   hideAppLoader();
 }
 
-async function loadSchedule() {
+let scheduleRequest = 0;
+async function loadSchedule({ background = false } = {}) {
+  const request = ++scheduleRequest;
   const cached = cacheRead('schedule');
-  if (cached) {
+  if (cached && !background) {
     // Показываем прошлый снимок сразу, свежие данные догружаем следом.
     renderSchedule(cached);
   }
   try {
     const data = await api('/api/trainings?days=7');
+    if (request !== scheduleRequest) return;
     cacheWrite('schedule', data.trainings);
     renderSchedule(data.trainings);
   } catch (e) {
+    if (request !== scheduleRequest) return;
     if (!cached) document.getElementById('loading').hidden = true;
-    toast(e.message, { label: 'Повторить', onClick: loadSchedule });
+    if (!background) toast(e.message, { label: 'Повторить', onClick: () => loadSchedule() });
   }
 }
 
@@ -421,7 +441,7 @@ document.getElementById('schedule').addEventListener('click', async (ev) => {
     } else {
       const r = await api(`/api/trainings/${cancelId}/cancel`, 'POST');
       hapticNotify('success');
-      toast(r.promoted ? 'Отменено. Следующий из очереди повышен.' : 'Заявка отменена');
+      toast(r.promoted ? 'Отменено. Очередь обновлена.' : 'Заявка отменена');
     }
     cacheClear();
     await loadSchedule();
@@ -434,15 +454,31 @@ document.getElementById('schedule').addEventListener('click', async (ev) => {
   }
 });
 
+async function loadTournamentHistory() {
+  try {
+    const data = await api('/api/me/tournaments');
+    const section = document.getElementById('tournament-history');
+    section.hidden = !data.tournaments.length;
+    document.getElementById('tournament-history-list').innerHTML = data.tournaments.map(t => `
+      <button type="button" class="list-action" data-history-tournament="${t.id}">
+        <span>${esc(fmtDate(t.date))} · ${esc(t.time)} · ${esc(t.type)}</span>
+        <span>Результаты</span>
+      </button>`).join('');
+  } catch (e) { /* Расписание остаётся доступным при ошибке истории. */ }
+}
+document.getElementById('tournament-history-list').addEventListener('click', async (event) => {
+  const id = event.target.closest('[data-history-tournament]')?.dataset.historyTournament;
+  if (!id) return;
+  try { await openTrainingTournamentRoom(id, []); }
+  catch (e) { toast(e.message); }
+});
+
 // ===== Турнир занятия =====
 async function openTrainingTournament(id) {
   const btn = document.querySelector(`[data-tournament="${id}"]`);
   if (btn) btn.disabled = true;
   try {
-    const d = await api(`/api/trainings/${id}/room`, 'POST');
-    const t = ITEMS[id];
-    const names = t && Array.isArray(t.participants) ? t.participants.map(p => p.first_name) : [];
-    openTournamentRoom(d.code, names);
+    await openTrainingTournamentRoom(id, []);
   } catch (e) {
     hapticNotify('error');
     toast(e.message);
@@ -605,10 +641,12 @@ function closeOnboarding() {
   if (!onboardingSheet.classList.contains('is-open')) return;
   onboardingSheet.classList.remove('is-open');
   markOnboardingSeen();
+  if (APP.me && !APP.me.skill_level) setTimeout(openProfile, 200);
 }
 
 function maybeShowOnboarding() {
   if (APP.me && !APP.me.onboarding_seen) showOnboarding();
+  else if (APP.me && !APP.me.skill_level) openProfile();
 }
 
 document.getElementById('onboarding-next').addEventListener('click', showOnboardingPrivacy);
@@ -645,6 +683,8 @@ function updateProfilePreview() {
 
 function openProfile() {
   if (!APP.me) return;
+  document.getElementById('profile-level').value = APP.me.skill_level || '';
+  document.getElementById('profile-level-privacy').value = APP.me.show_level ? 'public' : 'private';
   profileAbout.value = APP.me.about || '';
   updateProfileAboutCount();
   profileDisplay.value = APP.me.display_mode || 'name';
@@ -671,6 +711,8 @@ document.getElementById('profile-save').addEventListener('click', async () => {
   btn.disabled = true;
   try {
     const data = await api('/api/me/profile', 'PUT', {
+      skill_level: document.getElementById('profile-level').value,
+      show_level: document.getElementById('profile-level-privacy').value === 'public',
       about: profileAbout.value.trim(),
       display_mode: profileDisplay.value,
       show_username: profileUsername.checked,
@@ -732,14 +774,28 @@ function paintTrainingQuote() {
 paintTrainingQuote();
 setInterval(paintTrainingQuote, 60000);
 
+setInterval(() => { if (!document.hidden) loadSchedule({ background: true }); }, 60000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) loadSchedule({ background: true });
+});
+
 window.PAGE_REFRESH = async () => {
   await APP.refresh();
-  await Promise.all([loadProfile(), loadSchedule()]);
+  await Promise.all([loadProfile(), loadSchedule(), loadTournamentHistory()]);
 };
 
-Promise.allSettled([loadProfile(), loadSchedule()]).then(() => {
+Promise.allSettled([loadProfile(), loadSchedule(), loadTournamentHistory()]).then(() => {
   hideAppLoader();
-  setTimeout(maybeShowOnboarding, 350);
+  const params = new URLSearchParams(location.search);
+  const tournament = params.get('tournament');
+  if (tournament && /^[1-9]\d*$/.test(tournament)) {
+    params.delete('tournament');
+    const query = params.toString();
+    history.replaceState(history.state, '', location.pathname + (query ? '?' + query : '') + location.hash);
+    openTrainingTournament(tournament);
+  } else {
+    setTimeout(maybeShowOnboarding, 350);
+  }
 });
 </script>
 {% endblock %}

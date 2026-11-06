@@ -56,11 +56,11 @@ def test_disclosures_use_aligned_dots() -> None:
 def test_coach_participants_open_by_default() -> None:
     coach = (TEMPLATES / "coach.html").read_text()
 
-    # Своё и чужое занятие: список участников раскрыт сразу после загрузки.
-    assert coach.count('data-pid="${t.id}" open') == 2
+    # На карточке занятия список участников раскрыт сразу после загрузки.
+    assert coach.count('data-pid="${t.id}" open') == 1
     assert "hydrateParticipants();" in coach
     # Заявки видны на карточке, а не только внутри раскрытого списка.
-    assert coach.count('badge badge--warn">Заявки: ${pending}') == 2
+    assert coach.count('badge badge--warn">Заявки: ${pending}') == 1
 
 
 def test_coach_tab_has_pending_badge() -> None:
@@ -291,7 +291,7 @@ def test_coach_opens_tournament_room() -> None:
     assert "difp.github.io" not in coach
 
     # Строка «Турнир» — общий хелпер; карточки лишь решают, когда её показать.
-    assert "function tournamentRow(id)" in base
+    assert "function tournamentRow(id, spectator = false)" in base
     # В хелпер передаётся id, а не объект занятия: иначе в data-tournament
     # попадает «[object Object]» и запрос уходит на несуществующий путь.
     assert "${t.can_manage ? tournamentRow(t.id) : ''}" in coach
@@ -300,9 +300,9 @@ def test_coach_opens_tournament_room() -> None:
     assert "api(`/api/coach/trainings/${id}/participants`)" in coach
     assert ".filter(p => p.status === 'booked')" in coach
     assert "Array.isArray(names)" in base
-    assert "${showTournament ? tournamentRow(t.id) : ''}" in index
+    assert 'class="training-grid-action" data-tournament="${t.id}"' in index
     assert "${showTournament ? tournamentRow(m.id) : ''}" in match
-    assert "const showTournament = t.is_booked || t.is_waitlisted || t.is_pending;" in index
+    assert "const showTournament = t.is_booked && t.tournament_started;" in index
     assert "m.players_count > 3 && (m.is_joined || m.is_creator)" in match
 
     # Ссылки для игроков и судей фиксируют роль; в приложении открываем owner.
