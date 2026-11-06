@@ -1753,7 +1753,7 @@
     }
 
     async function pollTrainingTournament(session) {
-      if (tabsTraining !== session || session.busy || session.pending || session.conflict) return;
+      if (document.hidden || tabsTraining !== session || session.busy || session.pending || session.conflict) return;
       try {
         const data = await api(`/api/trainings/${session.id}/tournament`);
         if (tabsTraining !== session || session.busy || session.pending || session.conflict) return;

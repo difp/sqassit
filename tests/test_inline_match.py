@@ -201,6 +201,22 @@ def test_confirmation_updates_message_even_if_callback_expired(monkeypatch):
     assert edits == ['Вы записаны на матч.']
 
 
+def test_stale_confirmation_reports_existing_status(monkeypatch):
+    answers, edits = [], []
+    async def answer(text, **kwargs): answers.append(text)
+    async def edit_text(text): edits.append(text)
+    async def user(*args): return {'telegram_id': 1}
+    async def join(*args): return {'ok': True, 'status': 'waitlist', 'already_joined': True}
+    async def refresh(*args): pass
+    monkeypatch.setattr(mod, 'Message', SimpleNamespace)
+    monkeypatch.setattr(mod.db, 'get_user', user)
+    monkeypatch.setattr(main, 'api_join_match', join)
+    monkeypatch.setattr(mod, 'refresh', refresh)
+    callback = SimpleNamespace(data='match_confirm:1', from_user=SimpleNamespace(id=1), message=SimpleNamespace(chat=SimpleNamespace(type='private'), edit_text=edit_text), answer=answer)
+    run(mod.confirm_join(callback, object()))
+    assert answers == edits == ['Вы уже в листе ожидания.']
+
+
 def test_inline_query_for_shared_match_only_returns_owner_match(monkeypatch):
     responses = []
     async def answer(items, **kwargs): responses.append(items)

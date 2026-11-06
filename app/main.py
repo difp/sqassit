@@ -25,6 +25,7 @@ from typing import Annotated, Any, Literal, cast
 from urllib.parse import urlencode
 
 import aiosqlite
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import (
     BufferedInputFile,
     InlineKeyboardButton,
@@ -1243,7 +1244,7 @@ async def api_save_training_tournament(
     if not await db.save_training_tournament(training_id, raw, payload.revision, started):
         return error_json("Турнир уже изменён в другом окне. Обновите данные.", 409)
     if started:
-        _spawn(_notify_training_tournament(training_id))
+        _spawn(_drain_tournament_notification_jobs())
     elif was_started and not started:
         await db.expire_event_notifications("training_tournament", training_id)
     return {"ok": True, "revision": payload.revision + 1}
@@ -1273,7 +1274,7 @@ async def api_finish_training_tournament(
     raw = json.dumps(state, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     if not await db.save_training_tournament(training_id, raw, payload.revision, True):
         return error_json("Турнир изменён в другом окне. Обновите данные.", 409)
-    _spawn(_notify_training_tournament(training_id))
+    _spawn(_drain_tournament_notification_jobs())
     return {"ok": True, "revision": payload.revision + 1}
 
 
@@ -1567,7 +1568,10 @@ async def api_join_match(
             user["telegram_id"],
             match["max_players"],
             requires_approval=settings.require_event_approval and not _row_value(match, "inline_direct", 0),
+            distinguish_existing=True,
         )
+        if status.startswith("existing:"):
+            return {"ok": True, "status": status.removeprefix("existing:"), "already_joined": True}
         if status == "unavailable":
             return error_json("Матч не найден", 404)
         if status == "started":
@@ -2890,6 +2894,11 @@ async def _send_new_event_message(
     """Отправляет новое сообщение и сохраняет его таймер."""
     try:
         sent = await app.state.bot.send_message(chat_id, text)
+    except TelegramForbiddenError:
+        if phase == 'vacancy':
+            return -1
+        logger.info("Пользователь недоступен для уведомления %s", chat_id)
+        return 0
     except Exception:
         logger.info("Не удалось отправить уведомление %s", chat_id, exc_info=True)
         return 0
@@ -3142,18 +3151,23 @@ async def _remove_training_request_alerts(training_id: int, user_id: int) -> Non
 
 async def _send_training_request_alert(
     recipient: int, training_id: int, user_id: int, text: str,
-) -> None:
+) -> bool:
     """Отдельный push, связанный с заявкой и удаляемый после её решения."""
     try:
         async with _training_request_lock():
             booking = await db.get_booking(training_id, user_id)
             if booking is None or booking["status"] != "pending":
-                return
+                return True
             existing = await db.get_event_notification(
                 "training_request", training_id, recipient, user_id
             )
+            if existing is not None and _row_value(existing, 'delete_at', None) is not None and int(existing['delete_at']) <= int(time.time()):
+                await _delete_notification_row(existing)
+                existing = await db.get_event_notification("training_request", training_id, recipient, user_id)
+                if existing is not None:
+                    return False
             if existing is not None and existing["message_id"]:
-                return
+                return True
             keyboard = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(
                     text="Открыть заявки",
@@ -3164,8 +3178,13 @@ async def _send_training_request_alert(
                 app.state.bot, recipient, text, kind="training_request",
                 entity_id=training_id, user_id=user_id, reply_markup=keyboard,
             )
+            return True
+    except TelegramForbiddenError:
+        logger.info("Тренер недоступен для уведомления о заявке")
+        return True
     except Exception:
         logger.info("Не удалось отправить уведомление о заявке %s", recipient, exc_info=True)
+        return False
 
 
 async def _notify_training_event(
@@ -3273,7 +3292,9 @@ async def _notify_training_event(
                 await _send_user_message(recipient, alert_text, reply_markup=keyboard)
 
 
-async def _notify_training_tournament_player(training_id: int, user_id: int) -> None:
+async def _notify_training_tournament_player(
+    training_id: int, user_id: int, image_cache: dict[int, bytes] | None = None,
+) -> bool:
     """Отправляет одну актуальную ссылку подтверждённому участнику."""
     async with _training_request_lock():
         training = await db.get_training(training_id)
@@ -3284,12 +3305,12 @@ async def _notify_training_tournament_player(training_id: int, user_id: int) -> 
                 or not tournament["started"] or booking is None or booking["status"] != "booked"
                 or _training_delete_at(training) <= now
                 or not await _notifications_allowed(user_id, "trainings")):
-            return
+            return True
         existing = await db.get_event_notification("training_tournament", training_id, user_id, user_id)
         if existing is not None and (existing["delete_at"] or 0) <= now:
             await _delete_notification_row(existing)
             if await db.get_event_notification("training_tournament", training_id, user_id, user_id) is not None:
-                return
+                return False
             existing = None
         coach_name = await _training_coach_name(training)
         state = json.loads(tournament["state_json"])
@@ -3315,7 +3336,12 @@ async def _notify_training_tournament_player(training_id: int, user_id: int) -> 
             if state.get("finished"):
                 final = await db.get_event_notification("training_tournament_final", training_id, user_id, user_id)
                 if final is None:
-                    picture = await asyncio.to_thread(tournament_summary.image, state)
+                    revision = int(tournament["revision"])
+                    picture = image_cache.get(revision) if image_cache is not None else None
+                    if picture is None:
+                        picture = await asyncio.to_thread(tournament_summary.image, state)
+                        if image_cache is not None:
+                            image_cache[revision] = picture
                     sent = await app.state.bot.send_photo(
                         user_id, BufferedInputFile(picture, filename="standings.png"),
                         caption="Итоговая таблица турнира", reply_markup=keyboard,
@@ -3335,21 +3361,58 @@ async def _notify_training_tournament_player(training_id: int, user_id: int) -> 
                     or current_booking["status"] != "booked"):
                 await db.expire_event_notifications("training_tournament", training_id, user_id)
                 await db.expire_event_notifications("training_tournament_final", training_id, user_id)
+            return True
+        except TelegramForbiddenError:
+            logger.info("Пользователь недоступен для уведомления о сетке")
+            return True
         except Exception:
             logger.info("Не удалось отправить уведомление о сетке", exc_info=True)
+            return False
 
 
-async def _notify_training_tournament(training_id: int) -> None:
+async def _notify_training_tournament(training_id: int) -> bool:
+    image_cache: dict[int, bytes] = {}
+    successful = True
     for participant in await db.get_participants(training_id):
-        if participant["status"] == "booked":
-            await _notify_training_tournament_player(training_id, int(participant["telegram_id"]))
+        if participant["status"] == "booked" and not await _notify_training_tournament_player(training_id, int(participant["telegram_id"]), image_cache):
+            successful = False
+    return successful
 
 
-async def _notify_training_vacancy(training: aiosqlite.Row, excluded_user: int) -> None:
+_tournament_job_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = weakref.WeakKeyDictionary()
+
+
+async def _drain_tournament_notification_jobs() -> None:
+    """Повторяет актуальные обновления; старая версия не удаляет новую задачу."""
+    loop = asyncio.get_running_loop()
+    lock = _tournament_job_locks.setdefault(loop, asyncio.Lock())
+    async with lock:
+        for job in await db.list_tournament_notification_jobs():
+            training_id, revision = int(job['training_id']), int(job['revision'])
+            try:
+                if await _notify_training_tournament(training_id):
+                    await db.complete_tournament_notification_job(training_id, revision)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception('Ошибка доставки обновления турнира %s', training_id)
+
+
+_vacancy_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = weakref.WeakKeyDictionary()
+
+
+async def _notify_training_vacancy(training: aiosqlite.Row, excluded_user: int) -> bool:
+    loop = asyncio.get_running_loop()
+    async with _vacancy_locks.setdefault(loop, asyncio.Lock()):
+        return await _send_training_vacancy(training, excluded_user)
+
+
+async def _send_training_vacancy(training: aiosqlite.Row, excluded_user: int) -> bool:
     """Сообщает о месте игрокам того же уровня, когда очередь пуста."""
     training_id = int(training["id"])
     candidates = await db.training_vacancy_recipients(training_id, excluded_user)
     coach_name = await _training_coach_name(training)
+    successful = True
     for candidate in candidates:
         recipient = int(candidate["telegram_id"])
         # Состояние могло измениться во время отправки предыдущего сообщения.
@@ -3360,15 +3423,64 @@ async def _notify_training_vacancy(training: aiosqlite.Row, excluded_user: int) 
         if existing is not None and existing["message_id"]:
             continue
         now = int(time.time())
-        await _send_new_event_message(
+        sent = await _send_new_event_message(
             "training_vacancy", training_id, recipient,
             "Освободилось место на занятии. Откройте расписание, чтобы подать заявку.\n\n"
             + _training_player_header(training, coach_name) + "\n" + _training_datetime(training),
             delete_at=min(int(training["start_at"]), now + 86400), phase="vacancy", sent_at=now,
         )
+        if sent == 0:
+            successful = False
         if not await db.training_vacancy_recipients(training_id, excluded_user):
             await db.expire_event_notifications("training_vacancy", training_id)
             break
+    return successful
+
+
+_training_job_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = weakref.WeakKeyDictionary()
+
+
+async def _deliver_training_request_job(training: aiosqlite.Row, user_id: int) -> bool:
+    booking = await db.get_booking(int(training['id']), user_id)
+    if booking is None or booking['status'] != 'pending':
+        return True
+    participants = await db.get_participants(int(training['id']))
+    coach_name = await _training_coach_name(training)
+    actor_name = await _training_actor_name(user_id, participants)
+    text = _training_alert_text(training, coach_name, 'pending', actor_name)
+    recipients = {int(row['telegram_id']) for row in await db.list_event_coauthors('training', int(training['id']))}
+    if training['created_by']:
+        recipients.add(int(training['created_by']))
+    successful = True
+    for recipient in recipients:
+        if (recipient != user_id and await _notifications_allowed(recipient, 'trainings')
+                and not await _send_training_request_alert(recipient, int(training['id']), user_id, text)):
+            successful = False
+    return successful
+
+
+async def _drain_training_notification_jobs() -> None:
+    loop = asyncio.get_running_loop()
+    async with _training_job_locks.setdefault(loop, asyncio.Lock()):
+        for job in await db.list_training_notification_jobs():
+            kind, training_id, user_id, revision = job['kind'], int(job['training_id']), int(job['user_id']), int(job['revision'])
+            try:
+                training = await db.get_training(training_id)
+                if training is None or training['deleted_at'] or training['start_at'] <= int(time.time()):
+                    delivered = True
+                elif kind == 'request':
+                    delivered = await _deliver_training_request_job(training, user_id)
+                elif kind == 'vacancy':
+                    delivered = await _notify_training_vacancy(training, user_id)
+                else:
+                    logger.error('Неизвестный тип уведомления %s', kind)
+                    continue
+                if delivered:
+                    await db.complete_training_notification_job(kind, training_id, user_id, revision)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception('Ошибка доставки уведомления занятия %s', training_id)
 
 
 async def _notify_promoted(user_id: int, training: aiosqlite.Row) -> None:
@@ -3537,6 +3649,8 @@ async def _training_notifications_loop(interval_seconds: int = 60) -> None:
             await _process_due_deletions(now)
             await _process_due_final_enrollments(now)
             await _cleanup_stale_preliminary(now)
+            await _drain_tournament_notification_jobs()
+            await _drain_training_notification_jobs()
             await _refresh_existing_match_feeds(now)
             for inline_match in await db.list_recent_inline_match_ids(now - 86400):
                 await _refresh_match_inline(int(inline_match["id"]))
@@ -3826,8 +3940,8 @@ async def _notify_new_match(match: aiosqlite.Row) -> None:
             break
         if user_id == current["created_by"] or not await _notifications_allowed(user_id, "matches"):
             continue
-        players = await db.get_match_players(current["id"])
-        if any(int(p["telegram_id"]) == user_id and _row_status(p) in {"booked", "pending", "waitlist"} for p in players):
+        status = await db.get_match_player_status(current["id"], user_id)
+        if status in {"booked", "pending", "waitlist"}:
             continue
         start = _local_time(current["start_at"])
         text = f"Новый матч: <b>{html.escape(current['title'] or 'Матч')}</b>\n{start:%d.%m · %H:%M}"
@@ -3839,8 +3953,8 @@ async def _notify_new_match(match: aiosqlite.Row) -> None:
         if latest is None or latest["deleted_at"] or latest["start_at"] <= int(time.time()) or latest["players_count"] >= latest["max_players"]:
             await _expire_match_announcement(current["id"])
             break
-        latest_players = await db.get_match_players(current["id"])
-        if any(int(p["telegram_id"]) == user_id and _row_status(p) in {"booked", "pending", "waitlist"} for p in latest_players):
+        latest_status = await db.get_match_player_status(current["id"], user_id)
+        if latest_status in {"booked", "pending", "waitlist"}:
             await _expire_match_announcement(current["id"], user_id)
 
 

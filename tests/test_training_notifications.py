@@ -1005,7 +1005,7 @@ def test_notification_scheduler_reconciles_existing_pending(monkeypatch):
             notified.append((training["id"], user_id, status))
             done.set()
 
-        for name in ("_process_due_deletions", "_process_due_final_enrollments", "_cleanup_stale_preliminary", "_refresh_existing_match_feeds"):
+        for name in ("_process_due_deletions", "_process_due_final_enrollments", "_cleanup_stale_preliminary", "_refresh_existing_match_feeds", "_drain_tournament_notification_jobs", "_drain_training_notification_jobs"):
             monkeypatch.setattr(mainmod, name, noop)
         monkeypatch.setattr(db, "list_recent_inline_match_ids", inline_matches)
         monkeypatch.setattr(mainmod, "_refresh_match_inline", refresh_inline)

@@ -5,10 +5,68 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import time
+from contextlib import closing
 
 import pytest
 
 from app import database as db
+
+
+def test_tournament_outbox_survives_database_restart(tmp_path):
+    async def scenario():
+        path = str(tmp_path / 'outbox.db')
+        await db.connect(path)
+        assert await db.save_training_tournament(7, '{}', 0, True)
+        await db.close()
+        await db.connect(path)
+        try:
+            jobs = await db.list_tournament_notification_jobs()
+            assert [(row['training_id'], row['revision']) for row in jobs] == [(7, 1)]
+        finally:
+            await db.close()
+    asyncio.run(scenario())
+
+
+def test_training_outbox_survives_restart_and_rolls_back_with_booking(tmp_path):
+    async def scenario():
+        path = str(tmp_path / 'training-outbox.db')
+        await db.connect(path)
+        await db._execute("CREATE TRIGGER fail_training_job BEFORE INSERT ON training_notification_jobs BEGIN SELECT RAISE(ABORT, 'queue failure'); END")
+        with pytest.raises(sqlite3.IntegrityError, match='queue failure'):
+            await db.book_training(5, 555, 2, requires_approval=True)
+        assert await db.get_booking(5, 555) is None
+        await db._execute('DROP TRIGGER fail_training_job')
+        assert await db.book_training(5, 555, 2, requires_approval=True) == 'pending'
+        await db.close()
+        await db.connect(path)
+        try:
+            jobs = await db.list_training_notification_jobs()
+            assert [(row['kind'], row['training_id'], row['user_id']) for row in jobs] == [('request', 5, 555)]
+        finally:
+            await db.close()
+    asyncio.run(scenario())
+
+
+def test_training_outbox_migrates_legacy_booking_schema(tmp_path):
+    path = tmp_path / 'legacy-training.db'
+    with closing(sqlite3.connect(path)) as con, con:
+        con.executescript(db.SCHEMA)
+        for name in ('enqueue_training_request_insert', 'enqueue_training_request_update',
+                     'enqueue_training_vacancy_update', 'enqueue_training_vacancy_delete'):
+            con.execute(f'DROP TRIGGER {name}')
+        con.execute('DROP TABLE training_notification_jobs')
+        con.execute('ALTER TABLE bookings DROP COLUMN needs_approval')
+        con.execute("INSERT INTO bookings(training_id,user_id,status,position,created_at) VALUES (5,555,'booked',0,1)")
+    async def scenario():
+        await db.connect(str(path))
+        try:
+            assert (await db.get_booking(5, 555))['status'] == 'booked'
+            await db.cancel_booking(5, 555)
+            jobs = await db.list_training_notification_jobs()
+            assert [(row['kind'], row['user_id']) for row in jobs] == [('vacancy', 555)]
+        finally:
+            await db.close()
+    asyncio.run(scenario())
 
 
 def test_db_requires_initialization():

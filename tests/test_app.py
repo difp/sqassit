@@ -4733,6 +4733,228 @@ def test_tournament_finish_requires_coach_confirmation_and_sends_final_image(cli
     assert client.put(url, headers=COACH, json={"revision": 3, "state": state}).status_code == 423
 
 
+def test_tournament_final_image_is_generated_once_for_multiple_players(client, monkeypatch):
+    client.get('/api/me', headers=PLAYER)
+    client.get('/api/me', headers=PLAYER2)
+    tid = _create_training(client, day=3, time_str='19:00', capacity=4)
+    client.portal.call(mainmod.db.book_training, tid, 555, 4)
+    client.portal.call(mainmod.db.book_training, tid, 556, 4)
+    state = {'players': ['Илья', 'Марго'], 'schedule': [{'courts': [[0, 1]]}], 'scores': {'0-0': {'a': 11, 'b': 2}}, 'finished': True}
+    client.portal.call(mainmod.db.save_training_tournament, tid, json.dumps(state), 0, True)
+    generated, sent = [], []
+    def image(data):
+        generated.append(True)
+        return b'image'
+    async def send(chat, text, **kwargs): return SimpleNamespace(message_id=101)
+    async def photo(chat, picture, **kwargs):
+        sent.append(chat)
+        return SimpleNamespace(message_id=102)
+    monkeypatch.setattr(mainmod.tournament_summary, 'image', image)
+    monkeypatch.setattr(mainmod.app.state.bot, 'send_message', send)
+    monkeypatch.setattr(mainmod.app.state.bot, 'send_photo', photo)
+    client.portal.call(mainmod._notify_training_tournament, tid)
+    assert sorted(sent) == [555, 556]
+    assert len(generated) == 1
+
+
+def test_tournament_notification_queue_retries_and_preserves_newer_revision(client, monkeypatch):
+    tid = _create_training(client, day=3, time_str='19:00', capacity=4)
+    state = json.dumps({'players': [], 'schedule': []})
+    assert client.portal.call(mainmod.db.save_training_tournament, tid, state, 0, True)
+    calls = []
+    async def fail(training_id):
+        calls.append(training_id)
+        return False
+    monkeypatch.setattr(mainmod, '_notify_training_tournament', fail)
+    client.portal.call(mainmod._drain_tournament_notification_jobs)
+    assert [row['revision'] for row in client.portal.call(mainmod.db.list_tournament_notification_jobs)] == [1]
+    async def changed(training_id):
+        calls.append(training_id)
+        assert await mainmod.db.save_training_tournament(tid, state, 1, True)
+        return True
+    monkeypatch.setattr(mainmod, '_notify_training_tournament', changed)
+    client.portal.call(mainmod._drain_tournament_notification_jobs)
+    assert [row['revision'] for row in client.portal.call(mainmod.db.list_tournament_notification_jobs)] == [2]
+    async def deliver(training_id):
+        calls.append(training_id)
+        return True
+    monkeypatch.setattr(mainmod, '_notify_training_tournament', deliver)
+    client.portal.call(mainmod._drain_tournament_notification_jobs)
+    assert client.portal.call(mainmod.db.list_tournament_notification_jobs) == []
+    assert calls == [tid, tid, tid]
+
+
+def test_tournament_notification_queue_preserves_job_on_error_and_cancellation(client, monkeypatch):
+    from concurrent.futures import CancelledError
+    tid = _create_training(client, day=3, time_str='19:00', capacity=4)
+    assert client.portal.call(mainmod.db.save_training_tournament, tid, '{}', 0, True)
+    async def error(training_id): raise RuntimeError('temporary error')
+    monkeypatch.setattr(mainmod, '_notify_training_tournament', error)
+    client.portal.call(mainmod._drain_tournament_notification_jobs)
+    assert len(client.portal.call(mainmod.db.list_tournament_notification_jobs)) == 1
+    async def cancelled(training_id): raise asyncio.CancelledError()
+    monkeypatch.setattr(mainmod, '_notify_training_tournament', cancelled)
+    with pytest.raises(CancelledError):
+        client.portal.call(mainmod._drain_tournament_notification_jobs)
+    assert len(client.portal.call(mainmod.db.list_tournament_notification_jobs)) == 1
+
+
+def test_tournament_save_rolls_back_if_notification_job_cannot_be_created(client):
+    tid = _create_training(client, day=3, time_str='19:00', capacity=4)
+    client.portal.call(mainmod.db._execute, "CREATE TRIGGER fail_job BEFORE INSERT ON tournament_notification_jobs BEGIN SELECT RAISE(ABORT, 'outbox unavailable'); END")
+    with pytest.raises(Exception, match='outbox unavailable'):
+        client.portal.call(mainmod.db.save_training_tournament, tid, '{}', 0, True)
+    assert client.portal.call(mainmod.db.get_training_tournament, tid) is None
+
+
+def test_tournament_queue_retries_network_errors_but_skips_blocked_users(client, monkeypatch):
+    from aiogram.exceptions import TelegramForbiddenError
+    from aiogram.methods import SendMessage
+    client.get('/api/me', headers=PLAYER)
+    tid = _create_training(client, day=3, time_str='19:00', capacity=4)
+    client.portal.call(mainmod.db.book_training, tid, 555, 4)
+    state = {'players': ['Илья', 'Марго'], 'schedule': [{'courts': [[0, 1]]}], 'scores': {}}
+    assert client.portal.call(mainmod.db.save_training_tournament, tid, json.dumps(state), 0, True)
+    async def network(*args, **kwargs): raise RuntimeError('network')
+    monkeypatch.setattr(mainmod.app.state.bot, 'send_message', network)
+    client.portal.call(mainmod._drain_tournament_notification_jobs)
+    assert len(client.portal.call(mainmod.db.list_tournament_notification_jobs)) == 1
+    async def forbidden(*args, **kwargs):
+        raise TelegramForbiddenError(method=SendMessage(chat_id=555, text='x'), message='blocked')
+    monkeypatch.setattr(mainmod.app.state.bot, 'send_message', forbidden)
+    client.portal.call(mainmod._drain_tournament_notification_jobs)
+    assert client.portal.call(mainmod.db.list_tournament_notification_jobs) == []
+
+
+def test_training_request_job_retries_and_skips_stale_requests(client, monkeypatch):
+    client.get('/api/me', headers=PLAYER)
+    tid = _create_training(client, day=3, time_str='19:00')
+    from functools import partial
+    assert client.portal.call(partial(mainmod.db.book_training, tid, 555, 2, requires_approval=True)) == 'pending'
+    sent = []
+    async def offline(*args, **kwargs): raise RuntimeError('network')
+    monkeypatch.setattr(mainmod.app.state.bot, 'send_message', offline)
+    client.portal.call(mainmod._drain_training_notification_jobs)
+    assert len(client.portal.call(mainmod.db.list_training_notification_jobs)) == 1
+    async def send(chat, text, **kwargs):
+        sent.append((chat, text))
+        return SimpleNamespace(message_id=91)
+    monkeypatch.setattr(mainmod.app.state.bot, 'send_message', send)
+    client.portal.call(mainmod._drain_training_notification_jobs)
+    assert sent and sent[0][0] == 123
+    assert client.portal.call(mainmod.db.list_training_notification_jobs) == []
+    assert client.portal.call(mainmod.db.reject_booking, tid, 555)
+    assert client.portal.call(partial(mainmod.db.book_training, tid, 555, 2, requires_approval=True)) == 'pending'
+    assert client.portal.call(mainmod.db.reject_booking, tid, 555)
+    sent.clear()
+    client.portal.call(mainmod._drain_training_notification_jobs)
+    assert sent == []
+
+
+def test_training_vacancy_job_retries_and_respects_full_group(client, monkeypatch):
+    client.get('/api/me', headers=PLAYER)
+    client.get('/api/me', headers=PLAYER2)
+    level = 'Начинающий (Beginner)'
+    assert client.put('/api/me/profile', headers=PLAYER2, json={'skill_level': level}).status_code == 200
+    tid = _create_training(client, day=3, time_str='19:00', capacity=1, level=level)
+    assert client.portal.call(mainmod.db.book_training, tid, 555, 1) == 'booked'
+    client.portal.call(mainmod.db.cancel_booking, tid, 555)
+    async def offline(*args, **kwargs): raise RuntimeError('network')
+    monkeypatch.setattr(mainmod.app.state.bot, 'send_message', offline)
+    client.portal.call(mainmod._drain_training_notification_jobs)
+    assert len(client.portal.call(mainmod.db.list_training_notification_jobs)) == 1
+    sent = []
+    async def send(chat, text, **kwargs):
+        sent.append(chat)
+        return SimpleNamespace(message_id=92)
+    monkeypatch.setattr(mainmod.app.state.bot, 'send_message', send)
+    client.portal.call(mainmod._drain_training_notification_jobs)
+    assert sent == [556]
+    assert client.portal.call(mainmod.db.list_training_notification_jobs) == []
+    assert client.portal.call(mainmod.db.book_training, tid, 555, 1) == 'booked'
+    client.portal.call(mainmod.db.cancel_booking, tid, 555)
+    assert client.portal.call(mainmod.db.book_training, tid, 556, 1) == 'booked'
+    sent.clear()
+    client.portal.call(mainmod._drain_training_notification_jobs)
+    assert not sent
+
+
+def test_new_request_replaces_expired_previous_alert_after_delete_retry(client, monkeypatch):
+    from functools import partial
+    client.get('/api/me', headers=PLAYER)
+    tid = _create_training(client, day=3, time_str='19:00')
+    book = partial(mainmod.db.book_training, tid, 555, 2, requires_approval=True)
+    assert client.portal.call(book) == 'pending'
+    client.portal.call(mainmod.db.save_event_notification, 'training_request', tid, 123, 555, 40, 'old')
+    assert client.portal.call(mainmod.db.reject_booking, tid, 555)
+    row = client.portal.call(mainmod.db.get_event_notification, 'training_request', tid, 123, 555)
+    assert row['delete_at'] <= int(time.time())
+    assert client.portal.call(book) == 'pending'
+    async def failing_delete(*args, **kwargs): raise RuntimeError('network timeout')
+    monkeypatch.setattr(mainmod.app.state.bot, 'delete_message', failing_delete)
+    client.portal.call(mainmod._drain_training_notification_jobs)
+    assert len(client.portal.call(mainmod.db.list_training_notification_jobs)) == 1
+    sent = []
+    async def delete(*args, **kwargs): return True
+    async def send(chat, text, **kwargs):
+        sent.append(chat)
+        return SimpleNamespace(message_id=41)
+    monkeypatch.setattr(mainmod.app.state.bot, 'delete_message', delete)
+    monkeypatch.setattr(mainmod.app.state.bot, 'send_message', send)
+    client.portal.call(mainmod._drain_training_notification_jobs)
+    assert sent == [123]
+    assert client.portal.call(mainmod.db.list_training_notification_jobs) == []
+    client.portal.call(mainmod.db._execute, 'DELETE FROM bookings WHERE training_id=? AND user_id=?', (tid, 555))
+    row = client.portal.call(mainmod.db.get_event_notification, 'training_request', tid, 123, 555)
+    assert row['delete_at'] <= int(time.time())
+
+
+def test_training_queue_handles_blocked_users_without_retrying(client, monkeypatch):
+    from functools import partial
+
+    from aiogram.exceptions import TelegramForbiddenError
+    from aiogram.methods import SendMessage
+    client.get('/api/me', headers=PLAYER)
+    client.get('/api/me', headers=PLAYER2)
+    level = 'Начинающий (Beginner)'
+    assert client.put('/api/me/profile', headers=PLAYER2, json={'skill_level': level}).status_code == 200
+    tid = _create_training(client, day=3, time_str='19:00', capacity=2, level=level)
+    assert client.portal.call(partial(mainmod.db.book_training, tid, 555, 2, requires_approval=True)) == 'pending'
+    async def forbidden(*args, **kwargs):
+        raise TelegramForbiddenError(method=SendMessage(chat_id=123, text='x'), message='blocked')
+    monkeypatch.setattr(mainmod.app.state.bot, 'send_message', forbidden)
+    client.portal.call(mainmod._drain_training_notification_jobs)
+    assert client.portal.call(mainmod.db.list_training_notification_jobs) == []
+    assert client.portal.call(mainmod.db.approve_booking, tid, 555) == 'booked'
+    client.portal.call(mainmod.db.cancel_booking, tid, 555)
+    client.portal.call(mainmod._drain_training_notification_jobs)
+    assert client.portal.call(mainmod.db.list_training_notification_jobs) == []
+    result = client.portal.call(partial(mainmod._send_new_event_message, 'training_booked', tid, 556, 'x', delete_at=1, phase='final', sent_at=1))
+    assert result == 0
+
+
+def test_training_queue_preserves_jobs_on_error_cancellation_and_unknown_kind(client, monkeypatch):
+    from concurrent.futures import CancelledError
+    tid = _create_training(client, day=3, time_str='19:00')
+    original_get_training = mainmod.db.get_training
+    client.portal.call(mainmod.db._execute, "INSERT INTO training_notification_jobs(kind,training_id,user_id,updated_at) VALUES ('request',?,555,0)", (tid,))
+    async def fail(training_id): raise RuntimeError('temporary')
+    monkeypatch.setattr(mainmod.db, 'get_training', fail)
+    client.portal.call(mainmod._drain_training_notification_jobs)
+    assert len(client.portal.call(mainmod.db.list_training_notification_jobs)) == 1
+    async def cancel(training_id): raise asyncio.CancelledError()
+    monkeypatch.setattr(mainmod.db, 'get_training', cancel)
+    with pytest.raises(CancelledError):
+        client.portal.call(mainmod._drain_training_notification_jobs)
+    monkeypatch.setattr(mainmod.db, 'get_training', original_get_training)
+    client.portal.call(mainmod.db._execute, "UPDATE training_notification_jobs SET kind='unknown'")
+    client.portal.call(mainmod._drain_training_notification_jobs)
+    assert len(client.portal.call(mainmod.db.list_training_notification_jobs)) == 1
+    client.portal.call(mainmod.db._execute, "UPDATE training_notification_jobs SET training_id=999999,kind='request'")
+    client.portal.call(mainmod._drain_training_notification_jobs)
+    assert client.portal.call(mainmod.db.list_training_notification_jobs) == []
+
+
 def test_inline_match_message_references_are_unique_and_removable(client):
     client.get('/api/me', headers=PLAYER)
     response = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Матч'})
@@ -4821,6 +5043,23 @@ def test_inline_created_match_accepts_player_confirmation_with_approval_enabled(
     assert client.post(f'/api/matches/{match_id}/join', headers=PLAYER2).json()['status'] == 'booked'
     regular = client.post('/api/matches', headers=PLAYER, json={**_future(3), 'title': 'Обычный матч'}).json()['id']
     assert client.post(f'/api/matches/{regular}/join', headers=PLAYER2).json()['status'] == 'pending'
+
+
+def test_repeated_match_join_does_not_notify_again(client, monkeypatch):
+    client.get('/api/me', headers=PLAYER)
+    client.get('/api/me', headers=PLAYER2)
+    match_id = client.post('/api/matches', headers=PLAYER, json={**_future(2), 'title': 'Матч', 'inline_direct': True}).json()['id']
+    client.portal.call(asyncio.sleep, 0.1)
+    sent = []
+    async def notify(*args): sent.append(args)
+    monkeypatch.setattr(mainmod, '_notify_match_event', notify)
+    assert client.post(f'/api/matches/{match_id}/join', headers=PLAYER2).json()['status'] == 'booked'
+    client.portal.call(asyncio.sleep, 0.1)
+    assert len(sent) == 1
+    result = client.post(f'/api/matches/{match_id}/join', headers=PLAYER2).json()
+    client.portal.call(asyncio.sleep, 0.1)
+    assert result['already_joined'] is True
+    assert len(sent) == 1
 
 
 @pytest.mark.parametrize(("change", "expected"), [("delete", 404), ("start", 400)])

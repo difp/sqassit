@@ -234,10 +234,13 @@ async def confirm_join(callback: CallbackQuery, bot) -> None:
         await callback.answer('Не удалось записаться: проверьте места, дату и профиль.', show_alert=True)
         return
     status = result.get('status')
-    if status not in {'booked', 'pending'}:
+    if result.get('already_joined') and status in {'booked', 'pending', 'waitlist'}:
+        result_text = {'booked': 'Вы уже записаны на матч.', 'pending': 'Ваша заявка уже ожидает подтверждения.', 'waitlist': 'Вы уже в листе ожидания.'}[status]
+    elif status not in {'booked', 'pending'}:
         await callback.answer('Запись недоступна. Проверьте свой статус в приложении.', show_alert=True)
         return
-    result_text = 'Заявка отправлена организатору.' if status == 'pending' else 'Вы записаны на матч.'
+    else:
+        result_text = 'Заявка отправлена организатору.' if status == 'pending' else 'Вы записаны на матч.'
     try:
         await callback.answer(result_text, show_alert=True)
     except Exception:

@@ -197,6 +197,66 @@ CREATE TABLE IF NOT EXISTS match_inline_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_match_inline_messages_match ON match_inline_messages(match_id);
 
+-- Одна задача на актуальную версию турнира. Запись создаётся вместе с результатами.
+CREATE TABLE IF NOT EXISTS tournament_notification_jobs (
+    training_id INTEGER PRIMARY KEY,
+    revision INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS training_notification_jobs (
+    kind TEXT NOT NULL,
+    training_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (kind, training_id, user_id)
+);
+
+CREATE TRIGGER IF NOT EXISTS enqueue_training_request_insert
+AFTER INSERT ON bookings WHEN NEW.status = 'pending'
+BEGIN
+    INSERT INTO training_notification_jobs(kind, training_id, user_id, updated_at)
+    VALUES ('request', NEW.training_id, NEW.user_id, unixepoch())
+    ON CONFLICT(kind, training_id, user_id) DO UPDATE SET revision=revision+1, updated_at=excluded.updated_at;
+END;
+CREATE TRIGGER IF NOT EXISTS enqueue_training_request_update
+AFTER UPDATE OF status ON bookings WHEN NEW.status = 'pending' AND OLD.status != 'pending'
+BEGIN
+    INSERT INTO training_notification_jobs(kind, training_id, user_id, updated_at)
+    VALUES ('request', NEW.training_id, NEW.user_id, unixepoch())
+    ON CONFLICT(kind, training_id, user_id) DO UPDATE SET revision=revision+1, updated_at=excluded.updated_at;
+END;
+CREATE TRIGGER IF NOT EXISTS expire_resolved_training_request
+AFTER UPDATE OF status ON bookings WHEN OLD.status = 'pending' AND NEW.status != 'pending'
+BEGIN
+    UPDATE event_notifications SET delete_at = unixepoch()
+    WHERE kind = 'training_request' AND entity_id = OLD.training_id AND user_id = OLD.user_id;
+END;
+CREATE TRIGGER IF NOT EXISTS expire_deleted_training_request
+AFTER DELETE ON bookings WHEN OLD.status = 'pending'
+BEGIN
+    UPDATE event_notifications SET delete_at = unixepoch()
+    WHERE kind = 'training_request' AND entity_id = OLD.training_id AND user_id = OLD.user_id;
+END;
+CREATE TRIGGER IF NOT EXISTS enqueue_training_vacancy_update
+AFTER UPDATE OF status ON bookings WHEN
+    (OLD.status = 'booked' AND NEW.status != 'booked') OR
+    (OLD.status = 'pending' AND OLD.position > 0 AND OLD.needs_approval = 1 AND NEW.status NOT IN ('pending', 'booked'))
+BEGIN
+    INSERT INTO training_notification_jobs(kind, training_id, user_id, updated_at)
+    VALUES ('vacancy', OLD.training_id, OLD.user_id, unixepoch())
+    ON CONFLICT(kind, training_id, user_id) DO UPDATE SET revision=revision+1, updated_at=excluded.updated_at;
+END;
+CREATE TRIGGER IF NOT EXISTS enqueue_training_vacancy_delete
+AFTER DELETE ON bookings WHEN OLD.status = 'booked' OR
+    (OLD.status = 'pending' AND OLD.position > 0 AND OLD.needs_approval = 1)
+BEGIN
+    INSERT INTO training_notification_jobs(kind, training_id, user_id, updated_at)
+    VALUES ('vacancy', OLD.training_id, OLD.user_id, unixepoch())
+    ON CONFLICT(kind, training_id, user_id) DO UPDATE SET revision=revision+1, updated_at=excluded.updated_at;
+END;
+
 CREATE TABLE IF NOT EXISTS reminder_deliveries (
     training_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
@@ -1042,22 +1102,48 @@ async def save_training_tournament(
     """Атомарная запись с проверкой версии при одновременной работе тренеров."""
     db = _db()
     async with _lock:
-        if expected_revision == 0:
-            cursor = await db.execute(
-                "INSERT OR IGNORE INTO training_tournaments "
-                "(training_id, state_json, revision, started, updated_at) VALUES (?, ?, 1, ?, ?)",
-                (training_id, state_json, int(started), int(time.time())),
-            )
-        else:
-            cursor = await db.execute(
-                "UPDATE training_tournaments SET state_json = ?, revision = revision + 1, "
-                "started = ?, updated_at = ? WHERE training_id = ? AND revision = ?",
-                (state_json, int(started), int(time.time()), training_id, expected_revision),
-            )
-        changed = cursor.rowcount == 1
-        await cursor.close()
-        await db.commit()
-        return changed
+        try:
+            if expected_revision == 0:
+                cursor = await db.execute(
+                    "INSERT OR IGNORE INTO training_tournaments "
+                    "(training_id, state_json, revision, started, updated_at) VALUES (?, ?, 1, ?, ?)",
+                    (training_id, state_json, int(started), int(time.time())),
+                )
+            else:
+                cursor = await db.execute(
+                    "UPDATE training_tournaments SET state_json = ?, revision = revision + 1, "
+                    "started = ?, updated_at = ? WHERE training_id = ? AND revision = ?",
+                    (state_json, int(started), int(time.time()), training_id, expected_revision),
+                )
+            changed = cursor.rowcount == 1
+            await cursor.close()
+            if changed:
+                await db.execute(
+                    "INSERT INTO tournament_notification_jobs (training_id, revision, updated_at) VALUES (?, ?, ?) "
+                    "ON CONFLICT(training_id) DO UPDATE SET revision=excluded.revision, updated_at=excluded.updated_at",
+                    (training_id, expected_revision + 1, int(time.time())),
+                )
+            await db.commit()
+            return changed
+        except BaseException:
+            await db.rollback()
+            raise
+
+
+async def list_tournament_notification_jobs() -> list[aiosqlite.Row]:
+    return await _fetchall("SELECT training_id, revision FROM tournament_notification_jobs ORDER BY updated_at, training_id")
+
+
+async def complete_tournament_notification_job(training_id: int, revision: int) -> None:
+    await _execute("DELETE FROM tournament_notification_jobs WHERE training_id = ? AND revision = ?", (training_id, revision))
+
+
+async def list_training_notification_jobs() -> list[aiosqlite.Row]:
+    return await _fetchall("SELECT kind, training_id, user_id, revision FROM training_notification_jobs ORDER BY updated_at, training_id")
+
+
+async def complete_training_notification_job(kind: str, training_id: int, user_id: int, revision: int) -> None:
+    await _execute("DELETE FROM training_notification_jobs WHERE kind = ? AND training_id = ? AND user_id = ? AND revision = ?", (kind, training_id, user_id, revision))
 
 
 async def get_training_room(training_id: int) -> str | None:
@@ -1875,6 +1961,14 @@ async def get_match_players(match_id: int) -> list[aiosqlite.Row]:
     )
 
 
+async def get_match_player_status(match_id: int, user_id: int) -> str | None:
+    row = await _fetchone(
+        "SELECT status FROM match_players WHERE match_id = ? AND user_id = ?",
+        (match_id, user_id),
+    )
+    return str(row["status"]) if row is not None else None
+
+
 async def get_match_players_for_matches(
     match_ids: list[int],
 ) -> dict[int, list[aiosqlite.Row]]:
@@ -1905,6 +1999,7 @@ async def join_match(
     *,
     approved: bool = False,
     requires_approval: bool = False,
+    distinguish_existing: bool = False,
 ) -> str:
     """Создаёт заявку или сразу добавляет игрока. Повторный вход идемпотентен."""
     db = _db()
@@ -1927,7 +2022,8 @@ async def join_match(
         ) as cur:
             existing = await cur.fetchone()
         if existing is not None:
-            return existing["status"]
+            status = existing["status"]
+            return f"existing:{status}" if distinguish_existing else status
         if approved:
             status = "booked"
         elif not requires_approval:
