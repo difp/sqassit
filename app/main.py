@@ -51,6 +51,7 @@ from .avatars import (
     sniff_media_type,
 )
 from .config import (
+    APP_VERSION,
     BOOKING_CANCEL_LOCK_MINUTES,
     DEFAULT_REMINDER_OFFSET_MINUTES,
     DEFAULT_TRAINING_DURATION_MINUTES,
@@ -74,6 +75,9 @@ logger = logging.getLogger("squash")
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+# Версия в URL критичного для авторизации telegram-web-app.js: семидневный
+# кэш статики не должен оставлять у клиента старый скрипт после релиза.
+templates.env.globals["asset_version"] = APP_VERSION
 
 # Аватарки: диск-кэш создаётся в lifespan. Ограничение на размер одного файла,
 # чтобы повреждённый/подменённый file_id не съел память.
@@ -149,6 +153,10 @@ async def _authenticate(init_data: str) -> dict[str, Any]:
     try:
         data = validate_init_data(init_data, settings.bot_token)
     except InitDataError as exc:
+        # Причина важна для диагностики «иногда не грузится»: просроченная
+        # initData, неверная подпись и пустой заголовок лечатся по-разному.
+        # Сам initData не логируем — это bearer-токен.
+        logger.warning("initData отклонена: %s", exc)
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
     tg_user = data["user"]
@@ -754,6 +762,10 @@ async def lifespan(app: FastAPI):
     app.state.avatar_cache = AvatarCache(settings.avatar_cache_dir)
     await app.state.avatar_cache.load_disk_usage()
 
+    # Постоянная кнопка меню должна вести на текущую версию URL, иначе после
+    # деплоя Telegram Web может открыть старый закэшированный iframe.
+    _spawn(bot_module.apply_menu_button(tg_bot))
+
     tasks: list[asyncio.Task] = []
     polling_ctx = None
 
@@ -865,7 +877,7 @@ async def security_headers(request: Request, call_next):
         response.headers.setdefault("Cache-Control", "no-store")
     elif path.startswith("/static/"):
         response.headers.setdefault("Cache-Control", "public, max-age=604800")
-    elif path in {"/", "/coach"}:
+    elif path in {"/", "/coach", "/match", "/match/create"}:
         response.headers["Cache-Control"] = "no-cache"
         # ETag по содержимому: WebView переиспользует HTML без повторной
         # передачи 150–200 КБ, но всегда получает свежую версию после релиза.
@@ -885,6 +897,10 @@ async def security_headers(request: Request, call_next):
             headers=headers,
             media_type=response.media_type,
         )
+    elif path == "/tabs":
+        # Турнирная сборка — тоже HTML; не даём WebView закэшировать старую
+        # версию после деплоя. ETag у FileResponse уже есть свой.
+        response.headers["Cache-Control"] = "no-cache"
     return response
 
 

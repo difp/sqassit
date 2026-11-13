@@ -93,7 +93,9 @@ def shrink_avatar(content: bytes, media_type: str) -> tuple[bytes, str]:
             ):
                 return content, media_type
             image = image.convert("RGBA" if _has_alpha(image) else "RGB")
-            image.thumbnail((AVATAR_MAX_SIDE, AVATAR_MAX_SIDE), Image.LANCZOS)
+            image.thumbnail(
+                (AVATAR_MAX_SIDE, AVATAR_MAX_SIDE), Image.Resampling.LANCZOS
+            )
             encoded = _encode_webp(image)
     except Exception:  # noqa: BLE001 - битый файл не должен ломать ответ
         return content, media_type

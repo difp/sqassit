@@ -27,6 +27,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
+    MenuButtonWebApp,
     Message,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
@@ -34,7 +35,7 @@ from aiogram.types import (
 )
 
 from . import database as db
-from .config import settings
+from .config import APP_VERSION, settings
 from .identity import animal_identity
 
 logger = logging.getLogger(__name__)
@@ -60,9 +61,10 @@ class PendingReplyFilter(BaseFilter):
         return True
 
 
-# Версия — часть URL Mini App. Меняем при исправлениях загрузки, чтобы Telegram
-# Web не переиспользовал iframe, закэшированный во время временной ошибки.
-WEB_APP_VERSION = "59"
+# Версия — часть URL Mini App. Telegram Web умеет переиспользовать iframe,
+# закэшированный во время временной ошибки, поэтому версия должна меняться
+# автоматически на каждом деплое (BUILD_SHA) или хотя бы на каждом релизе.
+WEB_APP_VERSION = APP_VERSION
 
 
 def _web_app_url() -> str:
@@ -103,6 +105,31 @@ def _chat_url(peer_id: int, *, coach: bool = False) -> str:
     query.append(("chat", str(peer_id)))
     path = parts.path.rstrip("/") + ("/coach" if coach else "")
     return urlunsplit((parts.scheme, parts.netloc, path or "/", urlencode(query), parts.fragment))
+
+
+async def apply_menu_button(bot: Bot) -> None:
+    """
+    Обновляет постоянную кнопку меню бота на актуальный URL Mini App.
+
+    Без этого после деплоя остаётся старая ссылка без нового ``?v=``:
+    Telegram Web может показывать закэшированный iframe, а пользователь
+    открывает приложение не из свежего сообщения, а из меню.
+    """
+    if not settings.webhook_base_url:
+        return
+    try:
+        await asyncio.wait_for(
+            bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(
+                    text="Открыть",
+                    web_app=WebAppInfo(url=_web_app_url()),
+                )
+            ),
+            timeout=10,
+        )
+    except Exception:
+        # Кнопка меню — удобство, а не условие запуска приложения.
+        logger.warning("Не удалось обновить кнопку меню", exc_info=True)
 
 
 RULES_TEXT = (
@@ -380,7 +407,9 @@ async def coach_reply_text(message: Message) -> None:
     """Текст тренера в режиме ответа — доставляем игроку."""
     try:
         user = message.from_user
-        entry = _pending_reply.pop(user.id, None) if user else None
+        if user is None:
+            return
+        entry = _pending_reply.pop(user.id, None)
         if entry is None:
             return
         target, expires_at = entry

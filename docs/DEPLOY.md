@@ -176,6 +176,13 @@ sudo certbot --nginx -d app.example.com
 ограничение частоты запросов; `gzip` и зона `limit_req` объявляются на уровне
 `http` (файл сайта подключается именно туда).
 
+Важно: лимит на **все** GET-запросы ломает открытие Mini App. Одно открытие —
+это HTML, `telegram-web-app.js`, несколько `/api/*` и 10–20 аватарок; за общим
+NAT мобильного оператора `burst=40` пробивается двумя-тремя пользователями.
+Nginx отвечает 503, а Telegram Web может закэшировать этот iframe. Поэтому
+ограничиваем только изменяющие POST-запросы; у приложения уже есть свои
+лимитеры на запись, сообщения и заявки.
+
 ```nginx
 # верх файла сайта, вне server { }
 server_tokens off;
@@ -184,7 +191,14 @@ gzip_vary on;
 gzip_min_length 1024;
 gzip_comp_level 6;
 gzip_types text/plain text/css application/javascript application/json image/svg+xml;
-limit_req_zone $binary_remote_addr zone=sqassit_api:10m rate=15r/s;
+
+# Пустой ключ у GET/HEAD означает «не учитывать запрос в лимите».
+map $request_method $sqassit_limit_key {
+    default "";
+    POST    $binary_remote_addr;
+}
+limit_req_zone $sqassit_limit_key zone=sqassit_api:10m rate=10r/s;
+limit_req_status 429;
 
 server {
     listen 443 ssl http2;
@@ -193,7 +207,7 @@ server {
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
     location / {
-        limit_req zone=sqassit_api burst=40 nodelay;
+        limit_req zone=sqassit_api burst=20 nodelay;
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -202,6 +216,15 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
+```
+
+Если перед nginx стоит Cloudflare или другой reverse-proxy, сначала настройте
+`real_ip`, иначе `$binary_remote_addr` — это IP прокси, и лимит общий для всех
+пользователей:
+
+```nginx
+set_real_ip_from 173.245.48.0/20;   # актуальные диапазоны Cloudflare
+real_ip_header CF-Connecting-IP;
 ```
 
 `sudo nginx -t && sudo systemctl reload nginx`.
@@ -283,6 +306,11 @@ sudo -u sqassit git reset --hard "$SHA"
 sudo -u sqassit .venv/bin/pip install -q -r requirements.txt
 sudo systemctl restart sqassit
 ```
+
+`?v=` в URL Mini App берётся из `BUILD_SHA` (если задан в `.env`) или из файла
+`VERSION`. `BUILD_SHA` удобнее: он меняется на каждом деплое и сбрасывает
+закэшированный Telegram Web iframe даже без смены версии. Приложение само
+обновляет постоянную кнопку меню бота на актуальный URL.
 
 Деплой-скрипт дополнительно:
 

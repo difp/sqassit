@@ -44,6 +44,12 @@
   <div>На ближайшие 7 дней тренировок нет</div>
 </div>
 
+<div id="schedule-error" class="empty" role="alert" hidden>
+  <div class="empty__title">Не удалось загрузить расписание</div>
+  <div class="hint" data-schedule-error-text>Проверьте соединение и повторите.</div>
+  <button class="btn btn--sm" id="schedule-retry" type="button" style="margin-top:12px">Повторить</button>
+</div>
+
 <div id="schedule"></div>
 <details class="card" id="tournament-history" hidden>
   <summary>Прошедшие турниры</summary>
@@ -341,11 +347,29 @@ function trainingCard(t) {
   </div>`;
 }
 
+function hideScheduleError() {
+  const box = document.getElementById('schedule-error');
+  if (box) box.hidden = true;
+}
+
+function showScheduleError(message) {
+  const box = document.getElementById('schedule-error');
+  if (!box) return;
+  const text = box.querySelector('[data-schedule-error-text]');
+  if (text) {
+    text.textContent = message || 'Проверьте соединение и повторите.';
+  }
+  document.getElementById('empty').hidden = true;
+  document.getElementById('loading').hidden = true;
+  box.hidden = false;
+}
+
 function renderSchedule(trainings) {
   const loading = document.getElementById('loading');
   loading.hidden = true;
   const schedule = document.getElementById('schedule');
   const empty = document.getElementById('empty');
+  hideScheduleError();
 
   // Старые карточки и ITEMS не должны оставаться после обновления:
   // иначе удалённая тренировка всё ещё открывается из кэша.
@@ -373,22 +397,52 @@ function renderSchedule(trainings) {
 }
 
 let scheduleRequest = 0;
-async function loadSchedule({ background = false } = {}) {
+let scheduleLoading = false;
+let initialScheduleDone = false;
+
+async function loadSchedule({ background = false, timeout = REQUEST_TIMEOUT_MS } = {}) {
+  // Фоновое обновление не должно вытеснять первичную или ручную загрузку:
+  // иначе её ответ выбрасывается по request !== scheduleRequest, а ошибка
+  // фонового запроса молча скрывается — остаётся пустое расписание.
+  if (background && (scheduleLoading || !initialScheduleDone)) return;
   const request = ++scheduleRequest;
+  scheduleLoading = true;
   const cached = cacheRead('schedule');
   if (cached && !background) {
     // Показываем прошлый снимок сразу, свежие данные догружаем следом.
-    renderSchedule(cached);
+    // Битый кэш от прошлой версии не должен оставить scheduleLoading=true.
+    try {
+      renderSchedule(cached);
+    } catch (e) { /* перерисуем после ответа API */ }
+  }
+  if (!background) {
+    hideScheduleError();
+    if (!cached) document.getElementById('loading').hidden = false;
   }
   try {
-    const data = await api('/api/trainings?days=7');
+    const data = await api('/api/trainings?days=7', 'GET', null, { timeout });
     if (request !== scheduleRequest) return;
     cacheWrite('schedule', data.trainings);
     renderSchedule(data.trainings);
   } catch (e) {
     if (request !== scheduleRequest) return;
-    if (!cached) document.getElementById('loading').hidden = true;
-    if (!background) toast(e.message, { label: 'Повторить', onClick: () => loadSchedule() });
+    const hasRendered = Boolean(document.querySelector('#schedule .day'));
+    if (!cached && !hasRendered) {
+      // Нет ни кэша, ни уже отрисованного расписания — показываем
+      // постоянную ошибку, а не исчезающий toast.
+      document.getElementById('loading').hidden = true;
+      showScheduleError(e.message);
+    } else if (!background) {
+      toast(e.message, {
+        label: 'Повторить',
+        onClick: () => loadSchedule({ timeout: INITIAL_REQUEST_TIMEOUT_MS }),
+      });
+    }
+  } finally {
+    if (request === scheduleRequest) {
+      scheduleLoading = false;
+      if (!background) initialScheduleDone = true;
+    }
   }
 }
 
@@ -422,6 +476,10 @@ document.getElementById('notif-toggle').addEventListener('change', async (ev) =>
     hapticNotify('error');
     toast(e.message);
   }
+});
+
+document.getElementById('schedule-retry').addEventListener('click', () => {
+  loadSchedule({ timeout: INITIAL_REQUEST_TIMEOUT_MS });
 });
 
 document.getElementById('schedule').addEventListener('click', async (ev) => {
@@ -1087,13 +1145,17 @@ document.addEventListener('visibilitychange', () => {
 
 window.PAGE_REFRESH = async () => {
   await APP.refresh();
-  await Promise.all([loadProfile(), loadSchedule(), loadTournamentHistory()]);
+  await Promise.all([
+    loadProfile(),
+    loadSchedule({ timeout: INITIAL_REQUEST_TIMEOUT_MS }),
+    loadTournamentHistory(),
+  ]);
   syncMsgUnread();
 };
 
 // Экран загрузки снимаем, как только отрисовано расписание: профиль и история
 // догружаются в фоне и не должны задерживать первый экран.
-Promise.allSettled([loadSchedule()]).then(() => {
+Promise.allSettled([loadSchedule({ timeout: INITIAL_REQUEST_TIMEOUT_MS })]).then(() => {
   hideAppLoader();
   syncMsgUnread();
   const params = new URLSearchParams(location.search);

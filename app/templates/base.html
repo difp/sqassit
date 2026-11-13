@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Расписание · SQASSIT</title>
-  <link rel="preload" href="/static/telegram-web-app.js" as="script">
+  <link rel="preload" href="/static/telegram-web-app.js?v={{ asset_version }}" as="script">
   <script>
     // Отключаем восстановление позиции до того, как WebView успеет её
     // применить: иначе вкладка открывается с середины прошлой сессии.
@@ -782,6 +782,7 @@
       background: var(--surface); border: 1px dashed var(--border); border-radius: var(--radius);
     }
     .empty svg { width: 40px; height: 40px; opacity: .5; margin-bottom: 8px; }
+    .empty__title { color: var(--text); font-weight: 600; margin-bottom: 6px; }
     .empty--inline { padding: 14px 16px; text-align: left; }
 
     /* ===== Профиль игрока ===== */
@@ -1166,6 +1167,7 @@
         <p class="hint" id="app-auth-error-text">Telegram не передал данные авторизации. Закройте мини-приложение и откройте его снова.</p>
         <div class="app-auth-error__actions">
           <button class="btn btn--primary btn--block" id="app-auth-retry" type="button">Повторить</button>
+          <button class="btn btn--block" id="app-auth-close" type="button" hidden>Закрыть и открыть заново</button>
           <button class="btn btn--block" id="app-auth-reload" type="button" hidden>Перезагрузить страницу</button>
         </div>
       </div>
@@ -1310,7 +1312,7 @@
   </div>
 
   <!-- Локальная копия: не блокирует первую отрисовку и не зависит от telegram.org. -->
-  <script src="/static/telegram-web-app.js"></script>
+  <script src="/static/telegram-web-app.js?v={{ asset_version }}"></script>
   <script>
     const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
     if (tg) {
@@ -1454,6 +1456,8 @@
     }
 
     const GET_RETRY_DELAYS_MS = [0, 900];
+    const REQUEST_TIMEOUT_MS = 6000;
+    const INITIAL_REQUEST_TIMEOUT_MS = 12000;
     let CONNECTION_NEEDS_RECOVERY = false;
 
     function isRetryableRequestError(error) {
@@ -1466,15 +1470,18 @@
       return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    async function api(path, method = 'GET', body = null) {
+    async function api(path, method = 'GET', body = null, options = {}) {
       await waitForInitData();
       const retryDelays = method.toUpperCase() === 'GET' ? GET_RETRY_DELAYS_MS : [0];
+      const timeoutMs = Number(options.timeout) > 0
+        ? Number(options.timeout)
+        : REQUEST_TIMEOUT_MS;
       let lastError;
       for (let attempt = 0; attempt < retryDelays.length; attempt++) {
         // Джиттер разводит одновременные повторы после блипа сети.
         if (attempt) await wait(retryDelays[attempt] * (0.7 + Math.random() * 0.6));
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 6000);
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
           const res = await fetch(path, {
             method,
@@ -1488,7 +1495,11 @@
           let data = {};
           try { data = await res.json(); } catch (e) {}
           if (!res.ok) {
-            const err = new Error(data.error || data.detail || ('Ошибка ' + res.status));
+            let message = data.error || data.detail;
+            if (!message && res.status === 429) {
+              message = 'Слишком много запросов. Попробуйте через минуту.';
+            }
+            const err = new Error(message || ('Ошибка ' + res.status));
             err.status = res.status;
             err.data = data;
             throw err;
@@ -2260,26 +2271,48 @@
           location.reload();
         }
       } catch (e) {
-        showAuthError(e && e.message, !(e && e.status === 401));
+        const authFailed = Boolean(e && e.status === 401);
+        showAuthError(e && e.message, !authFailed, authFailed);
       } finally {
         retry.disabled = false;
       }
     }
 
-    function showAuthError(message, isConnectionError = false) {
+    function showAuthError(message, isConnectionError = false, canReopen = false) {
       const box = document.getElementById('app-auth-error');
       const text = document.getElementById('app-auth-error-text');
       const title = document.getElementById('app-auth-error-title');
       const reload = document.getElementById('app-auth-reload');
+      const close = document.getElementById('app-auth-close');
       if (!box) return;
-      title.textContent = isConnectionError ? 'Нет соединения с приложением' : 'Не удалось открыть приложение';
-      text.textContent = message || (isConnectionError
-        ? 'Проверьте интернет или VPN. Приложение попробует восстановить соединение автоматически.'
-        : 'Telegram не передал данные авторизации. Закройте мини-приложение и откройте его снова.');
-      reload.hidden = !isConnectionError;
+      title.textContent = canReopen
+        ? 'Сессия устарела'
+        : (isConnectionError ? 'Нет соединения с приложением' : 'Не удалось открыть приложение');
+      text.textContent = message || (canReopen
+        ? 'Закройте мини-приложение и откройте его заново — Telegram выдаст свежие данные авторизации.'
+        : isConnectionError
+          ? 'Проверьте интернет или VPN. Приложение попробует восстановить соединение автоматически.'
+          : 'Telegram не передал данные авторизации. Закройте мини-приложение и откройте его снова.');
+      if (reload) {
+        reload.hidden = !isConnectionError;
+        reload.onclick = () => location.reload();
+      }
       box.hidden = false;
       document.getElementById('app-auth-retry').onclick = retryAppConnection;
-      reload.onclick = () => location.reload();
+      if (close) {
+        close.hidden = !canReopen;
+        close.onclick = () => {
+          // Релоад сохраняет старый #tgWebAppData, поэтому не поможет.
+          // Закрываем мини-апп: при следующем открытии Telegram выдаст новый initData.
+          try {
+            if (tg && typeof tg.close === 'function') {
+              tg.close();
+              return;
+            }
+          } catch (e) { /* старые клиенты */ }
+          location.reload();
+        };
+      }
     }
     window.showAuthError = showAuthError;
 
@@ -2302,23 +2335,47 @@
       me: null,
       ready: (async () => {
         try {
-          const data = await api('/api/me');
+          const data = await api('/api/me', 'GET', null, {
+            timeout: INITIAL_REQUEST_TIMEOUT_MS,
+          });
           APP.me = data.user;
         } catch (e) {
           APP.authError = e;
           const authFailed = e && e.status === 401;
-          showAuthError(authFailed
-            ? 'Telegram не передал данные авторизации. Закройте мини-приложение и откройте его снова.'
-            : (e && e.message) || 'Не удалось загрузить профиль.', !authFailed);
+          const reason = e && e.data && (e.data.detail || e.data.error);
+          showAuthError(
+            authFailed
+              ? (reason
+                  ? 'Не удалось авторизоваться: ' + reason + ' Закройте мини-приложение и откройте его заново.'
+                  : 'Сессия устарела. Закройте мини-приложение и откройте его заново.')
+              : ((e && e.message) || 'Не удалось загрузить профиль.'),
+            !authFailed,
+            Boolean(authFailed)
+          );
         }
       })(),
       async refresh() {
         await APP.ready;
-        const data = await api('/api/me');
+        const data = await api('/api/me', 'GET', null, {
+          timeout: INITIAL_REQUEST_TIMEOUT_MS,
+        });
         APP.me = data.user;
         return APP.me;
       },
     };
+
+    // Telegram iOS/Web восстанавливает страницу из bfcache без перезагрузки.
+    // Перезапрашиваем данные, но не делаем location.reload(): он сохраняет
+    // старый #tgWebAppData и только добавляет пустой экран.
+    window.addEventListener('pageshow', (event) => {
+      if (!event.persisted || typeof window.PAGE_REFRESH !== 'function') return;
+      // Сначала проверяем профиль (может быть 401), затем данные страницы.
+      APP.refresh()
+        .then(() => window.PAGE_REFRESH())
+        .catch((e) => {
+          if (e && e.status === 401) showAuthError(e.message, false, true);
+        });
+    });
 
     // Индикатор на вкладке «Тренер»: есть новые заявки на занятия.
     const coachPin = document.getElementById('tab-coach-pin');

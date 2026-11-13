@@ -38,7 +38,11 @@ def validate_init_data(
     init_data: str,
     bot_token: str,
     *,
-    max_age_seconds: int = 7200,
+    # Telegram не обновляет initData в уже открытом WebView: она приходит один
+    # раз при запуске Mini App и живёт столько, сколько живёт страница/iframe.
+    # Держим официальный суточный срок, иначе восстановленный из bfcache или
+    # переиспользованный Telegram Web iframe начинает отдавать 401 через 2 часа.
+    max_age_seconds: int = 86400,
     future_skew_seconds: int = 300,
 ) -> dict[str, Any]:
     """

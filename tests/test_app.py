@@ -4297,6 +4297,11 @@ def test_html_etag_and_api_no_store(client):
     assert cached.headers["etag"] == etag
     assert cached.headers["x-content-type-options"] == "nosniff"
 
+    for path in ("/match", "/match/create"):
+        page = client.get(path)
+        assert page.headers["cache-control"] == "no-cache"
+        assert page.headers.get("etag")
+
     api = client.get("/api/me", headers=PLAYER)
     assert api.headers["cache-control"] == "no-store"
 

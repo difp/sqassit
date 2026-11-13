@@ -66,6 +66,19 @@ def test_expired_rejected():
         validate_init_data(_sign({"id": 1}, TOKEN, auth_date=int(time.time()) - 200000), TOKEN)
 
 
+def test_init_data_is_fresh_during_a_long_webview_session():
+    """Telegram не обновляет initData, пока живёт WebView/iframe."""
+    signed = _sign({"id": 1}, TOKEN, auth_date=int(time.time()) - 3 * 3600)
+    assert validate_init_data(signed, TOKEN)["user"]["id"] == 1
+
+
+def test_init_data_older_than_one_day_rejected():
+    with pytest.raises(InitDataError, match="просрочен"):
+        validate_init_data(
+            _sign({"id": 1}, TOKEN, auth_date=int(time.time()) - 25 * 3600), TOKEN
+        )
+
+
 def test_future_auth_date_rejected():
     with pytest.raises(InitDataError):
         validate_init_data(

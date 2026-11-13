@@ -115,6 +115,36 @@ def test_web_app_url_falls_back_to_telegram(monkeypatch):
     assert botmod._web_app_url() == "https://t.me"
 
 
+def test_apply_menu_button_uses_current_web_app_url(monkeypatch):
+    calls = []
+
+    class FakeBot:
+        async def set_chat_menu_button(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(
+        botmod, "settings", replace(settings, webhook_base_url="https://example.test")
+    )
+    asyncio.run(botmod.apply_menu_button(FakeBot()))
+
+    assert len(calls) == 1
+    button = calls[0]["menu_button"]
+    assert button.web_app.url.startswith("https://example.test")
+    assert f"v={botmod.WEB_APP_VERSION}" in button.web_app.url
+
+
+def test_apply_menu_button_does_not_break_startup(monkeypatch):
+    class FailingBot:
+        async def set_chat_menu_button(self, **kwargs):
+            raise RuntimeError("Telegram недоступен")
+
+    monkeypatch.setattr(
+        botmod, "settings", replace(settings, webhook_base_url="https://example.test")
+    )
+    # Ошибка кнопки меню не должна валить lifespan.
+    asyncio.run(botmod.apply_menu_button(FailingBot()))
+
+
 def test_pending_reply_filter_removes_expired(monkeypatch):
     now = [1000.0]
     monkeypatch.setattr(botmod.time, "time", lambda: now[0])
@@ -213,6 +243,12 @@ def test_coach_reply_text_rejects_empty_text(bot_db_stubs):
     assert answers == [("Пустой ответ не отправлен.", None)]
     assert sent == []
     assert bot_db_stubs["saved"] == []
+
+
+def test_coach_reply_text_ignores_message_without_author():
+    message = SimpleNamespace(from_user=None)
+
+    asyncio.run(botmod.coach_reply_text(message))
 
 
 def test_coach_reply_text_cancel_and_expired():

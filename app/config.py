@@ -35,6 +35,29 @@ def _optional(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
 
+def _app_version() -> str:
+    """
+    Версия приложения для URL Mini App и версионирования статики.
+
+    ``BUILD_SHA`` (короткий SHA деплоя) важнее файла ``VERSION``: он меняется
+    на каждом деплое и сбрасывает закэшированный Telegram Web iframe даже
+    между релизами. Если переменная не задана, используем ``VERSION``.
+    """
+    build = os.getenv("BUILD_SHA", "").strip()
+    if build:
+        return build[:12]
+    try:
+        version = (
+            Path(__file__).resolve().parent.parent / "VERSION"
+        ).read_text(encoding="utf-8").strip()
+    except OSError:
+        return "0"
+    return version or "0"
+
+
+APP_VERSION = _app_version()
+
+
 @dataclass(frozen=True)
 class Settings:
     """Иммутабельный снимок настроек, собранный один раз при старте."""

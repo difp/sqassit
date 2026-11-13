@@ -3,6 +3,7 @@
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parents[1] / "app" / "templates" / "base.html"
+INDEX = Path(__file__).resolve().parents[1] / "app" / "templates" / "index.html"
 
 
 def test_get_requests_retry_but_mutations_do_not() -> None:
@@ -11,8 +12,9 @@ def test_get_requests_retry_but_mutations_do_not() -> None:
     assert "const GET_RETRY_DELAYS_MS = [0, 900];" in html
     assert "const retryDelays = method.toUpperCase() === 'GET' ? GET_RETRY_DELAYS_MS : [0];" in html
     assert "isRetryableRequestError" in html
-    # Две попытки по 6 с: пользователь не ждёт 45 секунд молчаливого экрана.
-    assert "setTimeout(() => controller.abort(), 6000)" in html
+    # Фоновые запросы — 6 с, первичная загрузка — 12 с.
+    assert "setTimeout(() => controller.abort(), timeoutMs)" in html
+    assert "const REQUEST_TIMEOUT_MS = 6000;" in html
 
 
 def test_connection_error_can_recover_without_webview_reload() -> None:
@@ -26,10 +28,44 @@ def test_connection_error_can_recover_without_webview_reload() -> None:
     assert 'id="app-auth-reload"' in html
 
 
-def test_stuck_bfcache_page_reloads_once() -> None:
+def test_bfcache_restore_refreshes_without_reload() -> None:
     html = BASE.read_text()
 
-    # Перезагрузка из bfcache давала лишний пустой экран; вместо неё
-    # стартовый экран снимается watchdog'ом через 4 секунды.
-    assert "event.persisted" not in html
+    # Перезагрузка из bfcache сохраняет старый initData и даёт пустой экран;
+    # вместо неё перезапрашиваем профиль/данные.
+    assert "if (!event.persisted || typeof window.PAGE_REFRESH !== 'function') return;" in html
+    assert "APP.refresh()" in html
     assert "setTimeout(hideAppLoader, 4000);" in html
+
+
+def test_expired_session_offers_reopen() -> None:
+    html = BASE.read_text()
+
+    assert 'id="app-auth-close"' in html
+    assert "Сессия устарела" in html
+    assert "tg.close()" in html
+    assert "canReopen" in html
+
+
+def test_initial_requests_have_longer_timeout() -> None:
+    html = BASE.read_text()
+
+    assert "const REQUEST_TIMEOUT_MS = 6000;" in html
+    assert "const INITIAL_REQUEST_TIMEOUT_MS = 12000;" in html
+    assert "timeout: INITIAL_REQUEST_TIMEOUT_MS" in html
+
+
+def test_telegram_script_is_versioned() -> None:
+    html = BASE.read_text()
+
+    assert "/static/telegram-web-app.js?v={{ asset_version }}" in html
+
+
+def test_background_refresh_does_not_supersede_initial_schedule() -> None:
+    html = INDEX.read_text()
+
+    # Иначе ответ первичной загрузки выбрасывается, а ошибка фонового
+    # запроса молча скрывается — остаётся пустой экран без объяснения.
+    assert "if (background && (scheduleLoading || !initialScheduleDone)) return;" in html
+    assert "showScheduleError" in html
+    assert 'id="schedule-error"' in html
