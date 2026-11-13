@@ -22,3 +22,11 @@ def test_connection_error_can_recover_without_webview_reload() -> None:
     assert "document.addEventListener('visibilitychange'" in html
     assert "window.PAGE_REFRESH" in html
     assert 'id="app-auth-reload"' in html
+
+
+def test_stuck_bfcache_page_reloads_once() -> None:
+    html = BASE.read_text()
+
+    # Telegram iOS может восстановить WebView до окончания загрузки:
+    # стартовый экран на месте — перезагружаем страницу.
+    assert "event.persisted && document.getElementById('app-loader')" in html

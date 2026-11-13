@@ -2084,6 +2084,16 @@
     window.addEventListener('load', resetInitialScroll);
     scrollAppToTop();
 
+    // Telegram iOS умеет восстанавливать WebView из bfcache в момент, когда
+    // страница ещё не догрузилась: человек видит пустой экран, пока не
+    // перезапустит Telegram. Если стартовый экран на месте — перезагружаем
+    // страницу один раз; у уже загруженной страницы лоадера нет.
+    window.addEventListener('pageshow', (event) => {
+      if (event.persisted && document.getElementById('app-loader')) {
+        location.reload();
+      }
+    });
+
     // Стартовый экран: прячем после первичной загрузки данных страницы.
     const appLoaderStartedAt = Date.now();
     function hideAppLoader() {
