@@ -157,6 +157,7 @@
     }
     .app-auth-error .card { width: 100%; max-width: 420px; }
     .app-auth-error .hint { margin: 10px 0 16px; }
+    .app-auth-error__actions { display: grid; gap: 8px; }
 
     /* ===== Верхняя панель ===== */
     .app-header {
@@ -1053,13 +1054,16 @@
     </span>
     <div class="app-loader__caption">Загружаем…</div>
   </div>
-  <div class="app-auth-error" id="app-auth-error" hidden role="alert">
-    <div class="card">
-      <div class="profile-card__name">Не удалось открыть приложение</div>
-      <p class="hint" id="app-auth-error-text">Telegram не передал данные авторизации. Закройте мини-приложение и откройте его снова.</p>
-      <button class="btn btn--primary btn--block" id="app-auth-retry" type="button">Повторить</button>
+    <div class="app-auth-error" id="app-auth-error" hidden role="alert">
+      <div class="card">
+        <div class="profile-card__name" id="app-auth-error-title">Не удалось открыть приложение</div>
+        <p class="hint" id="app-auth-error-text">Telegram не передал данные авторизации. Закройте мини-приложение и откройте его снова.</p>
+        <div class="app-auth-error__actions">
+          <button class="btn btn--primary btn--block" id="app-auth-retry" type="button">Повторить</button>
+          <button class="btn btn--block" id="app-auth-reload" type="button" hidden>Перезагрузить страницу</button>
+        </div>
+      </div>
     </div>
-  </div>
   <div class="app">
     <header class="app-header">
       <h1 class="app-title">{% block header %}Сквош{% endblock %}</h1>
@@ -1342,37 +1346,63 @@
       }
     }
 
+    const GET_RETRY_DELAYS_MS = [0, 1000, 2500];
+    let CONNECTION_NEEDS_RECOVERY = false;
+
+    function isRetryableRequestError(error) {
+      // fetch отклоняется TypeError при отсутствии сети; AbortError создаём сами
+      // по таймауту. HTTP-ошибки повторяем только для временных сбоев сервера.
+      return !error.status || error.status >= 500;
+    }
+
+    function wait(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
     async function api(path, method = 'GET', body = null) {
       await waitForInitData();
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 15000);
-      try {
-        const res = await fetch(path, {
-          method,
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Init-Data': currentInitData(),
-          },
-          body: body ? JSON.stringify(body) : null,
-          signal: controller.signal,
-        });
-        let data = {};
-        try { data = await res.json(); } catch (e) {}
-        if (!res.ok) {
-          const err = new Error(data.error || data.detail || ('Ошибка ' + res.status));
-          err.status = res.status;
-          err.data = data;
-          throw err;
+      const retryDelays = method.toUpperCase() === 'GET' ? GET_RETRY_DELAYS_MS : [0];
+      let lastError;
+      for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+        if (attempt) await wait(retryDelays[attempt]);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 15000);
+        try {
+          const res = await fetch(path, {
+            method,
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Init-Data': currentInitData(),
+            },
+            body: body ? JSON.stringify(body) : null,
+            signal: controller.signal,
+          });
+          let data = {};
+          try { data = await res.json(); } catch (e) {}
+          if (!res.ok) {
+            const err = new Error(data.error || data.detail || ('Ошибка ' + res.status));
+            err.status = res.status;
+            err.data = data;
+            throw err;
+          }
+          CONNECTION_NEEDS_RECOVERY = false;
+          return data;
+        } catch (e) {
+          lastError = e && e.name === 'AbortError'
+            ? new Error('Превышено время ожидания. Проверьте соединение и повторите.')
+            : e;
+          if (!isRetryableRequestError(lastError) || attempt === retryDelays.length - 1) break;
+        } finally {
+          clearTimeout(timer);
         }
-        return data;
-      } catch (e) {
-        if (e && e.name === 'AbortError') {
-          throw new Error('Превышено время ожидания. Нажмите «Обновить».');
-        }
-        throw e;
-      } finally {
-        clearTimeout(timer);
       }
+      if (isRetryableRequestError(lastError)) {
+        CONNECTION_NEEDS_RECOVERY = true;
+        if (!lastError || lastError instanceof TypeError) {
+          lastError = new Error('Не удалось подключиться к приложению. Проверьте интернет или VPN.');
+        }
+      }
+      throw lastError;
     }
 
     function esc(s) {
@@ -1892,15 +1922,58 @@
     // Страховка: даже при сбое страничного скрипта не оставляем пустой экран.
     setTimeout(hideAppLoader, 12000);
 
-    function showAuthError(message) {
+    async function retryAppConnection() {
+      const retry = document.getElementById('app-auth-retry');
+      if (retry.disabled) return;
+      retry.disabled = true;
+      try {
+        // Страница «Матч» может быть уже загружена, хотя первоначальный
+        // /api/me не прошёл: сначала восстанавливаем общий профиль.
+        await APP.refresh();
+        if (typeof window.PAGE_REFRESH === 'function') {
+          await window.PAGE_REFRESH();
+          document.getElementById('app-auth-error').hidden = true;
+          CONNECTION_NEEDS_RECOVERY = false;
+        } else {
+          location.reload();
+        }
+      } catch (e) {
+        showAuthError(e && e.message, !(e && e.status === 401));
+      } finally {
+        retry.disabled = false;
+      }
+    }
+
+    function showAuthError(message, isConnectionError = false) {
       const box = document.getElementById('app-auth-error');
       const text = document.getElementById('app-auth-error-text');
+      const title = document.getElementById('app-auth-error-title');
+      const reload = document.getElementById('app-auth-reload');
       if (!box) return;
-      if (message) text.textContent = message;
+      title.textContent = isConnectionError ? 'Нет соединения с приложением' : 'Не удалось открыть приложение';
+      text.textContent = message || (isConnectionError
+        ? 'Проверьте интернет или VPN. Приложение попробует восстановить соединение автоматически.'
+        : 'Telegram не передал данные авторизации. Закройте мини-приложение и откройте его снова.');
+      reload.hidden = !isConnectionError;
       box.hidden = false;
-      document.getElementById('app-auth-retry').onclick = () => location.reload();
+      document.getElementById('app-auth-retry').onclick = retryAppConnection;
+      reload.onclick = () => location.reload();
     }
     window.showAuthError = showAuthError;
+
+    async function recoverConnection() {
+      if (!CONNECTION_NEEDS_RECOVERY || typeof window.PAGE_REFRESH !== 'function') return;
+      try {
+        await APP.refresh();
+        await window.PAGE_REFRESH();
+        document.getElementById('app-auth-error').hidden = true;
+        CONNECTION_NEEDS_RECOVERY = false;
+      } catch (e) { /* сеть может ещё не восстановиться */ }
+    }
+    window.addEventListener('online', recoverConnection);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) recoverConnection();
+    });
 
     // Общий профиль. Вкладка «Тренер» видна всем: игрок может оставить заявку.
     const APP = {
@@ -1911,9 +1984,10 @@
           APP.me = data.user;
         } catch (e) {
           APP.authError = e;
-          showAuthError(e && e.status === 401
+          const authFailed = e && e.status === 401;
+          showAuthError(authFailed
             ? 'Telegram не передал данные авторизации. Закройте мини-приложение и откройте его снова.'
-            : (e && e.message) || 'Не удалось загрузить профиль.');
+            : (e && e.message) || 'Не удалось загрузить профиль.', !authFailed);
         }
       })(),
       async refresh() {
