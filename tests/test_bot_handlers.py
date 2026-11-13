@@ -1059,6 +1059,19 @@ def test_main_keyboard_and_legacy_command_open_app():
     assert answers[0][1].inline_keyboard[0][0].web_app is not None
 
 
+def test_bot_talks_to_telegram_only_through_configured_proxy(monkeypatch):
+    """Сервер в РФ: весь трафик к Telegram обязан идти через BOT_PROXY."""
+    proxy = "socks5://127.0.0.1:1080"
+    monkeypatch.setattr(botmod, "settings", replace(settings, bot_proxy=proxy))
+    bot = botmod.create_bot()
+    assert bot.session is not None
+    assert bot.session.proxy == proxy
+
+    monkeypatch.setattr(botmod, "settings", replace(settings, bot_proxy=""))
+    direct = botmod.create_bot()
+    assert direct.session.proxy is None
+
+
 def test_legacy_button_handles_uneditable_message():
     callback, answers, _, _ = _callback_with_message(555, "slots:book:15")
 
