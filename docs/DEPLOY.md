@@ -229,6 +229,14 @@ real_ip_header CF-Connecting-IP;
 
 `sudo nginx -t && sudo systemctl reload nginx`.
 
+> Если меняете ключ `limit_req_zone` (например, с `$binary_remote_addr` на
+> `$request_method`), `nginx -t` проходит, но `reload` молча оставляет старый
+> конфиг: мастер пишет в `error.log` `limit_req "sqassit_api" uses the
+> "$sqassit_limit_key" key while previously it used the "$binary_remote_addr"
+> key`. После смены ключа нужен `systemctl restart nginx`, а не `reload`.
+> Проверка: `ps -o lstart= -p $(pgrep -f "nginx: worker")` — время воркера
+> должно быть позже правки конфига.
+
 > One-shot скрипт деплоя вносит эти директивы идемпотентно, делает бэкап
 > конфига и откатывается, если `nginx -t` не проходит.
 
