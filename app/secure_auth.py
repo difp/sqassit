@@ -38,7 +38,8 @@ def validate_init_data(
     init_data: str,
     bot_token: str,
     *,
-    max_age_seconds: int = 86400,
+    max_age_seconds: int = 7200,
+    future_skew_seconds: int = 300,
 ) -> dict[str, Any]:
     """
     Проверяет подпись initData и возвращает распарсенные поля.
@@ -46,6 +47,7 @@ def validate_init_data(
     :param init_data: сырая строка из window.Telegram.WebApp.initData.
     :param bot_token: токен бота (из окружения).
     :param max_age_seconds: максимальный возраст initData (защита от replay).
+    :param future_skew_seconds: допустимое расхождение часов вперёд.
     :raises InitDataError: если проверка не пройдена.
     """
     if not init_data:
@@ -81,6 +83,8 @@ def validate_init_data(
         raise InitDataError("Некорректный auth_date.")
     if time.time() - int(auth_date_raw) > max_age_seconds:
         raise InitDataError("initData просрочен.")
+    if int(auth_date_raw) - time.time() > future_skew_seconds:
+        raise InitDataError("auth_date в будущем.")
 
     # Разворачиваем вложенный JSON user.
     user_json = pairs.get("user")

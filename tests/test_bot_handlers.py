@@ -199,7 +199,9 @@ def test_coach_reply_text_sends_escaped_message(bot_db_stubs):
     assert answers == [("✅ Отправлено", None)]
     assert 123 not in botmod._pending_reply
     assert bot_db_stubs["saved"] == [(123, 555, "<b>ответ</b>")]
-    assert bot_db_stubs["expired"] == [("chat", 123, 555)]
+    # delete_at больше не используется как отметка прочтения: уведомление
+    # игрока удалится по обычному таймеру, а не сразу после ответа.
+    assert bot_db_stubs["expired"] == []
 
 
 def test_coach_reply_text_rejects_empty_text(bot_db_stubs):

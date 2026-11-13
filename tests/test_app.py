@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from urllib.parse import urlencode
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from starlette.testclient import TestClient
 
 import app.avatars as avatarsmod
@@ -4151,6 +4151,126 @@ def test_message_client_id_is_idempotent(client):
     assert reply["message_id"] == retry["message_id"]
     coach_thread = client.get("/api/coach/messages/555", headers=COACH).json()["messages"]
     assert [m["text"] for m in coach_thread].count("Ответ один раз") == 1
+
+
+def test_chat_ping_replaces_previous_notification(client, monkeypatch):
+    sent: list[tuple[int, str]] = []
+    deleted: list[tuple[int, int]] = []
+
+    async def fake_send(chat_id, text, **kwargs):
+        sent.append((chat_id, text))
+        return SimpleNamespace(message_id=1000 + len(sent))
+
+    async def fake_delete(chat_id, message_id):
+        deleted.append((chat_id, message_id))
+
+    monkeypatch.setattr(mainmod.app.state.bot, "send_message", fake_send)
+    monkeypatch.setattr(mainmod.app.state.bot, "delete_message", fake_delete)
+
+    assert client.get("/api/me", headers=PLAYER).status_code == 200
+    asyncio.run(mainmod._notify_new_chat_message(555, 123))
+    asyncio.run(mainmod._notify_new_chat_message(555, 123))
+
+    assert len(sent) == 2
+    # Второе уведомление приходит новым сообщением (push), старое удалено.
+    assert deleted == [(555, 1001)]
+
+
+def test_message_conflicts_peer_scope_and_unread(client):
+    # Конфликт текста для того же ключа идемпотентности — 409, не «успех».
+    assert client.post(
+        "/api/messages/coach",
+        headers=PLAYER,
+        json={"text": "Первый", "client_id": "same-key"},
+    ).json()["duplicate"] is False
+    assert client.post(
+        "/api/messages/coach",
+        headers=PLAYER,
+        json={"text": "Другой", "client_id": "same-key"},
+    ).status_code == 409
+    assert client.post(
+        "/api/coach/messages/555",
+        headers=COACH,
+        json={"text": "Ответ", "client_id": "coach-key"},
+    ).status_code == 200
+    assert client.post(
+        "/api/coach/messages/555",
+        headers=COACH,
+        json={"text": "Иной ответ", "client_id": "coach-key"},
+    ).status_code == 409
+    # Один и тот же ключ разным получателям — это разные сообщения.
+    assert client.get("/api/me", headers=PLAYER2).status_code == 200
+    assert client.post(
+        "/api/coach/messages/556",
+        headers=COACH,
+        json={"text": "Другому", "client_id": "coach-key"},
+    ).json()["duplicate"] is False
+
+    # Несуществующий собеседник не открывает чужую переписку.
+    assert client.get(
+        "/api/messages/thread?peer_id=999999", headers=PLAYER
+    ).status_code == 404
+
+    unread = client.get("/api/messages/unread", headers=COACH).json()
+    assert unread == {"ok": True, "count": 1, "peers": {"555": 1}}
+    conversations = client.get("/api/coach/messages", headers=COACH).json()["conversations"]
+    conv_555 = next(c for c in conversations if c["telegram_id"] == 555)
+    assert conv_555["unread"] == 1
+    # Открытие переписки отмечает прочтение.
+    client.get("/api/coach/messages/555", headers=COACH)
+    assert client.get("/api/messages/unread", headers=COACH).json()["count"] == 0
+
+    player_unread = client.get("/api/messages/unread", headers=PLAYER).json()
+    assert player_unread["count"] == 1
+    thread = client.get("/api/messages/thread", headers=PLAYER).json()
+    assert thread["peer_id"] == 123
+    client.get("/api/messages/thread", headers=PLAYER)
+    assert client.get("/api/messages/unread", headers=PLAYER).json()["count"] == 0
+
+    # after_id отдаёт только новые сообщения.
+    last_id = thread["messages"][-1]["id"]
+    assert client.get(
+        f"/api/messages/thread?after_id={last_id}", headers=PLAYER
+    ).json()["messages"] == []
+    client.post("/api/coach/messages/555", headers=COACH, json={"text": "Ещё"})
+    fresh = client.get(
+        f"/api/messages/thread?after_id={last_id}", headers=PLAYER
+    ).json()["messages"]
+    assert [m["text"] for m in fresh] == ["Ещё"]
+
+
+def test_html_etag_and_api_no_store(client):
+    first = client.get("/")
+    etag = first.headers["etag"]
+    assert first.headers["cache-control"] == "no-cache"
+    cached = client.get("/", headers={"If-None-Match": etag})
+    assert cached.status_code == 304
+    assert cached.headers["etag"] == etag
+    assert cached.headers["x-content-type-options"] == "nosniff"
+
+    api = client.get("/api/me", headers=PLAYER)
+    assert api.headers["cache-control"] == "no-store"
+
+
+def test_security_headers_survive_unhandled_error():
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "headers": [],
+        "query_string": b"",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "root_path": "",
+    }
+
+    async def boom(request):
+        raise RuntimeError("boom")
+
+    response = asyncio.run(mainmod.security_headers(Request(scope), boom))
+    assert response.status_code == 500
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["cache-control"] == "no-cache"
 
 
 def test_message_pagination_and_validation(client):

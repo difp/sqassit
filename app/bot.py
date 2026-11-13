@@ -95,6 +95,16 @@ def _coach_training_url(training_id: int) -> str:
                        urlencode(query), parts.fragment))
 
 
+def _chat_url(peer_id: int, *, coach: bool = False) -> str:
+    """Ссылка на открытый чат: у игрока — главная, у тренера — панель /coach."""
+    parts = urlsplit(_web_app_url())
+    query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)
+             if key != "chat"]
+    query.append(("chat", str(peer_id)))
+    path = parts.path.rstrip("/") + ("/coach" if coach else "")
+    return urlunsplit((parts.scheme, parts.netloc, path or "/", urlencode(query), parts.fragment))
+
+
 RULES_TEXT = (
     "<b>Правила SQASSIT</b>\n\n"
     "• Записывайтесь только при уверенности, что придёте. Отменяйте запись заранее — минимум за 4,5 часа.\n\n"
@@ -389,7 +399,6 @@ async def coach_reply_text(message: Message) -> None:
         # Ответ тренера сохраняем в переписку до проверки уведомлений: сообщение
         # должно остаться в чате, даже если у игрока отключены уведомления.
         await db.add_message(user.id, target, text)
-        await db.expire_event_notifications("chat", user.id, target)
         if not await db.notification_enabled(target, "messages"):
             await message.answer("У игрока отключены уведомления о сообщениях.")
             return
@@ -529,10 +538,14 @@ def create_dispatcher() -> Dispatcher:
     router.message.register(cmd_start, CommandStart())
     router.message.register(cmd_slots, Command("slots"))
     router.message.register(cmd_phone, Command("phone"))
+    router.message.register(cmd_inbox, Command("inbox"))
     router.message.register(handle_contact, F.contact)
     router.callback_query.register(cb_apply, F.data.startswith("apply:"))
+    router.callback_query.register(cb_reply, F.data.startswith("reply:"))
     router.callback_query.register(cb_legacy_schedule, F.data.startswith("slots:"))
     router.callback_query.register(cb_legacy_schedule, F.data.startswith("attendees:"))
+    # Ответ тренера на сообщение игрока — до общего fallback.
+    router.message.register(coach_reply_text, PendingReplyFilter(), F.text)
     router.message.register(fallback, F.text)
 
     dp.include_router(router)

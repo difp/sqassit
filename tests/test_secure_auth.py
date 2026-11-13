@@ -66,6 +66,13 @@ def test_expired_rejected():
         validate_init_data(_sign({"id": 1}, TOKEN, auth_date=int(time.time()) - 200000), TOKEN)
 
 
+def test_future_auth_date_rejected():
+    with pytest.raises(InitDataError):
+        validate_init_data(
+            _sign({"id": 1}, TOKEN, auth_date=int(time.time()) + 3600), TOKEN
+        )
+
+
 def test_tampered_user_rejected():
     signed = _sign({"id": 1, "first_name": "A"}, TOKEN)
     parts = dict(pair.split("=", 1) for pair in signed.split("&"))

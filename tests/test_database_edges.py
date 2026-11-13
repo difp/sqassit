@@ -124,6 +124,42 @@ def test_add_message_once_recovers_from_insert_race(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
+def test_add_message_once_conflict_scopes_and_rollback(tmp_path):
+    path = tmp_path / "messages-conflict.db"
+
+    async def scenario():
+        await db.connect(str(path))
+        try:
+            first_id, created = await db.add_message_once(5, 123, "первый", "key")
+            assert created is True
+
+            # Тот же ключ с другим текстом — ошибка, а не «тихий» успех.
+            with pytest.raises(db.MessageConflict):
+                await db.add_message_once(5, 123, "другой", "key")
+            # После IntegrityError соединение не остаётся в транзакции.
+            assert db._db().in_transaction is False
+
+            retry = await db.add_message_once(5, 123, "первый", "key")
+            assert retry == (first_id, False)
+
+            # Ключ уникален в рамках диалога: другому получателю — можно.
+            other_id, other_created = await db.add_message_once(5, 124, "другой", "key")
+            assert other_created is True and other_id != first_id
+
+            await db.mark_chat_read(123, 5, last_read_id=first_id - 1)
+            assert await db.unread_by_peer(123) == {5: 1}
+            await db.mark_chat_read(123, 5)
+            assert await db.unread_by_peer(123) == {}
+            # Отметка не откатывается назад.
+            await db.mark_chat_read(123, 5, last_read_id=0)
+            assert await db.unread_by_peer(123) == {}
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
+
 def test_db_requires_initialization():
     asyncio.run(db.close())
     with pytest.raises(RuntimeError, match="не инициализирована"):

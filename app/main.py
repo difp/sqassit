@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import html
 import json
@@ -813,7 +814,14 @@ _TABS_CSP = (
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     """Базовые security-заголовки; CSP разрешает только Telegram и свой origin."""
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        # Ошибка в обработчике не должна отдавать ответ без security-заголовков.
+        logger.exception("Необработанная ошибка запроса %s", request.url.path)
+        response = JSONResponse(
+            {"ok": False, "error": "Внутренняя ошибка сервера"}, status_code=500
+        )
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault(
@@ -835,12 +843,32 @@ async def security_headers(request: Request, call_next):
         "frame-ancestors 'self' https://telegram.org https://*.telegram.org "
         "https://t.me https://*.t.me",
     )
-    if request.url.path.startswith("/static/"):
+    path = request.url.path
+    if path.startswith("/api/"):
+        # Персональные данные не должны попадать в дисковый кэш WebView.
+        response.headers.setdefault("Cache-Control", "no-store")
+    elif path.startswith("/static/"):
         response.headers.setdefault("Cache-Control", "public, max-age=604800")
-    elif request.url.path in {"/", "/coach"}:
-        # HTML обновляется чаще статики; не даём WebView закэшировать старую
-        # версию страницы со ссылкой на внешний telegram.org.
-        response.headers.setdefault("Cache-Control", "no-cache")
+    elif path in {"/", "/coach"}:
+        response.headers["Cache-Control"] = "no-cache"
+        # ETag по содержимому: WebView переиспользует HTML без повторной
+        # передачи 150–200 КБ, но всегда получает свежую версию после релиза.
+        body = (
+            b"".join([chunk async for chunk in response.body_iterator])
+            if hasattr(response, "body_iterator")
+            else response.body
+        )
+        etag = '"' + hashlib.sha256(body).hexdigest()[:32] + '"'
+        headers = dict(response.headers)
+        headers["ETag"] = etag
+        if _etag_matches(request.headers.get("if-none-match", ""), etag):
+            return Response(status_code=304, headers=headers)
+        return Response(
+            content=body,
+            status_code=response.status_code,
+            headers=headers,
+            media_type=response.media_type,
+        )
     return response
 
 
@@ -2321,8 +2349,7 @@ async def api_message_coach(payload: MessageIn, user: Annotated[dict, Depends(cu
     """
     Личное сообщение тренеру. Сохраняем в БД и доставляем через бота в фоне
     (чтобы недоступность Telegram не блокировала ответ игроку).
-    Тренер читает сообщения командой /inbox и отвечает кнопкой «Ответить» —
-    без показа Telegram ID игрока.
+    Тренер читает переписку в панели /coach — без показа Telegram ID игрока.
     """
     _message_limiter.check(str(user["telegram_id"]))
     text = (payload.text or "").strip()
@@ -2337,9 +2364,14 @@ async def api_message_coach(payload: MessageIn, user: Annotated[dict, Depends(cu
             return error_json("Тренировка не найдена.", 404)
         coach_id = training["created_by"] or coach_id
 
-    message_id, created = await db.add_message_once(
-        user["telegram_id"], coach_id, text, payload.client_id.strip()
-    )
+    try:
+        message_id, created = await db.add_message_once(
+            user["telegram_id"], coach_id, text, payload.client_id.strip()
+        )
+    except db.MessageConflict:
+        return error_json(
+            "Сообщение с этим ключом уже отправлено с другим текстом.", 409
+        )
     if not created:
         # Повторный POST (двойной тап/ретрай): отвечаем успехом без дубля и рассылки.
         return {"ok": True, "message_id": message_id, "duplicate": True}
@@ -2352,31 +2384,53 @@ async def api_message_coach(payload: MessageIn, user: Annotated[dict, Depends(cu
     return {"ok": True, "message_id": message_id, "duplicate": False}
 
 
+def _serialize_chat_message(row: aiosqlite.Row, viewer_id: int) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "from_me": row["from_user"] == viewer_id,
+        "text": row["text"],
+        "created_at": row["created_at"],
+    }
+
+
 @app.get("/api/messages/thread")
 async def api_player_thread(
     user: Annotated[dict, Depends(current_user)],
+    peer_id: Annotated[int | None, Query(ge=1)] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     before_id: Annotated[int | None, Query(ge=1)] = None,
+    after_id: Annotated[int | None, Query(ge=1)] = None,
 ):
-    rows, has_more = await db.list_user_thread(user["telegram_id"], limit, before_id)
+    """Переписка с тренером. peer_id обязателен, если тренеров несколько."""
+    viewer_id = user["telegram_id"]
+    peer = peer_id or settings.coach_telegram_id
+    if (
+        peer_id is not None
+        and peer_id != settings.coach_telegram_id
+        and not await db.is_coach_id(peer_id)
+    ):
+        return error_json("Тренер не найден.", 404)
+    rows, has_more = await db.list_user_thread(
+        viewer_id, peer_id=peer, limit=limit, before_id=before_id, after_id=after_id
+    )
     if before_id is None:
-        for row in rows:
-            if row["to_user"] == user["telegram_id"]:
-                await db.expire_event_notifications(
-                    "chat", row["from_user"], user["telegram_id"]
-                )
+        # Открытый чат (в том числе при опросе) считается прочитанным.
+        await db.mark_chat_read(viewer_id, peer)
     return {
         "ok": True,
+        "peer_id": peer,
         "has_more": has_more,
-        "messages": [
-            {
-                "id": r["id"],
-                "from_me": r["from_user"] == user["telegram_id"],
-                "text": r["text"],
-                "created_at": r["created_at"],
-            }
-            for r in rows
-        ],
+        "messages": [_serialize_chat_message(r, viewer_id) for r in rows],
+    }
+
+
+@app.get("/api/messages/unread")
+async def api_player_unread(user: Annotated[dict, Depends(current_user)]):
+    counts = await db.unread_by_peer(user["telegram_id"])
+    return {
+        "ok": True,
+        "count": sum(counts.values()),
+        "peers": {str(peer): count for peer, count in counts.items()},
     }
 
 
@@ -2398,6 +2452,7 @@ async def api_coach_messages(coach: Annotated[dict, Depends(require_coach)]):
                 ),
                 "last_text": r["text"],
                 "last_at": r["created_at"],
+                "unread": r["unread"],
             }
             for r in rows
         ],
@@ -2410,24 +2465,17 @@ async def api_coach_thread(
     coach: Annotated[dict, Depends(require_coach)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     before_id: Annotated[int | None, Query(ge=1)] = None,
+    after_id: Annotated[int | None, Query(ge=1)] = None,
 ):
     rows, has_more = await db.list_coach_thread(
-        coach["telegram_id"], user_id, limit, before_id
+        coach["telegram_id"], user_id, limit=limit, before_id=before_id, after_id=after_id
     )
     if before_id is None:
-        await db.expire_event_notifications("chat", user_id, coach["telegram_id"])
+        await db.mark_chat_read(coach["telegram_id"], user_id)
     return {
         "ok": True,
         "has_more": has_more,
-        "messages": [
-            {
-                "id": r["id"],
-                "from_me": r["from_user"] == coach["telegram_id"],
-                "text": r["text"],
-                "created_at": r["created_at"],
-            }
-            for r in rows
-        ],
+        "messages": [_serialize_chat_message(r, coach["telegram_id"]) for r in rows],
     }
 
 
@@ -2441,32 +2489,63 @@ async def api_coach_reply(
         return error_json("Пустое сообщение.", 422)
     if await db.get_user(user_id) is None:
         return error_json("Игрок не найден.", 404)
-    message_id, created = await db.add_message_once(
-        coach["telegram_id"], user_id, text, payload.client_id.strip()
-    )
+    try:
+        message_id, created = await db.add_message_once(
+            coach["telegram_id"], user_id, text, payload.client_id.strip()
+        )
+    except db.MessageConflict:
+        return error_json(
+            "Сообщение с этим ключом уже отправлено с другим текстом.", 409
+        )
     if not created:
         return {"ok": True, "message_id": message_id, "duplicate": True}
     _spawn(_notify_new_chat_message(user_id, coach["telegram_id"]))
     return {"ok": True, "message_id": message_id, "duplicate": False}
 
 
+
+async def _send_chat_ping(
+    chat_id: int, peer_id: int, text: str, *, coach: bool
+) -> None:
+    """
+    Свежее сообщение-уведомление о новом личном сообщении.
+
+    Старую карточку удаляем: edit_message_text не даёт push, а её запись с
+    истёкшим delete_at «отравляла» бы новое уведомление. Одно живое
+    уведомление на собеседника — и каждый раз с уведомлением.
+    """
+    record = None
+    try:
+        record = await db.get_event_notification("chat", peer_id, chat_id, chat_id)
+    except Exception:
+        logger.info("Не удалось прочитать прошлое уведомление", exc_info=True)
+    if record is not None:
+        message_id = int(record["message_id"] or 0)
+        if message_id:
+            with suppress(Exception):
+                await app.state.bot.delete_message(chat_id, message_id)
+        await db.delete_event_notification_by_id(record["id"])
+    with suppress(Exception):
+        await _send_event_notification(
+            "chat", peer_id, chat_id, chat_id, text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="Открыть чат",
+                    web_app=WebAppInfo(url=bot_module._chat_url(peer_id, coach=coach)),
+                )
+            ]]),
+        )
+
+
 async def _notify_new_chat_message(telegram_id: int, author_id: int) -> None:
     """Уведомление о сообщении без текста: переписка остаётся в приложении."""
     if not await _notifications_allowed(telegram_id, "messages"):
         return
-    try:
-        await _send_event_notification(
-            "chat", author_id, telegram_id, telegram_id,
-            "✉️ Новое сообщение от тренера в приложении.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(
-                    text="Открыть чат",
-                    web_app=WebAppInfo(url=bot_module._web_app_url()),
-                )
-            ]]),
-        )
-    except Exception:
-        logger.info("Не удалось уведомить о сообщении %s", telegram_id, exc_info=True)
+    await _send_chat_ping(
+        telegram_id, author_id,
+        "✉️ Новое сообщение от тренера в приложении.", coach=False,
+    )
+
 
 
 async def _notify_feedback(
@@ -2500,22 +2579,14 @@ async def _notify_feedback(
 
 
 async def _deliver_to_coach(coach_id: int, sender_id: int, sender_name: str, text: str) -> None:
-    """Фоновая доставка сообщения тренеру с кнопкой быстрого ответа."""
+    """Фоновая доставка сообщения тренеру: без текста, с переходом в чат."""
     if not await _notifications_allowed(coach_id, "messages"):
         return
-    try:
-        await _send_event_notification(
-            "chat", sender_id, coach_id, coach_id,
-            "✉️ Новое сообщение в приложении.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(
-                    text="Открыть чат",
-                    web_app=WebAppInfo(url=bot_module._web_app_url()),
-                )
-            ]]),
-        )
-    except Exception:
-        logger.warning("Не удалось доставить сообщение тренеру", exc_info=True)
+    await _send_chat_ping(
+        coach_id, sender_id,
+        "✉️ Новое сообщение в приложении.",
+        coach=True,
+    )
 
 
 def _training_brief(training: aiosqlite.Row) -> str:

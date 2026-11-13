@@ -25,6 +25,10 @@ _conn: aiosqlite.Connection | None = None
 _lock = asyncio.Lock()
 
 
+class MessageConflict(Exception):
+    """Тот же client_id уже использован для другого текста в этом диалоге."""
+
+
 def search_norm(value: str | None) -> str:
     """
     Нормализация текста для поиска.
@@ -149,6 +153,16 @@ CREATE TABLE IF NOT EXISTS messages (
     text        TEXT NOT NULL,
     created_at  INTEGER NOT NULL,
     client_id   TEXT NOT NULL DEFAULT ''   -- идемпотентность отправки с клиента
+);
+
+-- Отметки прочтения личных переписок. Отдельная таблица: срок жизни
+-- уведомлений (event_notifications.delete_at) не должен означать «прочитано».
+CREATE TABLE IF NOT EXISTS chat_reads (
+    user_id      INTEGER NOT NULL,
+    peer_id      INTEGER NOT NULL,
+    last_read_id INTEGER NOT NULL DEFAULT 0,
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (user_id, peer_id)
 );
 
 CREATE TABLE IF NOT EXISTS feedback (
@@ -409,15 +423,28 @@ async def _migrate() -> None:
             await _conn.execute(ddl)
 
     # Индексы для сообщений создаём после миграции: в старой БД колонки
-    # client_id ещё нет. Частичный UNIQUE-индекс делает повторную отправку
-    # с тем же client_id безопасной (дубли не появляются).
+    # client_id ещё нет. Ключ идемпотентности — тройка (отправитель,
+    # получатель, client_id): один и тот же клиентский id можно безопасно
+    # использовать в разных диалогах, но не для двух разных текстов.
+    # Перед созданием UNIQUE-индекса развязываем возможные дубли старых БД.
     await _conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client "
-        "ON messages(from_user, client_id) WHERE client_id != ''"
+        "UPDATE messages SET client_id = '' "
+        "WHERE client_id != '' AND id NOT IN ("
+        "  SELECT MIN(id) FROM messages WHERE client_id != '' "
+        "  GROUP BY from_user, to_user, client_id)"
+    )
+    await _conn.execute("DROP INDEX IF EXISTS idx_messages_client")
+    await _conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_messages_client "
+        "ON messages(from_user, to_user, client_id) WHERE client_id != ''"
     )
     await _conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_messages_pair "
         "ON messages(from_user, to_user, id)"
+    )
+    await _conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_pair_rev "
+        "ON messages(to_user, from_user, id)"
     )
 
     # Индекс создаём после миграции: в старой БД колонки delete_at ещё нет.
@@ -1790,87 +1817,162 @@ async def add_message_once(
     таймаута, повторный POST) не создаёт дубль. Возвращает (id, created):
     created=False означает, что сообщение уже было сохранено раньше.
     Пустой client_id отключает идемпотентность — как обычный add_message.
+
+    Если тот же client_id пришёл с другим текстом, это ошибка клиента:
+    поднимаем MessageConflict, чтобы вызывающий код вернул 409, а не
+    «успешно» проглотил потерянное сообщение.
     """
     if not client_id:
         return await add_message(from_user, to_user, text), True
     try:
         return await add_message(from_user, to_user, text, client_id), True
     except aiosqlite.IntegrityError:
-        # Гонка двух параллельных отправок: второй INSERT упал на UNIQUE,
-        # возвращаем id уже сохранённого сообщения.
+        # Гонка двух параллельных отправок: второй INSERT упал на UNIQUE.
+        # Обязательно откатываем транзакцию, иначе соединение остаётся
+        # в состоянии in_transaction и блокирует последующие записи.
+        await _db().rollback()
         row = await _fetchone(
-            "SELECT id FROM messages WHERE from_user = ? AND client_id = ?",
-            (from_user, client_id),
+            "SELECT id, text FROM messages "
+            "WHERE from_user = ? AND to_user = ? AND client_id = ?",
+            (from_user, to_user, client_id),
         )
         if row is None:
             raise
+        if row["text"] != text:
+            raise MessageConflict(client_id)
         return int(row["id"]), False
 
 
 async def list_user_thread(
-    user_id: int, limit: int = 50, before_id: int | None = None
+    user_id: int,
+    peer_id: int | None = None,
+    limit: int = 50,
+    before_id: int | None = None,
+    after_id: int | None = None,
 ) -> tuple[list[aiosqlite.Row], bool]:
-    """Страница переписки пользователя; has_more — есть ли более старые."""
+    """
+    Страница переписки пользователя; has_more — есть ли более старые.
+
+    peer_id сужает выборку до одного собеседника (у игрока может быть
+    несколько тренеров). after_id отдаёт только новые сообщения по
+    возрастанию — для опроса открытого чата.
+    """
     rows = await _fetchall(
         """
         SELECT m.id, m.from_user, m.to_user, m.text, m.created_at
           FROM messages m
-         WHERE (m.from_user = ? OR m.to_user = ?)
+         WHERE (? IS NULL
+                OR (m.from_user = ? AND m.to_user = ?)
+                OR (m.from_user = ? AND m.to_user = ?))
            AND (? IS NULL OR m.id < ?)
+           AND (? IS NULL OR m.id > ?)
          ORDER BY m.id DESC
          LIMIT ?
         """,
-        (user_id, user_id, before_id, before_id, limit + 1),
+        (
+            peer_id, user_id, peer_id, peer_id, user_id,
+            before_id, before_id, after_id, after_id,
+            limit + 1,
+        ),
     )
     has_more = len(rows) > limit
     page = rows[:limit]
-    page.reverse()
+    if after_id is None:
+        page.reverse()
     return page, has_more
 
 
 async def list_coach_thread(
-    coach_id: int, user_id: int, limit: int = 50, before_id: int | None = None
+    coach_id: int,
+    user_id: int,
+    limit: int = 50,
+    before_id: int | None = None,
+    after_id: int | None = None,
 ) -> tuple[list[aiosqlite.Row], bool]:
+    rows, has_more = await list_user_thread(
+        coach_id,
+        peer_id=user_id,
+        limit=limit,
+        before_id=before_id,
+        after_id=after_id,
+    )
+    return rows, has_more
+
+
+async def mark_chat_read(
+    user_id: int, peer_id: int, last_read_id: int | None = None
+) -> int:
+    """Запоминает, до какого сообщения прочитана переписка с собеседником."""
+    if last_read_id is None:
+        row = await _fetchone(
+            "SELECT COALESCE(MAX(id), 0) AS last_id FROM messages "
+            "WHERE (from_user = ? AND to_user = ?) "
+            "   OR (from_user = ? AND to_user = ?)",
+            (peer_id, user_id, user_id, peer_id),
+        )
+        last_read_id = int(row["last_id"]) if row is not None else 0
+    await _execute(
+        "INSERT INTO chat_reads (user_id, peer_id, last_read_id, updated_at) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(user_id, peer_id) DO UPDATE SET "
+        "  last_read_id = MAX(chat_reads.last_read_id, excluded.last_read_id), "
+        "  updated_at = excluded.updated_at",
+        (user_id, peer_id, max(0, int(last_read_id)), int(time.time())),
+    )
+    return max(0, int(last_read_id))
+
+
+async def unread_by_peer(user_id: int) -> dict[int, int]:
+    """Сколько входящих сообщений не прочитано от каждого собеседника."""
     rows = await _fetchall(
         """
-        SELECT m.id, m.from_user, m.to_user, m.text, m.created_at
+        SELECT m.from_user AS peer_id, COUNT(*) AS unread
           FROM messages m
-         WHERE ((m.from_user = ? AND m.to_user = ?)
-            OR (m.from_user = ? AND m.to_user = ?))
-           AND (? IS NULL OR m.id < ?)
-         ORDER BY m.id DESC
+          LEFT JOIN chat_reads r
+            ON r.user_id = ? AND r.peer_id = m.from_user
+         WHERE m.to_user = ? AND m.id > COALESCE(r.last_read_id, 0)
+         GROUP BY m.from_user
+        """,
+        (user_id, user_id),
+    )
+    return {int(row["peer_id"]): int(row["unread"]) for row in rows}
+
+
+async def list_coach_conversations(
+    coach_id: int, limit: int = 100
+) -> list[dict[str, Any]]:
+    """
+    Последнее сообщение по каждому игроку для панели тренера.
+
+    Один запрос вместо выгрузки всей переписки в память: MAX(id) по
+    собеседникам + JOIN на само сообщение и карточку игрока.
+    """
+    rows = await _fetchall(
+        """
+        WITH peers AS (
+            SELECT CASE WHEN from_user = ? THEN to_user ELSE from_user END AS peer_id,
+                   MAX(id) AS last_id
+              FROM messages
+             WHERE from_user = ? OR to_user = ?
+             GROUP BY peer_id
+        )
+        SELECT m.id, m.from_user, m.to_user, m.text, m.created_at,
+               p.peer_id AS other_id,
+               u.first_name, u.display_mode, u.avatar_file_id
+          FROM peers p
+          JOIN messages m ON m.id = p.last_id
+          LEFT JOIN users u ON u.telegram_id = p.peer_id
+         ORDER BY p.last_id DESC
          LIMIT ?
         """,
-        (user_id, coach_id, coach_id, user_id, before_id, before_id, limit + 1),
+        (coach_id, coach_id, coach_id, limit),
     )
-    has_more = len(rows) > limit
-    page = rows[:limit]
-    page.reverse()
-    return page, has_more
+    unread = await unread_by_peer(coach_id)
+    return [
+        {**dict(row), "unread": unread.get(int(row["other_id"]), 0)}
+        for row in rows
+    ]
 
-
-async def list_coach_conversations(coach_id: int) -> list[dict[str, Any]]:
-    """Последнее сообщение по каждому игроку для панели тренера."""
-    rows = await _fetchall(
-        """
-        SELECT m.*, u.first_name, u.display_mode, u.avatar_file_id
-          FROM messages m
-          JOIN users u ON u.telegram_id = CASE
-              WHEN m.from_user = ? THEN m.to_user ELSE m.from_user END
-         WHERE m.from_user = ? OR m.to_user = ?
-         ORDER BY m.id DESC
-        """,
-        (coach_id, coach_id, coach_id),
-    )
-    seen: set[int] = set()
-    result = []
-    for row in rows:
-        other = row["to_user"] if row["from_user"] == coach_id else row["from_user"]
-        if other in seen:
-            continue
-        seen.add(other)
-        result.append({**dict(row), "other_id": other})
-    return result
 
 
 async def list_inbox(to_user: int, limit: int = 20) -> list[aiosqlite.Row]:
