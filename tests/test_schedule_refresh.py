@@ -18,17 +18,37 @@ function cacheWrite(_, data) { saved.push(data); }
 function renderSchedule(data) { painted.push(data); }
 function api() { return new Promise((resolve, reject) => pending.push({resolve, reject})); }
 function toast() { throw Error('Unexpected error'); }
-const document = {getElementById: () => ({hidden: false})};
+const REQUEST_TIMEOUT_MS = 6000;
+const INITIAL_REQUEST_TIMEOUT_MS = 12000;
+function hideScheduleError() {}
+function showScheduleError(message) { throw Error('Unexpected schedule error: ' + message); }
+const document = {
+  getElementById: () => ({hidden: false}),
+  querySelector: () => ({}),
+};
 """ + source + r"""
 (async () => {
+  // Фоновое обновление не вытесняет первичную загрузку и не шлёт запрос.
   const first = loadSchedule();
-  const second = loadSchedule({background: true});
-  pending[1].resolve({trainings: ['new']});
-  await second;
+  const ignored = loadSchedule({background: true});
+  assert.strictEqual(pending.length, 1);
+  await ignored;
   pending[0].resolve({trainings: ['old']});
   await first;
-  assert.deepStrictEqual(painted, [['new']]);
-  assert.deepStrictEqual(saved, [['new']]);
+  assert.deepStrictEqual(painted, [['old']]);
+  assert.deepStrictEqual(saved, [['old']]);
+
+  // После первичной загрузки ручное обновление снова главнее фонового.
+  const second = loadSchedule();
+  const ignoredAgain = loadSchedule({background: true});
+  assert.strictEqual(pending.length, 2);
+  pending[1].resolve({trainings: ['new']});
+  await second;
+  await ignoredAgain;
+  assert.deepStrictEqual(painted, [['old'], ['new']]);
+  assert.deepStrictEqual(saved, [['old'], ['new']]);
+
+  // Ошибка фонового запроса не показывает toast и не стирает расписание.
   const third = loadSchedule({background: true});
   pending[2].reject(Error('offline'));
   await third;
