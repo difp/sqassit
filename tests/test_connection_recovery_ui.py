@@ -47,6 +47,15 @@ def test_expired_session_offers_reopen() -> None:
     assert "canReopen" in html
 
 
+def test_session_token_is_kept_in_session_storage() -> None:
+    html = BASE.read_text()
+
+    assert "SESSION_TOKEN_KEY" in html
+    assert "sessionStorage.setItem(SESSION_TOKEN_KEY" in html
+    assert "headers['X-Session-Token'] = SESSION_TOKEN" in html
+    assert "res.headers.get('X-Session-Token')" in html
+
+
 def test_initial_requests_have_longer_timeout() -> None:
     html = BASE.read_text()
 

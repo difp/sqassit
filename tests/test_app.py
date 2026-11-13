@@ -105,6 +105,72 @@ def test_auth_required(client):
     assert client.get("/api/me").status_code == 401
 
 
+def test_init_data_bootstraps_server_session(client):
+    first = client.get("/api/me", headers=PLAYER)
+    token = first.headers["x-session-token"]
+    assert token
+
+    # Дальше можно работать без initData: это и нужно долгоживущему iframe.
+    second = client.get("/api/me", headers={"X-Session-Token": token})
+    assert second.status_code == 200
+    assert second.json()["user"]["telegram_id"] == 555
+    assert "x-session-token" not in second.headers
+
+
+def test_invalid_session_is_replaced_on_bootstrap(client):
+    response = client.get(
+        "/api/me", headers={**PLAYER, "X-Session-Token": "invalid-token"}
+    )
+    assert response.status_code == 200
+    assert response.headers["x-session-token"] not in ("", "invalid-token")
+
+
+def test_session_survives_expired_init_data(client):
+    token = client.get("/api/me", headers=PLAYER).headers["x-session-token"]
+
+    response = client.get(
+        "/api/me", headers={"X-Init-Data": "broken", "X-Session-Token": token}
+    )
+    assert response.status_code == 200
+    assert response.json()["user"]["telegram_id"] == 555
+
+
+def test_expired_session_is_rejected(client):
+    token = "expired-session-token"
+    asyncio.run(
+        mainmod.db.create_auth_session(
+            hashlib.sha256(token.encode()).hexdigest(),
+            555,
+            int(time.time()) - 10,
+        )
+    )
+
+    assert client.get(
+        "/api/me", headers={"X-Session-Token": token}
+    ).status_code == 401
+
+
+def test_session_for_deleted_user_is_revoked(client):
+    token = "deleted-user-session"
+    asyncio.run(
+        mainmod.db.create_auth_session(
+            hashlib.sha256(token.encode()).hexdigest(),
+            999999,
+            int(time.time()) + 3600,
+        )
+    )
+
+    assert client.get(
+        "/api/me", headers={"X-Session-Token": token}
+    ).status_code == 401
+
+
+def test_blank_session_token_is_rejected(client):
+    assert client.get(
+        "/api/me", headers={"X-Session-Token": "   "}
+    ).status_code == 401
+
+
 def test_onboarding_seen_flow(client):
     me = client.get("/api/me", headers=PLAYER).json()["user"]
     assert me["onboarding_seen"] is False

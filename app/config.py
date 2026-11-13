@@ -177,6 +177,7 @@ def validate_webhook_settings(bot_mode: str, base_url: str, secret: str) -> None
 
 
 # Бизнес-константы (не секреты, вынесены явно).
+AUTH_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60  # серверная сессия после initData
 BOOKING_CANCEL_LOCK_MINUTES = 270  # 4.5 часа — окно, когда игрок сам отменить не может
 DEFAULT_REMINDER_OFFSET_MINUTES = 270  # 4.5 часа — автонапоминание по умолчанию
 DEFAULT_TRAINING_DURATION_MINUTES = 60

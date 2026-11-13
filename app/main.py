@@ -52,6 +52,7 @@ from .avatars import (
 )
 from .config import (
     APP_VERSION,
+    AUTH_SESSION_TTL_SECONDS,
     BOOKING_CANCEL_LOCK_MINUTES,
     DEFAULT_REMINDER_OFFSET_MINUTES,
     DEFAULT_TRAINING_DURATION_MINUTES,
@@ -153,10 +154,6 @@ async def _authenticate(init_data: str) -> dict[str, Any]:
     try:
         data = validate_init_data(init_data, settings.bot_token)
     except InitDataError as exc:
-        # Причина важна для диагностики «иногда не грузится»: просроченная
-        # initData, неверная подпись и пустой заголовок лечатся по-разному.
-        # Сам initData не логируем — это bearer-токен.
-        logger.warning("initData отклонена: %s", exc)
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
     tg_user = data["user"]
@@ -195,14 +192,83 @@ async def _authenticate(init_data: str) -> dict[str, Any]:
     return user
 
 
+def _session_token_hash(token: str) -> str:
+    """В БД храним только хэш: утечка базы не даёт готовых bearer-токенов."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+async def _session_user(token: str) -> dict[str, Any] | None:
+    """Возвращает пользователя по серверной сессии или None."""
+    token = (token or "").strip()
+    if not token or len(token) > 200:
+        return None
+    session = await db.get_auth_session(_session_token_hash(token))
+    if session is None:
+        return None
+    row = await db.get_user(int(session["telegram_id"]))
+    if row is None:
+        # Пользователь удалил профиль — сессия больше не должна работать.
+        await db.delete_auth_session(str(session["token_hash"]))
+        return None
+    user = dict(row)
+    tg_id = int(user["telegram_id"])
+    is_owner = tg_id == settings.coach_telegram_id
+    is_coach = is_owner or await db.is_coach_id(tg_id)
+    user["is_coach"] = is_coach
+    user["is_owner"] = is_owner
+    user["is_manager"] = is_owner or await db.is_manager_id(tg_id)
+    return user
+
+
+async def _issue_session(response: Response, telegram_id: int) -> None:
+    """Выдаёт клиенту новый непрозрачный токен сессии (только по заголовку)."""
+    token = secrets.token_urlsafe(32)
+    await db.create_auth_session(
+        _session_token_hash(token),
+        telegram_id,
+        int(time.time()) + AUTH_SESSION_TTL_SECONDS,
+    )
+    response.headers["X-Session-Token"] = token
+
+
 async def current_user(
+    request: Request,
+    response: Response,
     x_init_data: Annotated[str, Header(alias="X-Init-Data")] = "",
+    x_session_token: Annotated[str, Header(alias="X-Session-Token")] = "",
 ) -> dict[str, Any]:
     """
-    FastAPI-зависимость: валидирует подпись initData и возвращает карточку игрока.
-    Без корректной подписи Telegram доступ к API невозможен.
+    Авторизация API: свежая initData или серверная сессия.
+
+    ``initData`` живёт 24 часа и не обновляется в уже открытом WebView.
+    Поэтому на bootstrap-запросе ``/api/me`` выдаём непрозрачный токен на
+    7 дней; клиент хранит его в sessionStorage и присылает в заголовке.
     """
-    return await _authenticate(x_init_data)
+    user: dict[str, Any] | None = None
+    init_error: HTTPException | None = None
+    if x_init_data:
+        try:
+            user = await _authenticate(x_init_data)
+        except HTTPException as exc:
+            init_error = exc
+
+    session_user = await _session_user(x_session_token) if x_session_token else None
+    if user is None:
+        user = session_user
+    if user is None:
+        if init_error is not None:
+            # Причина важна для диагностики: просроченная initData, неверная
+            # подпись и пустой заголовок лечатся по-разному. Саму строку
+            # initData не логируем — это bearer-токен.
+            logger.warning("initData отклонена: %s", init_error.detail)
+            raise init_error
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+
+    # Токен выдаём только на bootstrap /api/me: остальные параллельные
+    # запросы при открытии приложения ещё не успели его получить.
+    if session_user is None and request.url.path == "/api/me":
+        await _issue_session(response, int(user["telegram_id"]))
+    return user
 
 
 def _avatar_url(

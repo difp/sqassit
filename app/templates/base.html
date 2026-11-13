@@ -1363,6 +1363,19 @@
     {% endif %}
     const DEV_INIT_DATA_ENABLED = {% if allow_dev_init_data %}true{% else %}false{% endif %};
 
+    // Серверная сессия переживает 24-часовой срок initData. Храним только
+    // в sessionStorage: токен не попадает в URL, историю и Referer.
+    const SESSION_TOKEN_KEY = 'sqassit:session';
+    let SESSION_TOKEN = '';
+    try { SESSION_TOKEN = sessionStorage.getItem(SESSION_TOKEN_KEY) || ''; } catch (e) {}
+    function storeSessionToken(token) {
+      SESSION_TOKEN = token || '';
+      try {
+        if (SESSION_TOKEN) sessionStorage.setItem(SESSION_TOKEN_KEY, SESSION_TOKEN);
+        else sessionStorage.removeItem(SESSION_TOKEN_KEY);
+      } catch (e) { /* приватный режим / заблокированное хранилище */ }
+    }
+
     function haptic(style) {
       try { tg && tg.HapticFeedback && tg.HapticFeedback.impactOccurred(style || 'light'); } catch (e) {}
     }
@@ -1447,7 +1460,7 @@
     }
 
     async function waitForInitData() {
-      if (currentInitData() || !tg) return;
+      if (SESSION_TOKEN || currentInitData() || !tg) return;
       // В Telegram WebView initData иногда появляется на мгновение позже
       // первого тика скрипта. Не отправляем заведомо неавторизованные запросы.
       for (let i = 0; i < 10 && !currentInitData(); i++) {
@@ -1483,15 +1496,20 @@
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
+          const headers = {
+            'Content-Type': 'application/json',
+            'X-Init-Data': currentInitData(),
+          };
+          if (SESSION_TOKEN) headers['X-Session-Token'] = SESSION_TOKEN;
           const res = await fetch(path, {
             method,
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Init-Data': currentInitData(),
-            },
+            headers,
             body: body ? JSON.stringify(body) : null,
             signal: controller.signal,
           });
+          const issuedSession = res.headers.get('X-Session-Token');
+          if (issuedSession) storeSessionToken(issuedSession);
+          if (res.status === 401) storeSessionToken('');
           let data = {};
           try { data = await res.json(); } catch (e) {}
           if (!res.ok) {

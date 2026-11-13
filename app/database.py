@@ -89,6 +89,16 @@ CREATE TABLE IF NOT EXISTS users (
     created_at            INTEGER NOT NULL
 );
 
+-- Долгоживущая сессия Mini App. Telegram не обновляет initData в уже
+-- открытом WebView, поэтому после её суточного срока клиент присылает
+-- непрозрачный токен (в БД хранится только SHA-256).
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    token_hash   TEXT PRIMARY KEY,
+    telegram_id  INTEGER NOT NULL,
+    created_at   INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS trainings (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
     title                 TEXT NOT NULL,
@@ -305,6 +315,8 @@ CREATE TABLE IF NOT EXISTS event_coauthors (
 
 CREATE INDEX IF NOT EXISTS idx_matches_start ON matches(start_at);
 CREATE INDEX IF NOT EXISTS idx_match_players_match ON match_players(match_id);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(telegram_id);
 
 CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_user, created_at);
 """
@@ -568,6 +580,34 @@ async def ensure_coach_user(telegram_id: int, first_name: str = "Тренер") 
 
 async def get_user(telegram_id: int) -> aiosqlite.Row | None:
     return await _fetchone("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
+
+
+async def create_auth_session(
+    token_hash: str, telegram_id: int, expires_at: int
+) -> None:
+    """Создаёт серверную сессию и попутно убирает просроченные."""
+    now = int(time.time())
+    await _execute("DELETE FROM auth_sessions WHERE expires_at <= ?", (now,))
+    await _execute(
+        "INSERT OR REPLACE INTO auth_sessions "
+        "(token_hash, telegram_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+        (token_hash, telegram_id, now, expires_at),
+    )
+
+
+async def get_auth_session(token_hash: str) -> aiosqlite.Row | None:
+    """Возвращает живую сессию; просроченную удаляет лениво."""
+    row = await _fetchone(
+        "SELECT * FROM auth_sessions WHERE token_hash = ?", (token_hash,)
+    )
+    if row is not None and int(row["expires_at"]) <= int(time.time()):
+        await delete_auth_session(token_hash)
+        return None
+    return row
+
+
+async def delete_auth_session(token_hash: str) -> None:
+    await _execute("DELETE FROM auth_sessions WHERE token_hash = ?", (token_hash,))
 
 
 async def set_user_avatar(telegram_id: int, file_id: str) -> None:
@@ -935,6 +975,7 @@ async def delete_user_data(telegram_id: int) -> None:
                 ("UPDATE coaches SET added_by = NULL WHERE added_by = ?", (telegram_id,)),
                 ("UPDATE trainings SET created_by = NULL WHERE created_by = ?", (telegram_id,)),
                 ("UPDATE trainings SET deleted_by = NULL WHERE deleted_by = ?", (telegram_id,)),
+                ("DELETE FROM auth_sessions WHERE telegram_id = ?", (telegram_id,)),
                 ("DELETE FROM users WHERE telegram_id = ?", (telegram_id,)),
             ):
                 await db.execute(sql, params)
