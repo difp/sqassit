@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from app import avatars
-from app.avatars import AvatarCache, avatar_version, sniff_media_type
+from app.avatars import AvatarCache, avatar_version, shrink_avatar, sniff_media_type
 
 
 def run(coro):
@@ -46,6 +48,62 @@ def test_avatar_version_is_stable_and_depends_on_file_id():
 )
 def test_sniff_media_type(content, expected):
     assert sniff_media_type(content) == expected
+
+
+# --------------------------------------------------------------------------- #
+# Сжатие аватарок
+# --------------------------------------------------------------------------- #
+
+def _image_bytes(size, fmt="JPEG", mode="RGB", color=(120, 60, 30)):
+    buffer = BytesIO()
+    Image.new(mode, size, color).save(buffer, format=fmt)
+    return buffer.getvalue()
+
+
+def test_shrink_avatar_downsizes_and_converts_to_webp():
+    original = _image_bytes((900, 700), "JPEG")
+
+    content, media_type = shrink_avatar(original, "image/jpeg")
+
+    assert media_type == "image/webp"
+    assert len(content) < len(original)
+    with Image.open(BytesIO(content)) as image:
+        assert max(image.size) <= avatars.AVATAR_MAX_SIDE
+
+
+def test_shrink_avatar_keeps_transparency():
+    original = _image_bytes((600, 600), "PNG", "RGBA", (0, 0, 0, 0))
+
+    content, media_type = shrink_avatar(original, "image/png")
+
+    assert media_type == "image/webp"
+    with Image.open(BytesIO(content)) as image:
+        assert image.mode in ("RGBA", "LA")
+
+
+def test_shrink_avatar_passes_small_webp_through():
+    original = _image_bytes((64, 64), "WEBP")
+
+    assert shrink_avatar(original, "image/webp") == (original, "image/webp")
+
+
+def test_shrink_avatar_keeps_gif_animation():
+    original = b"GIF89a-not-really"
+
+    assert shrink_avatar(original, "image/gif") == (original, "image/gif")
+
+
+def test_shrink_avatar_falls_back_on_broken_image():
+    original = b"\xff\xd8\xffbroken"
+
+    assert shrink_avatar(original, "image/jpeg") == (original, "image/jpeg")
+
+
+def test_shrink_avatar_falls_back_when_webp_is_bigger(monkeypatch):
+    original = _image_bytes((900, 700), "JPEG")
+    monkeypatch.setattr(avatars, "_encode_webp", lambda image: b"x" * len(original))
+
+    assert shrink_avatar(original, "image/jpeg") == (original, "image/jpeg")
 
 
 # --------------------------------------------------------------------------- #

@@ -25,11 +25,23 @@ import uuid
 from collections import OrderedDict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from io import BytesIO
 from pathlib import Path
 from typing import Final
 
+from PIL import Image, ImageOps
+
 # Срок жизни ссылки на аватарку. Стабильный URL — основа браузерного кэша.
 AVATAR_URL_TTL_SECONDS: Final = 7 * 24 * 60 * 60
+
+# Версия обработки картинки. Меняйте при смене размера/формата, чтобы новые
+# URL не совпали со старыми кэшами (у клиентов и на диске сервера).
+AVATAR_RENDER_VERSION: Final = "2"
+
+# Аватарка в интерфейсе не больше 56 px; 256 px хватает для Retina с запасом,
+# а по весу это обычно 5–15 КБ вместо 50–130 КБ исходника из Telegram.
+AVATAR_MAX_SIDE: Final = 256
+AVATAR_WEBP_QUALITY: Final = 82
 
 _MAX_MEMORY_ENTRIES: Final = 128
 _MAX_DISK_BYTES: Final = 200 * 1024 * 1024
@@ -40,11 +52,54 @@ _MAX_LOCKS: Final = 1024
 
 
 def avatar_version(secret: str, telegram_id: int, file_id: str | None) -> str:
-    """Короткая версия аватарки: меняется только вместе с ``file_id``."""
-    payload = f"avatar-version:{int(telegram_id)}:{file_id or 'none'}"
+    """Короткая версия аватарки: меняется вместе с ``file_id`` и обработкой."""
+    payload = (
+        f"avatar-version:{AVATAR_RENDER_VERSION}:{int(telegram_id)}:{file_id or 'none'}"
+    )
     return hmac.new(
         secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
     ).hexdigest()[:12]
+
+
+def _has_alpha(image: Image.Image) -> bool:
+    return image.mode in ("RGBA", "LA") or (
+        image.mode == "P" and "transparency" in image.info
+    )
+
+
+def _encode_webp(image: Image.Image) -> bytes:
+    buffer = BytesIO()
+    image.save(buffer, format="WEBP", quality=AVATAR_WEBP_QUALITY, method=4)
+    return buffer.getvalue()
+
+
+def shrink_avatar(content: bytes, media_type: str) -> tuple[bytes, str]:
+    """Уменьшает аватарку до 256 px и перекодирует в WebP.
+
+    Первый экран тянет десяток аватарок, поэтому исходники из Telegram
+    (50–130 КБ) — заметная часть загрузки на мобильной сети. GIF не трогаем:
+    перекодирование убило бы анимацию. При любой ошибке возвращаем исходные
+    байты: картинка важнее экономии трафика.
+    """
+    if media_type == "image/gif":
+        return content, media_type
+    try:
+        with Image.open(BytesIO(content)) as raw:
+            image = ImageOps.exif_transpose(raw)
+            if (
+                media_type == "image/webp"
+                and image.width <= AVATAR_MAX_SIDE
+                and image.height <= AVATAR_MAX_SIDE
+            ):
+                return content, media_type
+            image = image.convert("RGBA" if _has_alpha(image) else "RGB")
+            image.thumbnail((AVATAR_MAX_SIDE, AVATAR_MAX_SIDE), Image.LANCZOS)
+            encoded = _encode_webp(image)
+    except Exception:  # noqa: BLE001 - битый файл не должен ломать ответ
+        return content, media_type
+    if not encoded or len(encoded) >= len(content):
+        return content, media_type
+    return encoded, "image/webp"
 
 
 def sniff_media_type(content: bytes) -> str:

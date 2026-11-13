@@ -46,6 +46,7 @@ from .avatars import (
     AVATAR_URL_TTL_SECONDS,
     AvatarCache,
     avatar_version,
+    shrink_avatar,
     sniff_media_type,
 )
 from .config import (
@@ -4458,7 +4459,7 @@ async def _download_avatar(
             "Аватарка %s слишком большая: %d байт", telegram_id, len(content)
         )
         raise HTTPException(status_code=502, detail="Аватарка слишком большая.")
-    return content, sniff_media_type(content)
+    return shrink_avatar(content, sniff_media_type(content))
 
 
 async def _serve_avatar(
