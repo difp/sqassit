@@ -95,22 +95,36 @@ ENABLE_API_DOCS=false
 sudo tee /etc/systemd/system/sqassit.service >/dev/null <<'EOF'
 [Unit]
 Description=Squash-Bot Telegram Web App
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=sqassit
+Group=sqassit
 WorkingDirectory=/opt/sqassit
 EnvironmentFile=/opt/sqassit/.env
 ExecStart=/opt/sqassit/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers
 Restart=always
 RestartSec=5
 
+# Файлы БД и кэша создаются только владельцем.
+UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
+ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/opt/sqassit/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
 
 [Install]
 WantedBy=multi-user.target
@@ -155,6 +169,45 @@ sudo systemctl reload nginx
 # сертификат Let's Encrypt + редирект на HTTPS
 sudo certbot --nginx -d app.example.com
 ```
+
+### 6.1. Сжатие, HSTS и защита от флуда
+
+`certbot` создаёт блок `listen 443 ssl`. Добавьте в него HTTP/2, HSTS и
+ограничение частоты запросов; `gzip` и зона `limit_req` объявляются на уровне
+`http` (файл сайта подключается именно туда).
+
+```nginx
+# верх файла сайта, вне server { }
+server_tokens off;
+gzip on;
+gzip_vary on;
+gzip_min_length 1024;
+gzip_comp_level 6;
+gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+limit_req_zone $binary_remote_addr zone=sqassit_api:10m rate=15r/s;
+
+server {
+    listen 443 ssl http2;
+    server_name app.example.com;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    location / {
+        limit_req zone=sqassit_api burst=40 nodelay;
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+`sudo nginx -t && sudo systemctl reload nginx`.
+
+> One-shot скрипт деплоя вносит эти директивы идемпотентно, делает бэкап
+> конфига и откатывается, если `nginx -t` не проходит.
 
 Проверка:
 
@@ -206,7 +259,9 @@ cd /opt/sqassit
 sudo -u sqassit make backup
 ```
 
-Cron от пользователя `sqassit` (ежедневно в 03:30):
+`make backup` использует SQLite backup API, а не `cp`: копия остаётся
+консистентной даже во время записи в WAL. Cron от пользователя `sqassit`
+(ежедневно в 03:30):
 
 ```cron
 30 3 * * * cd /opt/sqassit && make backup >> /opt/sqassit/backup.log 2>&1
@@ -218,13 +273,28 @@ Cron от пользователя `sqassit` (ежедневно в 03:30):
 
 ## 10. Обновление
 
+Релиз деплоится только на неизменяемый SHA из `main`:
+
 ```bash
 cd /opt/sqassit
-sudo -u sqassit git pull
-sudo -u sqassit make install-prod
+sudo -u sqassit git fetch origin main
+SHA=$(git rev-parse origin/main)
+sudo -u sqassit git reset --hard "$SHA"
+sudo -u sqassit .venv/bin/pip install -q -r requirements.txt
 sudo systemctl restart sqassit
-curl -fsS http://127.0.0.1:8000/readyz
 ```
+
+Деплой-скрипт дополнительно:
+
+1. делает бэкап БД через SQLite backup API (`PRAGMA integrity_check`);
+2. ждёт `/healthz` до 60 секунд;
+3. при неудаче откатывается на предыдущий SHA, перезапускается и снова
+   проверяет здоровье;
+4. только после успеха применяет конфиг nginx (`nginx -t` с бэкапом и
+   откатом).
+
+`/readyz` зависит от доступности Telegram через `BOT_PROXY`; кратковременный
+503 там не считается провалом релиза, но пишется в лог деплоя.
 
 ## Логи и диагностика
 

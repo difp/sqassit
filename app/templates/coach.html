@@ -368,6 +368,12 @@ const coachChatSheet = document.getElementById('coach-chat-sheet');
 const coachChatLog = document.getElementById('coach-chat-log');
 let CHAT_USER = null;
 let CHAT_NAME = '';
+const COACH_CHAT_PAGE_SIZE = 30;
+let CHAT_BEFORE = null;
+let CHAT_LAST_ID = 0;
+let CHAT_HAS_MORE = false;
+let CHAT_POLL = null;
+let CHAT_PENDING = null;
 const dateInput = sheet.querySelector('[name="date"]');
 const timeField = dateInput.closest('.row2').querySelectorAll('.field')[1];
 const periodStart = sheet.querySelector('[name="period_start"]');
@@ -1656,29 +1662,105 @@ async function loadMessages() {
             <div style="font-weight:600">${esc(c.first_name)}</div>
             <div class="hint" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.last_text)}</div>
           </div>
+          ${c.unread ? `<span class="chat-unread">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}
         </button>`).join('')
       : '<div class="empty empty--inline"><div>Личных чатов пока нет. Напишите игроку из карточки.</div></div>';
   } catch (e) { box.innerHTML = `<div class="hint">${esc(e.message)}</div>`; }
 }
+
+function coachChatDraftKey() { return 'sqassit:coach-draft:' + (CHAT_USER || ''); }
+function saveCoachDraft() {
+  try {
+    const value = document.getElementById('coach-chat-text').value;
+    if (value.trim()) localStorage.setItem(coachChatDraftKey(), value);
+    else localStorage.removeItem(coachChatDraftKey());
+  } catch (e) { /* приватный режим */ }
+}
+function restoreCoachDraft() {
+  try {
+    document.getElementById('coach-chat-text').value =
+      localStorage.getItem(coachChatDraftKey()) || '';
+  } catch (e) { /* приватный режим */ }
+}
+function syncCoachLoadEarlier() {
+  let btn = coachChatLog.querySelector('.chat-load-earlier');
+  if (CHAT_HAS_MORE && !btn) {
+    btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'chat-load-earlier';
+    btn.textContent = 'Показать раньше';
+    btn.addEventListener('click', () => loadCoachChat(true));
+    coachChatLog.prepend(btn);
+  } else if (!CHAT_HAS_MORE && btn) {
+    btn.remove();
+  }
+}
 async function openCoachChat(userId, name) {
   CHAT_USER = userId;
   CHAT_NAME = name || 'Игрок';
+  CHAT_BEFORE = null;
+  CHAT_LAST_ID = 0;
+  CHAT_HAS_MORE = false;
+  CHAT_PENDING = null;
   document.getElementById('coach-chat-title').textContent = `Чат: ${CHAT_NAME}`;
   coachChatSheet.classList.add('is-open');
+  restoreCoachDraft();
   await loadCoachChat();
+  startCoachChatPolling();
   setTimeout(() => document.getElementById('coach-chat-text').focus(), 150);
 }
-async function loadCoachChat() {
-  coachChatLog.innerHTML = '<div class="chat-empty">Загружаем переписку…</div>';
+async function loadCoachChat(older = false) {
+  if (!CHAT_USER) return;
+  if (!older) coachChatLog.innerHTML = '<div class="chat-empty">Загружаем переписку…</div>';
+  const params = new URLSearchParams({ limit: String(COACH_CHAT_PAGE_SIZE) });
+  if (older && CHAT_BEFORE) params.set('before_id', String(CHAT_BEFORE));
   try {
-    const data = await api(`/api/coach/messages/${CHAT_USER}`);
-    coachChatLog.innerHTML = data.messages.length
-      ? data.messages.map(m => `<div class="chat-bubble ${m.from_me ? 'chat-bubble--me' : ''}">${esc(m.text)}</div>`).join('')
-      : '<div class="chat-empty">Сообщений пока нет. Напишите первым.</div>';
-    coachChatLog.scrollTop = coachChatLog.scrollHeight;
-  } catch (e) { coachChatLog.innerHTML = `<div class="chat-empty">${esc(e.message)}</div>`; }
+    const data = await api(`/api/coach/messages/${CHAT_USER}?${params.toString()}`);
+    if (older) {
+      const prevHeight = coachChatLog.scrollHeight;
+      coachChatLog.insertAdjacentHTML('afterbegin', chatMessagesHtml(data.messages, ''));
+      coachChatLog.scrollTop = coachChatLog.scrollHeight - prevHeight;
+    } else {
+      coachChatLog.innerHTML = chatMessagesHtml(data.messages, 'Сообщений пока нет. Напишите первым.');
+      coachChatLog.scrollTop = coachChatLog.scrollHeight;
+    }
+    if (data.messages.length) {
+      CHAT_BEFORE = data.messages[0].id;
+      CHAT_LAST_ID = Math.max(CHAT_LAST_ID, data.messages[data.messages.length - 1].id);
+    }
+    CHAT_HAS_MORE = data.has_more;
+    syncCoachLoadEarlier();
+    loadMessages();
+  } catch (e) {
+    if (!older) coachChatLog.innerHTML = `<div class="chat-empty">${esc(e.message)}</div>`;
+    else toast(e.message);
+  }
 }
-document.querySelector('[data-coach-chat-close]').addEventListener('click', () => coachChatSheet.classList.remove('is-open'));
+async function pollCoachChat() {
+  if (document.hidden || !CHAT_USER || !coachChatSheet.classList.contains('is-open')) return;
+  try {
+    const data = await api(`/api/coach/messages/${CHAT_USER}?after_id=${CHAT_LAST_ID}`);
+    if (data.messages.length) {
+      coachChatLog.insertAdjacentHTML('beforeend', chatMessagesHtml(data.messages, ''));
+      coachChatLog.scrollTop = coachChatLog.scrollHeight;
+      CHAT_LAST_ID = data.messages[data.messages.length - 1].id;
+    }
+  } catch (e) { /* следующий опрос повторит */ }
+}
+function startCoachChatPolling() {
+  stopCoachChatPolling();
+  CHAT_POLL = setInterval(pollCoachChat, 15000);
+}
+function stopCoachChatPolling() {
+  if (CHAT_POLL) clearInterval(CHAT_POLL);
+  CHAT_POLL = null;
+}
+document.querySelector('[data-coach-chat-close]').addEventListener('click', () => {
+  saveCoachDraft();
+  stopCoachChatPolling();
+  coachChatSheet.classList.remove('is-open');
+});
+document.getElementById('coach-chat-text').addEventListener('input', saveCoachDraft);
 document.getElementById('messages-list').addEventListener('click', (ev) => {
   const el = ev.target.closest('[data-chat-user]');
   if (el) openCoachChat(parseInt(el.getAttribute('data-chat-user'), 10), el.getAttribute('data-chat-name') || '');
@@ -1687,16 +1769,48 @@ document.getElementById('coach-chat-send').addEventListener('click', async () =>
   const ta = document.getElementById('coach-chat-text');
   const text = ta.value.trim();
   if (!text || !CHAT_USER) return;
+  if (!CHAT_PENDING || CHAT_PENDING.text !== text) {
+    CHAT_PENDING = { text, client_id: newClientId() };
+  }
   const btn = document.getElementById('coach-chat-send');
   btn.disabled = true;
   try {
-    await api(`/api/coach/messages/${CHAT_USER}`, 'POST', { text });
+    const data = await api(`/api/coach/messages/${CHAT_USER}`, 'POST', {
+      text, client_id: CHAT_PENDING.client_id,
+    });
     ta.value = '';
-    await loadCoachChat();
+    CHAT_PENDING = null;
+    saveCoachDraft();
+    if (!data.duplicate) {
+      const empty = coachChatLog.querySelector('.chat-empty');
+      if (empty) empty.remove();
+      coachChatLog.insertAdjacentHTML('beforeend', chatMessagesHtml([
+        { id: data.message_id, from_me: true, text, created_at: Math.floor(Date.now() / 1000) },
+      ], ''));
+      coachChatLog.scrollTop = coachChatLog.scrollHeight;
+      CHAT_LAST_ID = Math.max(CHAT_LAST_ID, data.message_id || 0);
+    }
     loadMessages();
   } catch (e) { toast(e.message); }
   finally { btn.disabled = false; }
 });
+setInterval(() => { if (!document.hidden) loadMessages(); }, 60000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    loadMessages();
+    pollCoachChat();
+  }
+});
+
+// Ссылка из уведомления открывает переписку с конкретным игроком.
+async function openRequestedChat() {
+  const value = new URLSearchParams(location.search).get('chat');
+  if (!value || !/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) return;
+  await HYDRATION;
+  const conversation = document.querySelector(`[data-chat-user="${value}"]`);
+  const name = conversation ? conversation.getAttribute('data-chat-name') : '';
+  await openCoachChat(Number(value), name || 'Игрок');
+}
 
 // ===== CRM =====
 function playerRow(p) {
@@ -2130,6 +2244,7 @@ async function openRequestedTraining() {
       await loadView();
       hideAppLoader();
       await openRequestedTraining();
+      await openRequestedChat();
       const background = [loadPlayersCount(), loadProfile(), loadMessages()];
       if (IS_MANAGER) {
         document.getElementById('coaches-section').hidden = false;

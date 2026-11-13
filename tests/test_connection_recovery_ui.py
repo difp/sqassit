@@ -8,9 +8,11 @@ BASE = Path(__file__).resolve().parents[1] / "app" / "templates" / "base.html"
 def test_get_requests_retry_but_mutations_do_not() -> None:
     html = BASE.read_text()
 
-    assert "const GET_RETRY_DELAYS_MS = [0, 1000, 2500];" in html
+    assert "const GET_RETRY_DELAYS_MS = [0, 900];" in html
     assert "const retryDelays = method.toUpperCase() === 'GET' ? GET_RETRY_DELAYS_MS : [0];" in html
     assert "isRetryableRequestError" in html
+    # Две попытки по 6 с: пользователь не ждёт 45 секунд молчаливого экрана.
+    assert "setTimeout(() => controller.abort(), 6000)" in html
 
 
 def test_connection_error_can_recover_without_webview_reload() -> None:
@@ -27,6 +29,7 @@ def test_connection_error_can_recover_without_webview_reload() -> None:
 def test_stuck_bfcache_page_reloads_once() -> None:
     html = BASE.read_text()
 
-    # Telegram iOS может восстановить WebView до окончания загрузки:
-    # стартовый экран на месте — перезагружаем страницу.
-    assert "event.persisted && document.getElementById('app-loader')" in html
+    # Перезагрузка из bfcache давала лишний пустой экран; вместо неё
+    # стартовый экран снимается watchdog'ом через 4 секунды.
+    assert "event.persisted" not in html
+    assert "setTimeout(hideAppLoader, 4000);" in html

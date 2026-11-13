@@ -1,0 +1,35 @@
+[Unit]
+Description=Squash-Bot Telegram Web App
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sqassit
+Group=sqassit
+WorkingDirectory=/opt/sqassit
+EnvironmentFile=/opt/sqassit/.env
+ExecStart=/opt/sqassit/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers
+Restart=always
+RestartSec=5
+
+# Файлы БД и логов создаются только владельцем.
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/sqassit/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

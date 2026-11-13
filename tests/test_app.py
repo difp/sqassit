@@ -4239,6 +4239,41 @@ def test_message_conflicts_peer_scope_and_unread(client):
     assert [m["text"] for m in fresh] == ["Ещё"]
 
 
+def test_message_to_secondary_coach(client):
+    assert client.get("/api/me", headers=COACH).status_code == 200
+    assert client.get("/api/me", headers=COACH2).status_code == 200
+    assert client.post(
+        "/api/coach/coaches", headers=COACH, json={"telegram_id": 777}
+    ).status_code == 200
+
+    assert client.post(
+        "/api/messages/coach",
+        headers=PLAYER,
+        json={"text": "Второму тренеру", "peer_id": 777},
+    ).json()["ok"] is True
+    thread = client.get("/api/messages/thread?peer_id=777", headers=PLAYER).json()
+    assert [m["text"] for m in thread["messages"]] == ["Второму тренеру"]
+    # У основного тренера отдельная переписка — сообщение туда не попало.
+    assert client.get("/api/messages/thread", headers=PLAYER).json()["messages"] == []
+
+    assert client.post(
+        "/api/messages/coach",
+        headers=PLAYER,
+        json={"text": "Никому", "peer_id": 999},
+    ).status_code == 404
+
+
+def test_thread_peer_resolved_from_training(client):
+    tid = _create_training(client, day=12, time_str="09:00")
+    data = client.get(
+        f"/api/messages/thread?training_id={tid}", headers=PLAYER
+    ).json()
+    assert data["peer_id"] == 123
+    assert client.get(
+        "/api/messages/thread?training_id=99999", headers=PLAYER
+    ).status_code == 404
+
+
 def test_html_etag_and_api_no_store(client):
     first = client.get("/")
     etag = first.headers["etag"]

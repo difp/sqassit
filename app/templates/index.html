@@ -19,7 +19,7 @@
 </section>
 <div class="profile-actions">
   <button class="btn btn--sm" id="profile-edit" type="button">Настроить профиль</button>
-  <button class="btn btn--sm" id="profile-msg" type="button">Написать тренеру</button>
+  <button class="btn btn--sm" id="profile-msg" type="button">Написать тренеру<span class="chat-unread" id="msg-unread" hidden></span></button>
 </div>
 <div style="height:18px"></div>
 
@@ -534,47 +534,180 @@ document.addEventListener('keydown', ev => {
 
 // ===== Личное сообщение тренеру =====
 const msgSheet = document.getElementById('msg-sheet');
+const MSG_PAGE_SIZE = 30;
 let MSG_TRAINING = null;
-async function loadMsgThread() {
-  const log = document.getElementById('msg-log');
-  log.innerHTML = '<div class="chat-empty">Загружаем переписку…</div>';
+let MSG_PEER = null;
+let MSG_BEFORE = null;
+let MSG_LAST_ID = 0;
+let MSG_HAS_MORE = false;
+let MSG_POLL = null;
+let MSG_PENDING = null;  // {text, client_id} — ключ повтора той же отправки
+
+function msgLog() { return document.getElementById('msg-log'); }
+
+function msgDraftKey() {
+  return 'sqassit:draft:' + (MSG_PEER || 'main');
+}
+function saveMsgDraft() {
   try {
-    const data = await api('/api/messages/thread');
-    log.innerHTML = data.messages.length
-      ? data.messages.map(m => `<div class="chat-bubble ${m.from_me ? 'chat-bubble--me' : ''}">${esc(m.text)}</div>`).join('')
-      : '<div class="chat-empty">Напишите тренеру — ответ появится здесь.</div>';
-    log.scrollTop = log.scrollHeight;
-  } catch (e) {
-    log.innerHTML = `<div class="chat-empty">${esc(e.message)}</div>`;
+    const value = document.getElementById('msg-text').value;
+    if (value.trim()) localStorage.setItem(msgDraftKey(), value);
+    else localStorage.removeItem(msgDraftKey());
+  } catch (e) { /* приватный режим */ }
+}
+function restoreMsgDraft() {
+  try {
+    const ta = document.getElementById('msg-text');
+    ta.value = localStorage.getItem(msgDraftKey()) || '';
+  } catch (e) { /* приватный режим */ }
+}
+
+function syncLoadEarlier() {
+  const log = msgLog();
+  let btn = log.querySelector('.chat-load-earlier');
+  if (MSG_HAS_MORE && !btn) {
+    btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'chat-load-earlier';
+    btn.textContent = 'Показать раньше';
+    btn.addEventListener('click', () => loadMsgThread(true));
+    log.prepend(btn);
+  } else if (!MSG_HAS_MORE && btn) {
+    btn.remove();
   }
 }
-function openMsg(trainingId) {
+
+async function loadMsgThread(older = false) {
+  const log = msgLog();
+  if (!older) log.innerHTML = '<div class="chat-empty">Загружаем переписку…</div>';
+  const params = new URLSearchParams();
+  params.set('limit', String(MSG_PAGE_SIZE));
+  if (MSG_TRAINING) params.set('training_id', String(MSG_TRAINING));
+  else if (MSG_PEER) params.set('peer_id', String(MSG_PEER));
+  if (older && MSG_BEFORE) params.set('before_id', String(MSG_BEFORE));
+  try {
+    const data = await api('/api/messages/thread?' + params.toString());
+    MSG_PEER = data.peer_id;
+    if (older) {
+      const prevHeight = log.scrollHeight;
+      log.insertAdjacentHTML('afterbegin', chatMessagesHtml(data.messages, ''));
+      log.scrollTop = log.scrollHeight - prevHeight;
+    } else {
+      log.innerHTML = chatMessagesHtml(data.messages, 'Напишите тренеру — ответ появится здесь.');
+      log.scrollTop = log.scrollHeight;
+    }
+    if (data.messages.length) {
+      MSG_BEFORE = data.messages[0].id;
+      MSG_LAST_ID = Math.max(MSG_LAST_ID, data.messages[data.messages.length - 1].id);
+    }
+    MSG_HAS_MORE = data.has_more;
+    syncLoadEarlier();
+    syncMsgUnread();
+  } catch (e) {
+    if (!older) log.innerHTML = `<div class="chat-empty">${esc(e.message)}</div>`;
+    else toast(e.message);
+  }
+}
+
+async function pollMsgThread() {
+  if (document.hidden || !msgSheet.classList.contains('is-open') || !MSG_PEER) return;
+  try {
+    const data = await api(
+      `/api/messages/thread?peer_id=${encodeURIComponent(MSG_PEER)}&after_id=${MSG_LAST_ID}`
+    );
+    if (data.messages.length) {
+      const log = msgLog();
+      log.insertAdjacentHTML('beforeend', chatMessagesHtml(data.messages, ''));
+      log.scrollTop = log.scrollHeight;
+      MSG_LAST_ID = data.messages[data.messages.length - 1].id;
+    }
+    syncMsgUnread();
+  } catch (e) { /* следующий опрос повторит */ }
+}
+
+function startMsgPolling() {
+  stopMsgPolling();
+  MSG_POLL = setInterval(pollMsgThread, 15000);
+}
+function stopMsgPolling() {
+  if (MSG_POLL) clearInterval(MSG_POLL);
+  MSG_POLL = null;
+}
+
+function openMsg(trainingId, peerId) {
   MSG_TRAINING = trainingId || null;
+  MSG_PEER = peerId || null;
+  MSG_BEFORE = null;
+  MSG_LAST_ID = 0;
+  MSG_HAS_MORE = false;
+  MSG_PENDING = null;
   msgSheet.classList.add('is-open');
   haptic('light');
+  restoreMsgDraft();
   loadMsgThread();
+  startMsgPolling();
   setTimeout(() => document.getElementById('msg-text').focus(), 150);
 }
-function closeMsg() { msgSheet.classList.remove('is-open'); }
+function closeMsg() {
+  saveMsgDraft();
+  stopMsgPolling();
+  msgSheet.classList.remove('is-open');
+}
 document.querySelector('[data-msg-close]').addEventListener('click', closeMsg);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMsg(); });
+document.getElementById('msg-text').addEventListener('input', saveMsgDraft);
 document.getElementById('msg-send').addEventListener('click', async () => {
   const ta = document.getElementById('msg-text');
   const text = ta.value.trim();
   if (!text) { toast('Введите сообщение'); return; }
+  // Ключ стабилен между повторами одного и того же текста: сервер не создаст дубль.
+  if (!MSG_PENDING || MSG_PENDING.text !== text) {
+    MSG_PENDING = { text, client_id: newClientId() };
+  }
   const btn = document.getElementById('msg-send');
   btn.disabled = true;
   try {
-    await api('/api/messages/coach', 'POST', { text, training_id: MSG_TRAINING });
+    const body = { text, training_id: MSG_TRAINING, peer_id: MSG_PEER, client_id: MSG_PENDING.client_id };
+    const data = await api('/api/messages/coach', 'POST', body);
     hapticNotify('success');
     toast('Сообщение отправлено');
     ta.value = '';
-    await loadMsgThread();
+    MSG_PENDING = null;
+    saveMsgDraft();
+    if (!data.duplicate) {
+      const log = msgLog();
+      const empty = log.querySelector('.chat-empty');
+      if (empty) empty.remove();
+      const now = Math.floor(Date.now() / 1000);
+      log.insertAdjacentHTML('beforeend', chatMessagesHtml([
+        { id: data.message_id, from_me: true, text, created_at: now },
+      ], ''));
+      log.scrollTop = log.scrollHeight;
+      MSG_LAST_ID = Math.max(MSG_LAST_ID, data.message_id || 0);
+    }
   } catch (e) {
     hapticNotify('error');
     toast(e.message);
   } finally {
     btn.disabled = false;
+  }
+});
+
+// Бейдж непрочитанных у кнопки «Написать тренеру».
+async function syncMsgUnread() {
+  const badge = document.getElementById('msg-unread');
+  if (!badge) return;
+  try {
+    const data = await api('/api/messages/unread');
+    badge.hidden = !data.count;
+    badge.textContent = data.count > 99 ? '99+' : String(data.count);
+  } catch (e) { /* бейдж не критичен */ }
+}
+setInterval(() => { if (!document.hidden) syncMsgUnread(); }, 60000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    syncMsgUnread();
+    pollMsgThread();
   }
 });
 
@@ -782,11 +915,24 @@ document.addEventListener('visibilitychange', () => {
 window.PAGE_REFRESH = async () => {
   await APP.refresh();
   await Promise.all([loadProfile(), loadSchedule(), loadTournamentHistory()]);
+  syncMsgUnread();
 };
 
-Promise.allSettled([loadProfile(), loadSchedule(), loadTournamentHistory()]).then(() => {
+// Экран загрузки снимаем, как только отрисовано расписание: профиль и история
+// догружаются в фоне и не должны задерживать первый экран.
+Promise.allSettled([loadSchedule()]).then(() => {
   hideAppLoader();
+  syncMsgUnread();
   const params = new URLSearchParams(location.search);
+  // Переход из уведомления в боте сразу открывает нужный чат.
+  const chat = params.get('chat');
+  if (chat && /^[1-9]\d*$/.test(chat)) {
+    params.delete('chat');
+    const query = params.toString();
+    history.replaceState(history.state, '', location.pathname + (query ? '?' + query : '') + location.hash);
+    openMsg(null, parseInt(chat, 10));
+    return;
+  }
   const tournament = params.get('tournament');
   if (tournament && /^[1-9]\d*$/.test(tournament)) {
     params.delete('tournament');
@@ -797,5 +943,6 @@ Promise.allSettled([loadProfile(), loadSchedule(), loadTournamentHistory()]).the
     setTimeout(maybeShowOnboarding, 350);
   }
 });
+Promise.allSettled([loadProfile(), loadTournamentHistory()]);
 </script>
 {% endblock %}

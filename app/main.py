@@ -638,6 +638,8 @@ class ApplyIn(BaseModel):
 class MessageIn(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
     training_id: int | None = None
+    # Собеседник, если чат открыт не с основным тренером (ссылка из уведомления).
+    peer_id: int | None = None
     # Клиентский ключ идемпотентности: повтор с тем же значением не дублирует сообщение.
     client_id: str = Field(default="", max_length=64)
 
@@ -2358,6 +2360,13 @@ async def api_message_coach(payload: MessageIn, user: Annotated[dict, Depends(cu
 
     # Сообщение уходит тренеру того занятия, на карточке которого нажали «Написать».
     coach_id = settings.coach_telegram_id
+    if payload.peer_id is not None and payload.training_id is None:
+        if (
+            payload.peer_id != settings.coach_telegram_id
+            and not await db.is_coach_id(payload.peer_id)
+        ):
+            return error_json("Тренер не найден.", 404)
+        coach_id = payload.peer_id
     if payload.training_id is not None:
         training = await db.get_training(payload.training_id)
         if training is None or training["deleted_at"]:
@@ -2397,19 +2406,27 @@ def _serialize_chat_message(row: aiosqlite.Row, viewer_id: int) -> dict[str, Any
 async def api_player_thread(
     user: Annotated[dict, Depends(current_user)],
     peer_id: Annotated[int | None, Query(ge=1)] = None,
+    training_id: Annotated[int | None, Query(ge=1)] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     before_id: Annotated[int | None, Query(ge=1)] = None,
     after_id: Annotated[int | None, Query(ge=1)] = None,
 ):
-    """Переписка с тренером. peer_id обязателен, если тренеров несколько."""
+    """Переписка с тренером. Собеседник задаётся training_id или peer_id."""
     viewer_id = user["telegram_id"]
     peer = peer_id or settings.coach_telegram_id
-    if (
-        peer_id is not None
-        and peer_id != settings.coach_telegram_id
-        and not await db.is_coach_id(peer_id)
-    ):
-        return error_json("Тренер не найден.", 404)
+    if peer_id is not None and training_id is None:
+        if (
+            peer_id != settings.coach_telegram_id
+            and not await db.is_coach_id(peer_id)
+        ):
+            return error_json("Тренер не найден.", 404)
+    elif training_id is not None:
+        # Тренера занятия не отдаём клиенту как telegram_id: сервер сам
+        # определяет собеседника по тренировке.
+        training = await db.get_training(training_id)
+        if training is None or training["deleted_at"]:
+            return error_json("Тренировка не найдена.", 404)
+        peer = training["created_by"] or peer
     rows, has_more = await db.list_user_thread(
         viewer_id, peer_id=peer, limit=limit, before_id=before_id, after_id=after_id
     )
