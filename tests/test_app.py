@@ -2255,7 +2255,7 @@ def test_lifespan_webhook_startup(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(mainmod.db, "connect", no_db)
     monkeypatch.setattr(mainmod.db, "ensure_coach", no_db)
-    monkeypatch.setattr(mainmod.db, "upsert_user", no_db)
+    monkeypatch.setattr(mainmod.db, "ensure_coach_user", no_db)
     monkeypatch.setattr(mainmod.db, "close", no_db)
     monkeypatch.setattr(mainmod.bot_module, "create_bot", lambda: fake_bot)
     monkeypatch.setattr(mainmod.bot_module, "create_dispatcher", lambda: SimpleNamespace(resolve_used_update_types=lambda: ["message", "inline_query"]))
@@ -4253,8 +4253,22 @@ def test_message_to_secondary_coach(client):
     ).json()["ok"] is True
     thread = client.get("/api/messages/thread?peer_id=777", headers=PLAYER).json()
     assert [m["text"] for m in thread["messages"]] == ["Второму тренеру"]
+    assert thread["peer"]["first_name"] == "Второй тренер"
     # У основного тренера отдельная переписка — сообщение туда не попало.
     assert client.get("/api/messages/thread", headers=PLAYER).json()["messages"] == []
+
+    conversations = client.get("/api/messages/conversations", headers=PLAYER).json()["conversations"]
+    assert conversations[0]["telegram_id"] == 777
+    assert conversations[0]["last_text"] == "Второму тренеру"
+    assert conversations[0]["unread"] == 0  # чат уже открыт
+
+    coach_view = client.get("/api/coach/messages/555", headers=COACH).json()
+    assert coach_view["peer"]["telegram_id"] == 555
+    assert coach_view["peer"]["first_name"] == "Иван"
+    assert client.get("/api/coach/messages/999", headers=COACH).status_code == 404
+    # Собеседник без карточки (удалён) не ломает заголовок чата.
+    fallback = asyncio.run(mainmod._peer_coach_info(999))
+    assert fallback == {"telegram_id": 999, "first_name": "Тренер", "avatar_url": ""}
 
     assert client.post(
         "/api/messages/coach",

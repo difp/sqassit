@@ -557,6 +557,15 @@ async def upsert_user(
     )
 
 
+async def ensure_coach_user(telegram_id: int, first_name: str = "Тренер") -> None:
+    """Создаёт карточку владельца, не затирая имя, обновлённое из Telegram."""
+    await _execute(
+        "INSERT INTO users (telegram_id, username, first_name, is_coach, created_at) "
+        "VALUES (?, NULL, ?, 1, ?) ON CONFLICT(telegram_id) DO NOTHING",
+        (telegram_id, first_name, int(time.time())),
+    )
+
+
 async def get_user(telegram_id: int) -> aiosqlite.Row | None:
     return await _fetchone("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
 
@@ -1938,14 +1947,14 @@ async def unread_by_peer(user_id: int) -> dict[int, int]:
     return {int(row["peer_id"]): int(row["unread"]) for row in rows}
 
 
-async def list_coach_conversations(
-    coach_id: int, limit: int = 100
+async def list_conversations(
+    viewer_id: int, limit: int = 100
 ) -> list[dict[str, Any]]:
     """
-    Последнее сообщение по каждому игроку для панели тренера.
+    Последнее сообщение по каждому собеседнику.
 
     Один запрос вместо выгрузки всей переписки в память: MAX(id) по
-    собеседникам + JOIN на само сообщение и карточку игрока.
+    собеседникам + JOIN на само сообщение и карточку пользователя.
     """
     rows = await _fetchall(
         """
@@ -1965,13 +1974,20 @@ async def list_coach_conversations(
          ORDER BY p.last_id DESC
          LIMIT ?
         """,
-        (coach_id, coach_id, coach_id, limit),
+        (viewer_id, viewer_id, viewer_id, limit),
     )
-    unread = await unread_by_peer(coach_id)
+    unread = await unread_by_peer(viewer_id)
     return [
         {**dict(row), "unread": unread.get(int(row["other_id"]), 0)}
         for row in rows
     ]
+
+
+async def list_coach_conversations(
+    coach_id: int, limit: int = 100
+) -> list[dict[str, Any]]:
+    """Совместимый псевдоним: панель тренера и список игрока устроены одинаково."""
+    return await list_conversations(coach_id, limit)
 
 
 

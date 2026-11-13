@@ -160,6 +160,24 @@ def test_add_message_once_conflict_scopes_and_rollback(tmp_path):
 
 
 
+def test_ensure_coach_user_keeps_updated_name(tmp_path):
+    path = tmp_path / "coach-card.db"
+
+    async def scenario():
+        await db.connect(str(path))
+        try:
+            await db.ensure_coach_user(123)
+            row = await db.get_user(123)
+            assert row["first_name"] == "Тренер" and row["is_coach"] == 1
+            await db.upsert_user(123, "alex", "Алексей", is_coach=True)
+            await db.ensure_coach_user(123)
+            assert (await db.get_user(123))["first_name"] == "Алексей"
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
 def test_db_requires_initialization():
     asyncio.run(db.close())
     with pytest.raises(RuntimeError, match="не инициализирована"):

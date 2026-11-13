@@ -299,14 +299,15 @@
 <!-- Bottom sheet: чат тренера -->
 <div class="sheet" id="coach-chat-sheet">
   <div class="sheet__backdrop" data-coach-chat-close></div>
-  <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="coach-chat-title">
+  <div class="sheet__panel sheet__panel--chat" role="dialog" aria-modal="true" aria-labelledby="coach-chat-title">
+    <button class="sheet__close" type="button" data-coach-chat-close aria-label="Закрыть">×</button>
     <div class="sheet__handle"></div>
     <h2 class="sheet__title" id="coach-chat-title">Чат</h2>
     <p class="hint form-note">Личный чат. Виден только вам и игроку.</p>
-    <div class="chat-log" id="coach-chat-log"></div>
-    <textarea class="input" id="coach-chat-text" rows="3" maxlength="1000"
+    <div class="chat-log" id="coach-chat-log" role="log" aria-live="polite"></div>
+    <textarea class="input" id="coach-chat-text" rows="2" maxlength="1000"
               placeholder="Напишите игроку…"></textarea>
-    <button class="btn btn--primary btn--block" id="coach-chat-send" type="button" style="margin-top:12px">Отправить</button>
+    <button class="btn btn--primary btn--block" id="coach-chat-send" type="button" style="margin-top:10px">Отправить</button>
   </div>
 </div>
 
@@ -1657,12 +1658,15 @@ async function loadMessages() {
     box.innerHTML = data.conversations.length
       ? data.conversations.map(c => `
         <button type="button" class="card player-open chat-row" data-chat-user="${c.telegram_id}" data-chat-name="${esc(c.first_name)}">
-          ${avatarHtml(c.first_name, c.avatar_url, false)}
-          <div style="flex:1;min-width:0">
-            <div style="font-weight:600">${esc(c.first_name)}</div>
-            <div class="hint" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.last_text)}</div>
-          </div>
-          ${c.unread ? `<span class="chat-unread">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}
+          ${avatarHtml(c.first_name, c.avatar_url, false, c.avatar_emoji)}
+          <span class="chat-thread-row__body">
+            <span class="chat-thread-row__name">${esc(c.first_name)}</span>
+            <span class="chat-thread-row__last">${esc(chatPreview(c))}</span>
+          </span>
+          <span class="chat-thread-row__meta">
+            <span class="chat-thread-row__time">${c.last_at ? chatShortTime(c.last_at) : ''}</span>
+            ${c.unread ? `<span class="chat-unread">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}
+          </span>
         </button>`).join('')
       : '<div class="empty empty--inline"><div>Личных чатов пока нет. Напишите игроку из карточки.</div></div>';
   } catch (e) { box.innerHTML = `<div class="hint">${esc(e.message)}</div>`; }
@@ -1711,11 +1715,17 @@ async function openCoachChat(userId, name) {
 }
 async function loadCoachChat(older = false) {
   if (!CHAT_USER) return;
+  const earlier = older ? coachChatLog.querySelector('.chat-load-earlier') : null;
+  if (earlier) { earlier.disabled = true; earlier.textContent = 'Загружаем…'; }
   if (!older) coachChatLog.innerHTML = '<div class="chat-empty">Загружаем переписку…</div>';
   const params = new URLSearchParams({ limit: String(COACH_CHAT_PAGE_SIZE) });
   if (older && CHAT_BEFORE) params.set('before_id', String(CHAT_BEFORE));
   try {
     const data = await api(`/api/coach/messages/${CHAT_USER}?${params.toString()}`);
+    if (data.peer) {
+      CHAT_NAME = data.peer.first_name || CHAT_NAME;
+      document.getElementById('coach-chat-title').textContent = `Чат: ${CHAT_NAME}`;
+    }
     if (older) {
       const prevHeight = coachChatLog.scrollHeight;
       coachChatLog.insertAdjacentHTML('afterbegin', chatMessagesHtml(data.messages, ''));
@@ -1734,15 +1744,22 @@ async function loadCoachChat(older = false) {
   } catch (e) {
     if (!older) coachChatLog.innerHTML = `<div class="chat-empty">${esc(e.message)}</div>`;
     else toast(e.message);
+  } finally {
+    if (earlier && earlier.isConnected) {
+      earlier.disabled = false;
+      earlier.textContent = 'Показать раньше';
+    }
   }
 }
 async function pollCoachChat() {
   if (document.hidden || !CHAT_USER || !coachChatSheet.classList.contains('is-open')) return;
   try {
+    const atBottom =
+      coachChatLog.scrollHeight - coachChatLog.scrollTop - coachChatLog.clientHeight < 80;
     const data = await api(`/api/coach/messages/${CHAT_USER}?after_id=${CHAT_LAST_ID}`);
     if (data.messages.length) {
       coachChatLog.insertAdjacentHTML('beforeend', chatMessagesHtml(data.messages, ''));
-      coachChatLog.scrollTop = coachChatLog.scrollHeight;
+      if (atBottom) coachChatLog.scrollTop = coachChatLog.scrollHeight;
       CHAT_LAST_ID = data.messages[data.messages.length - 1].id;
     }
   } catch (e) { /* следующий опрос повторит */ }
@@ -1755,11 +1772,12 @@ function stopCoachChatPolling() {
   if (CHAT_POLL) clearInterval(CHAT_POLL);
   CHAT_POLL = null;
 }
-document.querySelector('[data-coach-chat-close]').addEventListener('click', () => {
-  saveCoachDraft();
-  stopCoachChatPolling();
-  coachChatSheet.classList.remove('is-open');
-});
+document.querySelectorAll('[data-coach-chat-close]').forEach(el =>
+  el.addEventListener('click', () => {
+    saveCoachDraft();
+    stopCoachChatPolling();
+    coachChatSheet.classList.remove('is-open');
+  }));
 document.getElementById('coach-chat-text').addEventListener('input', saveCoachDraft);
 document.getElementById('messages-list').addEventListener('click', (ev) => {
   const el = ev.target.closest('[data-chat-user]');
@@ -1774,6 +1792,7 @@ document.getElementById('coach-chat-send').addEventListener('click', async () =>
   }
   const btn = document.getElementById('coach-chat-send');
   btn.disabled = true;
+  btn.textContent = 'Отправка…';
   try {
     const data = await api(`/api/coach/messages/${CHAT_USER}`, 'POST', {
       text, client_id: CHAT_PENDING.client_id,
@@ -1792,7 +1811,7 @@ document.getElementById('coach-chat-send').addEventListener('click', async () =>
     }
     loadMessages();
   } catch (e) { toast(e.message); }
-  finally { btn.disabled = false; }
+  finally { btn.disabled = false; btn.textContent = 'Отправить'; }
 });
 setInterval(() => { if (!document.hidden) loadMessages(); }, 60000);
 document.addEventListener('visibilitychange', () => {
@@ -1809,6 +1828,10 @@ async function openRequestedChat() {
   await HYDRATION;
   const conversation = document.querySelector(`[data-chat-user="${value}"]`);
   const name = conversation ? conversation.getAttribute('data-chat-name') : '';
+  const params = new URLSearchParams(location.search);
+  params.delete('chat');
+  const query = params.toString();
+  history.replaceState(history.state, '', location.pathname + (query ? '?' + query : '') + location.hash);
   await openCoachChat(Number(value), name || 'Игрок');
 }
 

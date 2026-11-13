@@ -62,7 +62,7 @@ class PendingReplyFilter(BaseFilter):
 
 # Версия — часть URL Mini App. Меняем при исправлениях загрузки, чтобы Telegram
 # Web не переиспользовал iframe, закэшированный во время временной ошибки.
-WEB_APP_VERSION = "58"
+WEB_APP_VERSION = "59"
 
 
 def _web_app_url() -> str:

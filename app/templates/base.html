@@ -645,6 +645,48 @@
     }
     .sheet.is-open .sheet__panel { transform: translateY(0); }
     .sheet__handle { width: 36px; height: 4px; border-radius: 2px; background: var(--surface-3); margin: 6px auto 14px; }
+    .sheet__close {
+      position: absolute; top: 10px; right: 12px; z-index: 3;
+      width: 34px; height: 34px; border: 0; border-radius: 50%;
+      background: var(--surface-2); color: var(--text-2);
+      font-size: 22px; line-height: 1; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .sheet__close:active { opacity: .65; }
+    .sheet__panel--chat {
+      display: flex; flex-direction: column; overflow: hidden;
+      min-height: 430px; max-height: 90dvh;
+      padding-bottom: calc(12px + var(--safe-bottom));
+    }
+    .sheet__panel--chat .sheet__title { margin-bottom: 8px; padding-right: 44px; }
+    .sheet__panel--chat .form-note { margin-bottom: 10px; }
+    .chat-head { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; }
+    .chat-head__name { font-size: 16px; font-weight: 600; line-height: 1.25; }
+    .chat-head__sub { font-size: 12px; color: var(--text-3); }
+    .chat-back {
+      flex: none; width: 32px; height: 32px; border: 0; border-radius: 50%;
+      background: var(--surface-2); color: var(--text);
+      font-size: 20px; line-height: 1; cursor: pointer;
+    }
+    .chat-back:active { opacity: .65; }
+    .chat-compose { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+    .sheet__panel--chat .chat-log { flex: 1 1 auto; min-height: 180px; max-height: none; }
+    .sheet__panel--chat textarea.input { flex: none; margin-top: 8px; }
+    .chat-threads { flex: 1 1 auto; min-height: 180px; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 8px; padding: 2px 0 4px; }
+    .chat-thread-row {
+      display: flex; align-items: center; gap: 10px; width: 100%;
+      padding: 10px 12px; border: 1px solid var(--border); border-radius: 14px;
+      background: var(--surface); color: inherit; font: inherit; text-align: left; cursor: pointer;
+    }
+    .chat-thread-row:active { opacity: .72; }
+    .chat-thread-row__body { display: block; flex: 1; min-width: 0; }
+    .chat-thread-row__name { display: block; font-size: 15px; font-weight: 600; }
+    .chat-thread-row__last {
+      display: block; font-size: 13px; color: var(--text-3);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .chat-thread-row__meta { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+    .chat-thread-row__time { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
     .sheet__title { font-size: 20px; font-weight: 600; letter-spacing: -.02em; line-height: 1.25; margin: 0 0 18px; }
     .sheet__title:focus { outline: none; }
     .sheet__panel--form { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
@@ -863,6 +905,11 @@
       color: var(--text-2); font: inherit; font-size: 12px;
     }
     .chat-load-earlier:active { opacity: .7; }
+    .chat-jump {
+      position: sticky; bottom: 4px; margin-top: 4px;
+      box-shadow: var(--shadow-1); background: var(--surface);
+      border: 1px solid var(--border);
+    }
     .chat-empty { padding: 18px 0; text-align: center; color: var(--text-3); font-size: 14px; }
     .chat-unread {
       flex: none; min-width: 20px; height: 20px; padding: 0 6px;
@@ -1565,6 +1612,23 @@
       const d = new Date(ts * 1000);
       return String(d.getHours()).padStart(2, '0') + ':' +
         String(d.getMinutes()).padStart(2, '0');
+    }
+    // Превью последнего сообщения в списке чатов: «Вы: …» для своих.
+    function chatPreview(item) {
+      const mine = !!(APP && APP.me && APP.me.telegram_id === item.last_from);
+      return (mine ? 'Вы: ' : '') + (item.last_text || '');
+    }
+    // Короткая метка в списке чатов: сегодня — время, иначе дата.
+    function chatShortTime(ts) {
+      const d = new Date(ts * 1000);
+      const now = new Date();
+      if (
+        d.getDate() === now.getDate() &&
+        d.getMonth() === now.getMonth() &&
+        d.getFullYear() === now.getFullYear()
+      ) return chatTime(ts);
+      const base = d.getDate() + ' ' + MONTHS[d.getMonth()];
+      return d.getFullYear() === now.getFullYear() ? base : base + ' ' + d.getFullYear();
     }
     function chatDayLabel(ts) {
       const d = new Date(ts * 1000);

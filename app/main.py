@@ -444,6 +444,23 @@ def sanitize_bio(value: str) -> str:
     return (value or "").strip()[:450]
 
 
+async def _peer_coach_info(peer_id: int) -> dict[str, Any]:
+    """Имя и аватар тренера для заголовка личного чата."""
+    row = await db.get_user(peer_id)
+    if row is None:
+        return {"telegram_id": peer_id, "first_name": "Тренер", "avatar_url": ""}
+    return {
+        "telegram_id": peer_id,
+        "first_name": row["first_name"] or "Тренер",
+        "avatar_url": _avatar_url(peer_id, real=True, file_id=_row_file_id(row)),
+    }
+
+
+def _peer_player_info(row: aiosqlite.Row) -> dict[str, Any]:
+    """Игрок глазами тренера: анонимный режим уже учтён в participant_identity."""
+    return {"telegram_id": row["telegram_id"], **participant_identity(row)}
+
+
 def normalize_phone(value: str) -> str:
     """Оставляет цифры и ведущий плюс; проверяет длину номера."""
     raw = (value or "").strip()
@@ -725,12 +742,9 @@ async def lifespan(app: FastAPI):
 
     # 3. Гарантируем владельца в реестре тренеров и его карточку в CRM.
     await db.ensure_coach(settings.coach_telegram_id)
-    await db.upsert_user(
-        telegram_id=settings.coach_telegram_id,
-        username=None,
-        first_name="Тренер",
-        is_coach=True,
-    )
+    # Не перезаписываем имя владельца при каждом рестарте: его карточка
+    # обновляется из Telegram, когда он открывает приложение.
+    await db.ensure_coach_user(settings.coach_telegram_id)
 
     # 4. Поднимаем бота.
     tg_bot = bot_module.create_bot()
@@ -2436,9 +2450,27 @@ async def api_player_thread(
     return {
         "ok": True,
         "peer_id": peer,
+        "peer": await _peer_coach_info(peer),
         "has_more": has_more,
         "messages": [_serialize_chat_message(r, viewer_id) for r in rows],
     }
+
+
+@app.get("/api/messages/conversations")
+async def api_player_conversations(user: Annotated[dict, Depends(current_user)]):
+    """Диалоги игрока: с кем переписка, последнее сообщение и непрочитанные."""
+    rows = await db.list_conversations(user["telegram_id"], limit=50)
+    conversations = []
+    for row in rows:
+        peer = await _peer_coach_info(int(row["other_id"]))
+        conversations.append({
+            **peer,
+            "last_text": row["text"],
+            "last_at": row["created_at"],
+            "last_from": row["from_user"],
+            "unread": row["unread"],
+        })
+    return {"ok": True, "conversations": conversations}
 
 
 @app.get("/api/messages/unread")
@@ -2469,7 +2501,12 @@ async def api_coach_messages(coach: Annotated[dict, Depends(require_coach)]):
                 ),
                 "last_text": r["text"],
                 "last_at": r["created_at"],
+                "last_from": r["from_user"],
                 "unread": r["unread"],
+                "anonymous": r["display_mode"] == "animal",
+                "avatar_emoji": animal_identity(r["other_id"])["emoji"]
+                if r["display_mode"] == "animal"
+                else "",
             }
             for r in rows
         ],
@@ -2484,6 +2521,9 @@ async def api_coach_thread(
     before_id: Annotated[int | None, Query(ge=1)] = None,
     after_id: Annotated[int | None, Query(ge=1)] = None,
 ):
+    peer_row = await db.get_user(user_id)
+    if peer_row is None:
+        return error_json("Игрок не найден.", 404)
     rows, has_more = await db.list_coach_thread(
         coach["telegram_id"], user_id, limit=limit, before_id=before_id, after_id=after_id
     )
@@ -2491,6 +2531,7 @@ async def api_coach_thread(
         await db.mark_chat_read(coach["telegram_id"], user_id)
     return {
         "ok": True,
+        "peer": _peer_player_info(peer_row),
         "has_more": has_more,
         "messages": [_serialize_chat_message(r, coach["telegram_id"]) for r in rows],
     }
