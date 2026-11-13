@@ -803,9 +803,10 @@ _TABS_CSP = (
     "base-uri 'none'; "
     "form-action 'self'; "
     # Встраивать может наш origin, а также Telegram Web: мини-приложение
-    # там само живёт в iframe, и проверяются все предки, не только родитель.
-    "frame-ancestors 'self' https://telegram.org https://web.telegram.org "
-    "https://*.telegram.org https://*.t.me"
+    # открывается в iframe, и браузер проверяет все предки цепочки. Wildcard
+    # не включает корневой домен, поэтому указываем его явно.
+    "frame-ancestors 'self' https://telegram.org https://*.telegram.org "
+    "https://t.me https://*.t.me"
 )
 
 
@@ -828,8 +829,11 @@ async def security_headers(request: Request, call_next):
         "object-src 'none'; "
         "base-uri 'none'; "
         "form-action 'self'; "
-        "frame-ancestors https://telegram.org https://web.telegram.org "
-        "https://*.telegram.org https://*.t.me",
+        # Mini App может открываться в iframe из разных Telegram Web-клиентов:
+        # web.telegram.org (основной), webk.telegram.org/weba.telegram.org (альт.).
+        # Wildcard не совпадает с корневым доменом, поэтому он указан отдельно.
+        "frame-ancestors 'self' https://telegram.org https://*.telegram.org "
+        "https://t.me https://*.t.me",
     )
     if request.url.path.startswith("/static/"):
         response.headers.setdefault("Cache-Control", "public, max-age=604800")
