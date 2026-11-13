@@ -637,6 +637,8 @@ class ApplyIn(BaseModel):
 class MessageIn(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
     training_id: int | None = None
+    # Клиентский ключ идемпотентности: повтор с тем же значением не дублирует сообщение.
+    client_id: str = Field(default="", max_length=64)
 
 
 class ParticipantIn(BaseModel):
@@ -2331,24 +2333,37 @@ async def api_message_coach(payload: MessageIn, user: Annotated[dict, Depends(cu
             return error_json("Тренировка не найдена.", 404)
         coach_id = training["created_by"] or coach_id
 
-    await db.add_message(user["telegram_id"], coach_id, text)
+    message_id, created = await db.add_message_once(
+        user["telegram_id"], coach_id, text, payload.client_id.strip()
+    )
+    if not created:
+        # Повторный POST (двойной тап/ретрай): отвечаем успехом без дубля и рассылки.
+        return {"ok": True, "message_id": message_id, "duplicate": True}
     sender_name = (
         animal_identity(user["telegram_id"])["name"]
         if user.get("display_mode") == "animal"
         else (user["first_name"] or "Игрок")
     )
     _spawn(_deliver_to_coach(coach_id, user["telegram_id"], sender_name, text))
-    return {"ok": True}
+    return {"ok": True, "message_id": message_id, "duplicate": False}
 
 
 @app.get("/api/messages/thread")
-async def api_player_thread(user: Annotated[dict, Depends(current_user)]):
-    rows = await db.list_user_thread(user["telegram_id"])
-    for row in rows:
-        if row["to_user"] == user["telegram_id"]:
-            await db.expire_event_notifications("chat", row["from_user"], user["telegram_id"])
+async def api_player_thread(
+    user: Annotated[dict, Depends(current_user)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    before_id: Annotated[int | None, Query(ge=1)] = None,
+):
+    rows, has_more = await db.list_user_thread(user["telegram_id"], limit, before_id)
+    if before_id is None:
+        for row in rows:
+            if row["to_user"] == user["telegram_id"]:
+                await db.expire_event_notifications(
+                    "chat", row["from_user"], user["telegram_id"]
+                )
     return {
         "ok": True,
+        "has_more": has_more,
         "messages": [
             {
                 "id": r["id"],
@@ -2386,11 +2401,20 @@ async def api_coach_messages(coach: Annotated[dict, Depends(require_coach)]):
 
 
 @app.get("/api/coach/messages/{user_id}")
-async def api_coach_thread(user_id: int, coach: Annotated[dict, Depends(require_coach)]):
-    rows = await db.list_coach_thread(coach["telegram_id"], user_id)
-    await db.expire_event_notifications("chat", user_id, coach["telegram_id"])
+async def api_coach_thread(
+    user_id: int,
+    coach: Annotated[dict, Depends(require_coach)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    before_id: Annotated[int | None, Query(ge=1)] = None,
+):
+    rows, has_more = await db.list_coach_thread(
+        coach["telegram_id"], user_id, limit, before_id
+    )
+    if before_id is None:
+        await db.expire_event_notifications("chat", user_id, coach["telegram_id"])
     return {
         "ok": True,
+        "has_more": has_more,
         "messages": [
             {
                 "id": r["id"],
@@ -2413,9 +2437,13 @@ async def api_coach_reply(
         return error_json("Пустое сообщение.", 422)
     if await db.get_user(user_id) is None:
         return error_json("Игрок не найден.", 404)
-    await db.add_message(coach["telegram_id"], user_id, text)
+    message_id, created = await db.add_message_once(
+        coach["telegram_id"], user_id, text, payload.client_id.strip()
+    )
+    if not created:
+        return {"ok": True, "message_id": message_id, "duplicate": True}
     _spawn(_notify_new_chat_message(user_id, coach["telegram_id"]))
-    return {"ok": True}
+    return {"ok": True, "message_id": message_id, "duplicate": False}
 
 
 async def _notify_new_chat_message(telegram_id: int, author_id: int) -> None:

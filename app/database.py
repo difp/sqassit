@@ -147,7 +147,8 @@ CREATE TABLE IF NOT EXISTS messages (
     from_user   INTEGER NOT NULL,
     to_user     INTEGER NOT NULL,
     text        TEXT NOT NULL,
-    created_at  INTEGER NOT NULL
+    created_at  INTEGER NOT NULL,
+    client_id   TEXT NOT NULL DEFAULT ''   -- идемпотентность отправки с клиента
 );
 
 CREATE TABLE IF NOT EXISTS feedback (
@@ -330,6 +331,7 @@ async def _migrate() -> None:
     match_players_cols = await columns_of("match_players")
     bookings_cols = await columns_of("bookings")
     event_notifications_cols = await columns_of("event_notifications")
+    messages_cols = await columns_of("messages")
     onboarding_was_present = "onboarding_seen" in users_cols
 
     additions = {
@@ -388,6 +390,9 @@ async def _migrate() -> None:
         ("event_notifications", "final_at"): (
             "ALTER TABLE event_notifications ADD COLUMN final_at INTEGER"
         ),
+        ("messages", "client_id"): (
+            "ALTER TABLE messages ADD COLUMN client_id TEXT NOT NULL DEFAULT ''"
+        ),
     }
     present = {
         "trainings": trainings_cols,
@@ -397,10 +402,23 @@ async def _migrate() -> None:
         "match_players": match_players_cols,
         "bookings": bookings_cols,
         "event_notifications": event_notifications_cols,
+        "messages": messages_cols,
     }
     for (table, column), ddl in additions.items():
         if column not in present[table]:
             await _conn.execute(ddl)
+
+    # Индексы для сообщений создаём после миграции: в старой БД колонки
+    # client_id ещё нет. Частичный UNIQUE-индекс делает повторную отправку
+    # с тем же client_id безопасной (дубли не появляются).
+    await _conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client "
+        "ON messages(from_user, client_id) WHERE client_id != ''"
+    )
+    await _conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_pair "
+        "ON messages(from_user, to_user, id)"
+    )
 
     # Индекс создаём после миграции: в старой БД колонки delete_at ещё нет.
     await _conn.execute(
@@ -1753,38 +1771,82 @@ async def mark_reminder_delivered(training_id: int, user_id: int) -> None:
 # Личные сообщения (игрок -> тренер)
 # --------------------------------------------------------------------------- #
 
-async def add_message(from_user: int, to_user: int, text: str) -> int:
+async def add_message(from_user: int, to_user: int, text: str, client_id: str = "") -> int:
     """Сохраняет личное сообщение игрока тренеру."""
     return await _execute(
-        "INSERT INTO messages (from_user, to_user, text, created_at) VALUES (?, ?, ?, ?)",
-        (from_user, to_user, text, int(time.time())),
+        "INSERT INTO messages (from_user, to_user, text, created_at, client_id) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (from_user, to_user, text, int(time.time()), client_id),
     )
 
 
-async def list_user_thread(user_id: int) -> list[aiosqlite.Row]:
-    """Вся переписка пользователя (с любым тренером) для чата в приложении."""
-    return await _fetchall(
+async def add_message_once(
+    from_user: int, to_user: int, text: str, client_id: str = ""
+) -> tuple[int, bool]:
+    """
+    Идемпотентно сохраняет сообщение.
+
+    Повторная отправка с тем же client_id (двойной тап, ретрай после
+    таймаута, повторный POST) не создаёт дубль. Возвращает (id, created):
+    created=False означает, что сообщение уже было сохранено раньше.
+    Пустой client_id отключает идемпотентность — как обычный add_message.
+    """
+    if not client_id:
+        return await add_message(from_user, to_user, text), True
+    try:
+        return await add_message(from_user, to_user, text, client_id), True
+    except aiosqlite.IntegrityError:
+        # Гонка двух параллельных отправок: второй INSERT упал на UNIQUE,
+        # возвращаем id уже сохранённого сообщения.
+        row = await _fetchone(
+            "SELECT id FROM messages WHERE from_user = ? AND client_id = ?",
+            (from_user, client_id),
+        )
+        if row is None:
+            raise
+        return int(row["id"]), False
+
+
+async def list_user_thread(
+    user_id: int, limit: int = 50, before_id: int | None = None
+) -> tuple[list[aiosqlite.Row], bool]:
+    """Страница переписки пользователя; has_more — есть ли более старые."""
+    rows = await _fetchall(
         """
         SELECT m.id, m.from_user, m.to_user, m.text, m.created_at
           FROM messages m
-         WHERE m.from_user = ? OR m.to_user = ?
-         ORDER BY m.id ASC
+         WHERE (m.from_user = ? OR m.to_user = ?)
+           AND (? IS NULL OR m.id < ?)
+         ORDER BY m.id DESC
+         LIMIT ?
         """,
-        (user_id, user_id),
+        (user_id, user_id, before_id, before_id, limit + 1),
     )
+    has_more = len(rows) > limit
+    page = rows[:limit]
+    page.reverse()
+    return page, has_more
 
 
-async def list_coach_thread(coach_id: int, user_id: int) -> list[aiosqlite.Row]:
-    return await _fetchall(
+async def list_coach_thread(
+    coach_id: int, user_id: int, limit: int = 50, before_id: int | None = None
+) -> tuple[list[aiosqlite.Row], bool]:
+    rows = await _fetchall(
         """
         SELECT m.id, m.from_user, m.to_user, m.text, m.created_at
           FROM messages m
-         WHERE (m.from_user = ? AND m.to_user = ?)
-            OR (m.from_user = ? AND m.to_user = ?)
-         ORDER BY m.id ASC
+         WHERE ((m.from_user = ? AND m.to_user = ?)
+            OR (m.from_user = ? AND m.to_user = ?))
+           AND (? IS NULL OR m.id < ?)
+         ORDER BY m.id DESC
+         LIMIT ?
         """,
-        (user_id, coach_id, coach_id, user_id),
+        (user_id, coach_id, coach_id, user_id, before_id, before_id, limit + 1),
     )
+    has_more = len(rows) > limit
+    page = rows[:limit]
+    page.reverse()
+    return page, has_more
 
 
 async def list_coach_conversations(coach_id: int) -> list[dict[str, Any]]:

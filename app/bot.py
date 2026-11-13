@@ -379,8 +379,15 @@ async def coach_reply_text(message: Message) -> None:
         if text == "/cancel":
             await message.answer("Отменено")
             return
+        if not text:
+            await message.answer("Пустой ответ не отправлен.")
+            return
         if message.bot is None:
             return
+        # Ответ тренера сохраняем в переписку до проверки уведомлений: сообщение
+        # должно остаться в чате, даже если у игрока отключены уведомления.
+        await db.add_message(user.id, target, text)
+        await db.expire_event_notifications("chat", user.id, target)
         if not await db.notification_enabled(target, "messages"):
             await message.answer("У игрока отключены уведомления о сообщениях.")
             return

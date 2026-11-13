@@ -4116,6 +4116,81 @@ def test_in_app_chat_threads_and_notifications(client, monkeypatch):
     asyncio.run(mainmod._notify_new_chat_message(555, 123))
 
 
+def test_message_client_id_is_idempotent(client):
+    first = client.post(
+        "/api/messages/coach",
+        headers=PLAYER,
+        json={"text": "Только один раз", "client_id": "player-1"},
+    ).json()
+    second = client.post(
+        "/api/messages/coach",
+        headers=PLAYER,
+        json={"text": "Только один раз", "client_id": "player-1"},
+    ).json()
+
+    assert first["duplicate"] is False
+    assert second["duplicate"] is True
+    assert first["message_id"] == second["message_id"]
+    thread = client.get("/api/messages/thread", headers=PLAYER).json()["messages"]
+    assert [m["text"] for m in thread].count("Только один раз") == 1
+
+    reply = client.post(
+        "/api/coach/messages/555",
+        headers=COACH,
+        json={"text": "Ответ один раз", "client_id": "coach-1"},
+    ).json()
+    retry = client.post(
+        "/api/coach/messages/555",
+        headers=COACH,
+        json={"text": "Ответ один раз", "client_id": "coach-1"},
+    ).json()
+    assert reply["duplicate"] is False and retry["duplicate"] is True
+    assert reply["message_id"] == retry["message_id"]
+    coach_thread = client.get("/api/coach/messages/555", headers=COACH).json()["messages"]
+    assert [m["text"] for m in coach_thread].count("Ответ один раз") == 1
+
+
+def test_message_pagination_and_validation(client):
+    for i in range(5):
+        assert client.post(
+            "/api/messages/coach",
+            headers=PLAYER,
+            json={"text": f"m{i}", "client_id": f"page-{i}"},
+        ).status_code == 200
+
+    first = client.get("/api/messages/thread?limit=2", headers=PLAYER).json()
+    assert [m["text"] for m in first["messages"]] == ["m3", "m4"]
+    assert first["has_more"] is True
+
+    second = client.get(
+        f"/api/messages/thread?limit=2&before_id={first['messages'][0]['id']}",
+        headers=PLAYER,
+    ).json()
+    assert [m["text"] for m in second["messages"]] == ["m1", "m2"]
+    assert second["has_more"] is True
+
+    last = client.get(
+        f"/api/messages/thread?limit=2&before_id={second['messages'][0]['id']}",
+        headers=PLAYER,
+    ).json()
+    assert [m["text"] for m in last["messages"]] == ["m0"]
+    assert last["has_more"] is False
+
+    coach_page = client.get("/api/coach/messages/555?limit=3", headers=COACH).json()
+    assert [m["text"] for m in coach_page["messages"]] == ["m2", "m3", "m4"]
+    assert coach_page["has_more"] is True
+
+    assert client.get("/api/messages/thread?limit=0", headers=PLAYER).status_code == 422
+    assert client.get("/api/messages/thread?limit=201", headers=PLAYER).status_code == 422
+    assert client.get("/api/messages/thread?before_id=0", headers=PLAYER).status_code == 422
+    assert client.get(
+        "/api/coach/messages/555?limit=0", headers=COACH
+    ).status_code == 422
+    assert client.get(
+        "/api/coach/messages/555?before_id=0", headers=COACH
+    ).status_code == 422
+
+
 def test_match_waitlist_promoted_when_player_leaves(client, monkeypatch):
     from dataclasses import replace
     monkeypatch.setattr(mainmod, "settings", replace(settings, require_event_approval=True))

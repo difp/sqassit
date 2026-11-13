@@ -69,6 +69,61 @@ def test_training_outbox_migrates_legacy_booking_schema(tmp_path):
     asyncio.run(scenario())
 
 
+def test_messages_client_id_migrates_legacy_schema(tmp_path):
+    path = tmp_path / "legacy-messages.db"
+    with closing(sqlite3.connect(path)) as con, con:
+        con.executescript(db.SCHEMA)
+        con.execute("ALTER TABLE messages DROP COLUMN client_id")
+        con.execute(
+            "INSERT INTO messages (from_user, to_user, text, created_at) "
+            "VALUES (5, 123, 'старое', 1)"
+        )
+
+    async def scenario():
+        await db.connect(str(path))
+        try:
+            first = await db.add_message_once(5, 123, "новое", "key-1")
+            second = await db.add_message_once(5, 123, "новое", "key-1")
+            assert first[1] is True and second[1] is False
+            assert first[0] == second[0]
+            page, has_more = await db.list_user_thread(5)
+            assert [row["text"] for row in page] == ["старое", "новое"]
+            assert has_more is False
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_add_message_once_recovers_from_insert_race(tmp_path, monkeypatch):
+    path = tmp_path / "messages-race.db"
+
+    async def scenario():
+        await db.connect(str(path))
+        try:
+            first_id, created = await db.add_message_once(5, 123, "текст", "dup")
+            assert created is True
+
+            calls = {"count": 0}
+
+            async def racing_add(*args, **kwargs):
+                calls["count"] += 1
+                raise sqlite3.IntegrityError("UNIQUE constraint failed")
+
+            monkeypatch.setattr(db, "add_message", racing_add)
+            second_id, created = await db.add_message_once(5, 123, "текст", "dup")
+            assert (second_id, created) == (first_id, False)
+            assert calls["count"] == 1
+
+            # Неизвестный client_id: ошибка UNIQUE не прячется.
+            with pytest.raises(sqlite3.IntegrityError):
+                await db.add_message_once(5, 123, "текст", "unknown")
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
 def test_db_requires_initialization():
     asyncio.run(db.close())
     with pytest.raises(RuntimeError, match="не инициализирована"):

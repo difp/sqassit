@@ -37,6 +37,23 @@ def notifications_on(monkeypatch):
     monkeypatch.setattr(db, "notification_enabled", enabled)
 
 
+@pytest.fixture(autouse=True)
+def bot_db_stubs(monkeypatch):
+    """Перехватывает запись ответов тренера и гашение уведомлений без БД."""
+    calls: dict[str, list[tuple]] = {"saved": [], "expired": []}
+
+    async def fake_add_message(from_user, to_user, text, client_id=""):
+        calls["saved"].append((from_user, to_user, text))
+        return len(calls["saved"])
+
+    async def fake_expire(kind, entity_id, chat_id=None):
+        calls["expired"].append((kind, entity_id, chat_id))
+
+    monkeypatch.setattr(db, "add_message", fake_add_message)
+    monkeypatch.setattr(db, "expire_event_notifications", fake_expire)
+    return calls
+
+
 def _message(user_id: int, text: str = "", first_name: str = "Игрок", username: str | None = None):
     answers: list[tuple[str, object]] = []
     sent: list[tuple[int, str, object]] = []
@@ -169,7 +186,7 @@ def test_cb_reply_arms_pending_reply_for_coach(monkeypatch):
     assert expires_at > time.time()
 
 
-def test_coach_reply_text_sends_escaped_message():
+def test_coach_reply_text_sends_escaped_message(bot_db_stubs):
     botmod._pending_reply[123] = (555, time.time() + 600)
     message, answers, sent = _message(123, text="<b>ответ</b>")
 
@@ -181,6 +198,19 @@ def test_coach_reply_text_sends_escaped_message():
     assert "555" not in sent[0][1]
     assert answers == [("✅ Отправлено", None)]
     assert 123 not in botmod._pending_reply
+    assert bot_db_stubs["saved"] == [(123, 555, "<b>ответ</b>")]
+    assert bot_db_stubs["expired"] == [("chat", 123, 555)]
+
+
+def test_coach_reply_text_rejects_empty_text(bot_db_stubs):
+    botmod._pending_reply[123] = (555, time.time() + 600)
+    message, answers, sent = _message(123, text="   ")
+
+    asyncio.run(botmod.coach_reply_text(message))
+
+    assert answers == [("Пустой ответ не отправлен.", None)]
+    assert sent == []
+    assert bot_db_stubs["saved"] == []
 
 
 def test_coach_reply_text_cancel_and_expired():
@@ -642,7 +672,7 @@ def _callback_with_message(user_id, data):
 
 
 
-def test_coach_reply_respects_message_notifications(monkeypatch):
+def test_coach_reply_respects_message_notifications(monkeypatch, bot_db_stubs):
     async def disabled(telegram_id, category):
         assert category == "messages"
         return False
@@ -655,6 +685,8 @@ def test_coach_reply_respects_message_notifications(monkeypatch):
 
     assert sent == []
     assert answers == [("У игрока отключены уведомления о сообщениях.", None)]
+    # Сообщение всё равно остаётся в переписке — уведомления лишь про пуш.
+    assert bot_db_stubs["saved"] == [(123, 555, "ответ")]
 
 
 def test_rules_text_matches_product_copy():
